@@ -1,0 +1,43 @@
+name: stretch-main
+
+# Local mirror of CI: same image as docker/Dockerfile.ci, same `colcon build`.
+# - `build` service runs the build once and exits (matches GitHub Actions).
+# - `dev`   service drops you into an interactive shell with the workspace mounted.
+#
+# Usage:
+#   docker compose -f docker/docker-compose.yaml run --rm build
+#   docker compose -f docker/docker-compose.yaml run --rm dev
+
+x-ci-image: &ci-image
+  build:
+    context: .
+    dockerfile: Dockerfile.ci
+    args:
+      ROS_DISTRO: humble
+  image: stretch-main-ci:latest
+  working_dir: /ws
+  volumes:
+    - ../:/ws
+  network_mode: host
+  environment:
+    - RCUTILS_COLORIZED_OUTPUT=1
+    - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+    - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0}
+
+services:
+  build:
+    <<: *ci-image
+    container_name: stretch-main-build
+    command:
+      - bash
+      - -lc
+      - >-
+        source /opt/ros/humble/setup.bash &&
+        colcon build --packages-up-to bt_engine --symlink-install
+
+  dev:
+    <<: *ci-image
+    container_name: stretch-main-dev
+    command: /bin/bash
+    tty: true
+    stdin_open: true
