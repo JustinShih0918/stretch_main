@@ -36,7 +36,7 @@ jobs:
             -w /ws \
             stretch-ci:latest \
             bash -c '
-              set -euo pipefail
+              set -eo pipefail
               source /opt/ros/humble/setup.bash
               colcon build \
                 --packages-up-to bt_engine \
