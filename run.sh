@@ -2,6 +2,9 @@
 # Launch the BT engine in a tmux session.
 # Left  pane: ros2 run bt_engine bt_engine
 # Right pane: type 's' + Enter to publish std_msgs/Empty on /start
+#
+# Works after any of the three environments build the workspace
+# (ci / sim / deploy) — it only needs install/setup.bash to exist.
 
 set -e
 

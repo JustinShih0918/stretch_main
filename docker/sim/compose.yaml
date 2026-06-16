@@ -1,0 +1,191 @@
+name: stretch-main-sim
+# Isaac Sim 5.1 simulation environment for Stretch 3, ported from
+# j3soon/ros2-essentials/stretch3_ws. Builds the shared BT engine + the
+# stretch3_navigation (nav2) stack so the BT can drive a simulated robot.
+#
+# Usage (run from the repo root):
+#   docker compose -f docker/sim/compose.yaml up -d volume-instantiation
+#   docker compose -f docker/sim/compose.yaml run --rm stretch3-ws
+services:
+  volume-instantiation:
+    # Ref: https://github.com/moby/moby/issues/47842#issuecomment-2249050939
+    # Note: We use individual `chown` commands instead of `chown -R` for performance.
+    # This chown is only required for empty volumes. If the volume happens to be non-empty,
+    # `chown -R` would be very time-consuming as it recursively changes ownership of all
+    # existing files and subdirectories.
+    image: ubuntu:22.04
+    container_name: stretch-main-sim-volume-instantiation
+    command: bash -c "
+        echo 'Creating directories and setting ownership for UID ${USER_UID:-1000}...' &&
+        mkdir -p /isaac-sim/.cache &&
+        mkdir -p /isaac-sim/.nv/ComputeCache &&
+        mkdir -p /isaac-sim/.nvidia-omniverse/{logs,config} &&
+        mkdir -p /isaac-sim/.local/share/ov/{data,pkg} &&
+        chown ${USER_UID:-1000}:${USER_UID:-1000} /isaac-sim &&
+        chown ${USER_UID:-1000}:${USER_UID:-1000} /isaac-sim/.cache &&
+        chown ${USER_UID:-1000}:${USER_UID:-1000} /isaac-sim/.nv{,/ComputeCache} &&
+        chown ${USER_UID:-1000}:${USER_UID:-1000} /isaac-sim/.nvidia-omniverse{,/logs,/config} &&
+        chown ${USER_UID:-1000}:${USER_UID:-1000} /isaac-sim/.local{,/share,/share/ov,/share/ov/data,/share/ov/pkg}
+      "
+    # TODO: Append other cache directories creation in the command above.
+    volumes:
+      - isaac-sim-cache:/isaac-sim
+  stretch3-ws:
+    depends_on:
+      - volume-instantiation
+    build:
+      context: .
+      dockerfile: Dockerfile
+      # TODO: Specify the target platform to build the image, otherwise it will build for the host platform.
+      # Reference: https://docs.docker.com/compose/compose-file/build/#platforms
+      # platforms:
+      #   - "linux/arm64"
+      args:
+        # TODO: Set the USER_UID
+        USER_UID: "${USER_UID:-1000}"
+        # TODO: Set CUDA Toolkit version or set to "" if not using CUDA Toolkit
+        # CUDA_TOOLKIT_VERSION: ""
+        # TODO: Set Isaac Sim version, set to "" if not using Isaac Sim, set to "5.1.0" for the binary install, or set to "develop" to build upstream IsaacSim from source
+        # ISAAC_SIM_VERSION: "5.1.0" # "develop"
+        # TODO: Set Isaac Lab version or set to "" if not using Isaac Lab, set to "2.3.2" for the latest stable version, or set to "develop" to build upstream Isaac Lab from source
+        # ISAAC_LAB_VERSION: "2.3.2" # "develop"
+        # TODO: Set to "YES" if using Isaac ROS or set to "" if not using Isaac ROS
+        # ISAAC_ROS: ""
+        # TODO: Set to "YES" if using Cartographer or set to "" if not using Cartographer
+        CARTOGRAPHER: "YES"
+        # TODO: Set to "YES" if using RTAB-Map or set to "" if not using RTAB-Map
+        RTABMAP: "YES"
+        # TODO: Set to "YES" if using RealSense or set to "" if not using RealSense
+        # REALSENSE: ""
+        # TODO: Set to "YES" if using NVIDIA OpenUSD tools or set to "" if not using NVIDIA OpenUSD tools
+        # NV_OPENUSD: ""
+        # TODO: Set to "YES" if using Newton Tools or set to "" if not using Newton Tools
+        # NEWTON_TOOLS: ""
+        # TODO: Set to "YES" if using Claude Code CLI or set to "" if not using Claude Code CLI
+        # CLAUDE_CODE: ""
+        # TODO: Set to "YES" if using Codex CLI or set to "" if not using Codex CLI
+        # CODEX: ""
+        # TODO: Set to "YES" if using OpenCode CLI or set to "" if not using OpenCode CLI
+        # OPENCODE: ""
+      cache_from:
+        - j3soon/ros2-stretch3-ws:buildcache-amd64
+        - j3soon/ros2-stretch3-ws:buildcache-arm64
+    image: stretch-main-sim
+    container_name: stretch-main-sim
+    stdin_open: true
+    tty: true
+    # TODO: Comment the line below if the workspace don't need to communicate through `/dev/*` devices.
+    privileged: true
+    command: /bin/bash
+    network_mode: host
+    working_dir: /home/user/stretch_main
+    environment:
+      # Set X11 server environment variable for existing display.
+      - DISPLAY=$DISPLAY
+      # References:
+      # - https://docs.ros.org/en/humble/Concepts/Intermediate/About-Domain-ID.html
+      # - https://docs.ros.org/en/humble/Tutorials/Beginner-CLI-Tools/Configuring-ROS2-Environment.html
+      # - https://docs.ros.org/en/humble/Tutorials/Demos/Logging-and-logger-configuration.html#console-output-colorizing
+      - ROS_LOCALHOST_ONLY=0
+        # Localhost only is disabled by default to allow communication with external devices.
+      - ROS_DOMAIN_ID=0
+        # Domain ID is set to 0 to allow communication through ros1_bridge.
+      - RCUTILS_COLORIZED_OUTPUT=1
+      # TODO: Set the ROS middleware (RMW). Currently supported RMW implementations:
+      # - rmw_fastrtps_cpp (FastDDS) (default)
+      # - rmw_cyclonedds_cpp (CycloneDDS)
+      # Ref:
+      # - https://github.com/ros2/rmw_fastrtps/blob/d98cacec980df18810af232b75db80b5ce7da845/README.md
+      # - https://github.com/ros2/rmw_cyclonedds/blob/406277084be4352fa48357047ed56be69e4942e5/README.md
+      - RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+      # Set the ROS workspace path.
+      - ROS2_WS=/home/user/stretch_main
+      # TODO: Add more environment variables here.
+    # Enable GPU support.
+    # Reference: https://docs.docker.com/compose/gpu-support/
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [ gpu ]
+    # Enable NVIDIA runtime (for older docker setup).
+    # Reference: https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/sample-workload.html
+    # runtime: nvidia
+    volumes:
+      # Mount local timezone into container.
+      # Reference: https://stackoverflow.com/questions/57607381/how-do-i-change-timezone-in-a-docker-container
+      - /etc/timezone:/etc/timezone:ro
+      - /etc/localtime:/etc/localtime:ro
+      # Mount X11 server
+      - /tmp/.X11-unix:/tmp/.X11-unix
+        # X11-unix is mounted to allow GUI applications to display on host.
+      - $HOME/.Xauthority:/home/user/.Xauthority
+        # Xauthority is mounted to allow X11 forwarding for remote display.
+      # Mount Direct Rendering Infrastructure (DRI) for hardware acceleration support such as OpenGL.
+      - /dev/dri:/dev/dri
+      # Mount sound card to prevent Gazebo warning.
+      - /dev/snd:/dev/snd
+      # Mount shared memory for ROS2 communication.
+      - /dev/shm:/dev/shm
+      # TODO: Uncomment the line below and comment out the three entries above to enable USB support.
+      # - /dev:/dev
+      # Mount Gazebo models directory to reuse models downloaded during first launch.
+      # Reference: https://answers.ros.org/question/365658
+      # Note that this volume is shared among all workspaces.
+      - gazebo-cache:/home/user/.gazebo
+      # Note that this volume is shared among all workspaces.
+      - isaac-ros-assets:/home/user/workspaces/isaac_ros-dev/isaac_ros_assets
+      # Mount CycloneDDS configuration file.
+      - ./cyclonedds.xml:/home/user/cyclonedds.xml
+      # Mount Isaac Sim cache directories.
+      # Reference: https://docs.isaacsim.omniverse.nvidia.com/latest/installation/install_container.html#container-deployment
+      # Note that this volume is shared among all workspaces.
+      - type: volume
+        source: isaac-sim-cache
+        target: /home/user/.cache
+        volume:
+          subpath: .cache
+      - type: volume
+        source: isaac-sim-cache
+        target: /home/user/.nv/ComputeCache
+        volume:
+          subpath: .nv/ComputeCache
+      - type: volume
+        source: isaac-sim-cache
+        target: /home/user/.nvidia-omniverse/logs
+        volume:
+          subpath: .nvidia-omniverse/logs
+      - type: volume
+        source: isaac-sim-cache
+        target: /home/user/.nvidia-omniverse/config
+        volume:
+          subpath: .nvidia-omniverse/config
+      - type: volume
+        source: isaac-sim-cache
+        target: /home/user/.local/share/ov/data
+        volume:
+          subpath: .local/share/ov/data
+      - type: volume
+        source: isaac-sim-cache
+        target: /home/user/.local/share/ov/pkg
+        volume:
+          subpath: .local/share/ov/pkg
+      # TODO: Add more volume mounts here.
+      # Mount this repo (the colcon workspace) into the container.
+      - ../../:/home/user/stretch_main
+    # Add device cgroup rules to allow access to specific devices (like realsense).
+    # Reference: https://github.com/2b-t/docker-for-robotics/blob/main/doc/WorkingWithHardware.md
+    # Note that this is required only when using privileged: false.
+    # device_cgroup_rules:
+    #   - 'c 81:* rmw'
+    #   - 'c 189:* rmw'
+volumes:
+  # Named caches, shared across runs. Created by docker compose on first use.
+  gazebo-cache:
+    name: stretch-main-gazebo-cache
+  isaac-sim-cache:
+    name: stretch-main-isaac-sim-cache
+  isaac-ros-assets:
+    name: stretch-main-isaac-ros-assets

@@ -1,0 +1,61 @@
+# Setup paths in `~/.profile` to allow unified environment variable across login/non-login shells
+# set PATH so it includes user's private bin if it exists
+if [ -d "$HOME/bin" ] ; then
+    PATH="$HOME/bin:$PATH"
+fi
+# set PATH so it includes user's private bin if it exists
+if [ -d "$HOME/.local/bin" ] ; then
+    PATH="$HOME/.local/bin:$PATH"
+fi
+
+# TODO: Environment independent commands here (e.g., set up symbolic link upon first launch)
+# Source global ROS2 environment
+source /opt/ros/$ROS_DISTRO/setup.bash
+# Source colcon-argcomplete
+source /usr/share/colcon_argcomplete/hook/colcon-argcomplete.bash
+# Optionally perform apt update if it has not been executed yet
+if [ -z "$( ls -A '/var/lib/apt/lists' )" ]; then
+    echo "apt-get update has not been executed yet. Running sudo apt-get update..."
+    sudo apt-get update
+fi
+# Optionally perform rosdep update if it has not been executed yet
+if [ ! -d $HOME/.ros/rosdep/sources.cache ]; then
+    echo "rosdep update has not been executed yet. Running rosdep update..."
+    rosdep update --rosdistro $ROS_DISTRO
+    cd $ROS2_WS
+    # Ref: https://docs.ros.org/en/humble/Tutorials/Intermediate/Rosdep.html
+    rosdep install --from-paths src --ignore-src -y -r
+fi
+# Optionally build the workspace if it has not been built yet.
+# Sim image only builds the shared BT engine + the Isaac Sim nav stack; the
+# deploy packages (src/deploy/*) need on-robot deps and are skipped here.
+if [ ! -f $ROS2_WS/install/setup.bash ]; then
+    echo "Workspace has not been built yet. Building workspace..."
+    cd $ROS2_WS
+    colcon build --symlink-install \
+        --packages-up-to bt_engine stretch3_navigation
+    echo "Workspace built."
+fi
+
+RUN_UDEVD=false
+command -v realsense-viewer >/dev/null 2>&1 && RUN_UDEVD=true
+# Running udevd in the background, it will listen for events from the kernel and manage the device nodes in /dev.
+# Reference:
+# - https://forums.docker.com/t/udevadm-control-reload-rules/135564/2
+# - https://manpages.ubuntu.com/manpages/focal/en/man8/systemd-udevd-kernel.socket.8.html
+if [ "$RUN_UDEVD" = true ] && ! pidof systemd-udevd >/dev/null 2>&1; then
+    echo "Launching systemd-udevd ..."
+    if ! sudo /lib/systemd/systemd-udevd --daemon; then
+        echo "Warning: Failed to launch systemd-udevd"
+    fi
+fi
+
+# Source gazebo environment
+# Ref: https://classic.gazebosim.org/tutorials?tut=ros2_installing&cat=connect_ros#InstallGazebo
+if [ $(arch) == "x86_64" ]; then
+  source /usr/share/gazebo/setup.bash
+fi
+# TODO: Source other workspace environments as underlay
+# Source workspace environment
+source $ROS2_WS/install/setup.bash
+echo "Successfully built workspace and configured environment variables."

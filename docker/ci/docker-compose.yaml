@@ -1,12 +1,12 @@
 name: stretch-main
 
-# Local mirror of CI: same image as docker/Dockerfile.ci, same `colcon build`.
+# Local mirror of CI: same image as docker/ci/Dockerfile.ci, same `colcon build`.
 # - `build` service runs the build once and exits (matches GitHub Actions).
 # - `dev`   service drops you into an interactive shell with the workspace mounted.
 #
-# Usage:
-#   docker compose -f docker/docker-compose.yaml run --rm build
-#   docker compose -f docker/docker-compose.yaml run --rm dev
+# Usage (run from the repo root):
+#   docker compose -f docker/ci/docker-compose.yaml run --rm build
+#   docker compose -f docker/ci/docker-compose.yaml run --rm dev
 
 x-ci-image: &ci-image
   build:
@@ -17,7 +17,7 @@ x-ci-image: &ci-image
   image: stretch-main-ci:latest
   working_dir: /ws
   volumes:
-    - ../:/ws
+    - ../../:/ws
   network_mode: host
   environment:
     - RCUTILS_COLORIZED_OUTPUT=1

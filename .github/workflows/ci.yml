@@ -19,11 +19,11 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build CI image (docker/Dockerfile.ci)
+      - name: Build CI image (docker/ci/Dockerfile.ci)
         uses: docker/build-push-action@v5
         with:
-          context: docker
-          file: docker/Dockerfile.ci
+          context: docker/ci
+          file: docker/ci/Dockerfile.ci
           tags: stretch-ci:latest
           load: true
           cache-from: type=gha
