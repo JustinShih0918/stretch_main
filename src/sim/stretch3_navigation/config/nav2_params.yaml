@@ -182,7 +182,10 @@ local_costmap:
       height: 3
       resolution: 0.05
       robot_radius: 0.22
-      plugins: ["obstacle_layer", "inflation_layer"]
+      # Action-aware order (arXiv:2310.08873): obstacle marks the curtain LETHAL,
+      # then semantic_traversability_layer clears it inside the semantic polygon,
+      # then inflation runs on what remains.
+      plugins: ["obstacle_layer", "semantic_traversability_layer", "inflation_layer"]
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
         enabled: True
@@ -193,6 +196,13 @@ local_costmap:
           clearing: True
           marking: True
           data_type: "LaserScan"
+      semantic_traversability_layer:
+        plugin: "semantic_traversability::SemanticTraversabilityLayer"
+        enabled: True
+        polygon_topic: /semantic_regions
+        traversable_cost: 0.0        # 0 = FREESPACE (paper); >=0 forces this cost
+        override_threshold: 254      # only overwrite LETHAL cells
+        transform_tolerance: 0.2
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 3.0
@@ -213,7 +223,7 @@ global_costmap:
       rolling_window: true
       width: 50
       height: 50
-      plugins: ["obstacle_layer", "inflation_layer"]
+      plugins: ["obstacle_layer", "semantic_traversability_layer", "inflation_layer"]
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
         enabled: True
@@ -224,6 +234,13 @@ global_costmap:
           clearing: True
           marking: True
           data_type: "LaserScan"
+      semantic_traversability_layer:
+        plugin: "semantic_traversability::SemanticTraversabilityLayer"
+        enabled: True
+        polygon_topic: /semantic_regions
+        traversable_cost: 0.0        # 0 = FREESPACE (paper); >=0 forces this cost
+        override_threshold: 254      # only overwrite LETHAL cells
+        transform_tolerance: 0.2
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 3.0

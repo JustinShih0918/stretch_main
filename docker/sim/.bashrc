@@ -33,7 +33,8 @@ if [ ! -f $ROS2_WS/install/setup.bash ]; then
     echo "Workspace has not been built yet. Building workspace..."
     cd $ROS2_WS
     colcon build --symlink-install \
-        --packages-up-to bt_engine stretch3_navigation
+        --packages-up-to bt_engine stretch3_navigation \
+                         semantic_traversability semantic_perception
     echo "Workspace built."
 fi
 

@@ -1,0 +1,10 @@
+<library path="semantic_traversability_layer">
+  <class type="semantic_traversability::SemanticTraversabilityLayer"
+         base_class_type="nav2_costmap_2d::Layer">
+    <description>
+      Action-aware costmap layer: overwrites LETHAL cells inside a traversable
+      semantic polygon with a lower cost so the planner can route through
+      traversable obstacles (curtains, grass). Paper arXiv:2310.08873.
+    </description>
+  </class>
+</library>

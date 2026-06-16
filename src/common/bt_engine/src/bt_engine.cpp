@@ -3,6 +3,7 @@
 #include <ament_index_cpp/get_package_share_directory.hpp>
 
 #include "bt_nav/navigate_to_pose_action.hpp"
+#include "bt_nav/set_semantic_instruction.hpp"
 
 BTEngine::BTEngine() : rclcpp::Node("bt_engine") {
   const std::string default_xml =
@@ -34,7 +35,10 @@ void BTEngine::init() {
 void BTEngine::registerNodes() {
   factory_.registerNodeType<bt_nav::NavigateToPoseAction>("NavigateToPose",
                                                           params_);
-  RCLCPP_INFO(this->get_logger(), "[BTEngine] registered NavigateToPose");
+  factory_.registerNodeType<bt_nav::SetSemanticInstruction>(
+      "SetSemanticInstruction", params_);
+  RCLCPP_INFO(this->get_logger(),
+              "[BTEngine] registered NavigateToPose, SetSemanticInstruction");
 }
 
 void BTEngine::buildTree() {

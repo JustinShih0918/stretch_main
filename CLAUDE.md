@@ -17,6 +17,9 @@ stretch_main/
 │   ├── sim/                       # Isaac Sim packages (from j3soon/ros2-essentials stretch3_ws)
 │   │   ├── stretch3_navigation/    # nav2 + cartographer/rtabmap launch+config for Isaac
 │   │   └── stretch_urdf/           # hello-robot URDF gen tool (pip pkg, NO package.xml → colcon ignores)
+│   ├── semantic_nav/              # action-aware semantic traversability (arXiv:2310.08873)
+│   │   ├── semantic_traversability/  # C++ nav2 costmap Layer plugin + projection node (env-agnostic)
+│   │   └── semantic_perception/      # Python Grounding DINO node + static region test publisher
 │   └── deploy/                    # vendored from hello-robot/stretch_ros2 (Apache-2.0)
 │       └── stretch_nav2/           # on-robot nav2 + slam_toolbox + AMCL
 ├── docker/
@@ -83,7 +86,7 @@ Three independent images under `docker/`, run from the repo root. Each builds a 
 | Env | Path | Image purpose | Build subset | Run |
 |---|---|---|---|---|
 | `ci` | `docker/ci/` | minimal build/test (CI + local parity) | `bt_engine` | `docker compose -f docker/ci/docker-compose.yaml run --rm <build\|dev>` |
-| `sim` | `docker/sim/` | Isaac Sim 5.1 (GPU/X11/privileged) | `bt_engine stretch3_navigation` | `docker compose -f docker/sim/compose.yaml run --rm stretch3-ws` |
+| `sim` | `docker/sim/` | Isaac Sim 5.1 (GPU/X11/privileged) | `bt_engine stretch3_navigation semantic_traversability semantic_perception` | `docker compose -f docker/sim/compose.yaml run --rm stretch3-ws` |
 | `deploy` | `docker/deploy/` | on-robot nav/slam | `bt_engine stretch_nav2` | `docker compose -f docker/deploy/docker-compose.yaml run --rm <build\|nav\|bt\|dev>` |
 
 - Sim first-launch auto-build is scoped in `docker/sim/.bashrc` (only common + `stretch3_navigation`, NOT the deploy packages which need robot-only deps).
@@ -100,6 +103,7 @@ Three independent images under `docker/`, run from the repo root. Each builds a 
 | Add a sim install step | `docker/sim/modules/*.sh` (vendored copies) + `docker/sim/Dockerfile` |
 | Add a deploy system dep | `docker/deploy/Dockerfile` |
 | Tune sim nav2/SLAM | `src/sim/stretch3_navigation/config/` + `launch/` |
+| Semantic traversability (costmap layer / VLM perception) | `src/semantic_nav/` (see [src/semantic_nav/README.md](src/semantic_nav/README.md)); layer wired into `src/sim/stretch3_navigation/config/nav2_params.yaml` |
 | Re-sync vendored deploy nav/slam | see [src/deploy/README.md](src/deploy/README.md) |
 | Change colcon args | `.github/workflows/ci.yml` "colcon build" step |
 

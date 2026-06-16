@@ -183,6 +183,15 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=private \
     ros-${ROS_DISTRO}-pointcloud-to-laserscan \
     && sudo rm -rf /var/lib/apt/lists/*
 
+# Grounding DINO (open-set VLM) for action-aware semantic perception.
+# Gated behind GROUNDING_DINO=YES (heavy: torch + weights); off by default.
+ARG GROUNDING_DINO=""
+COPY --chown=$USERNAME:$USERNAME \
+     modules/install_grounding_dino.sh /tmp/install_grounding_dino.sh
+RUN --mount=type=cache,target=/var/cache/apt,sharing=private \
+    --mount=type=cache,target=/home/$USERNAME/.cache/pip,sharing=private,uid=$USER_UID,gid=$USER_UID \
+    /tmp/install_grounding_dino.sh && rm /tmp/install_grounding_dino.sh
+
 COPY --chown=$USERNAME:$USERNAME \
      .bashrc /home/$USERNAME/.bashrc
 # TODO: Copy additional files here

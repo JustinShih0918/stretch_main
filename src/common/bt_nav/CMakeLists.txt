@@ -15,6 +15,7 @@ find_package(behaviortree_cpp REQUIRED)
 find_package(behaviortree_ros2 REQUIRED)
 find_package(nav2_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
+find_package(std_msgs REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
 
@@ -25,12 +26,14 @@ set(THIS_PACKAGE_DEPS
   behaviortree_ros2
   nav2_msgs
   geometry_msgs
+  std_msgs
   tf2
   tf2_geometry_msgs
 )
 
 add_library(${PROJECT_NAME} SHARED
   src/navigate_to_pose_action.cpp
+  src/set_semantic_instruction.cpp
 )
 target_include_directories(${PROJECT_NAME} PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>

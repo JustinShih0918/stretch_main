@@ -10,6 +10,7 @@ find_package(rclcpp_action REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(action_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
+find_package(sensor_msgs REQUIRED)
 find_package(builtin_interfaces REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 
@@ -18,12 +19,15 @@ rosidl_generate_interfaces(btcpp_ros2_interfaces
     "msg/CircleObstacle.msg"
     "msg/SegmentObstacle.msg"
     "msg/Obstacles.msg"
+    "msg/SemanticDetection2D.msg"
+    "msg/SemanticRegion.msg"
+    "msg/SemanticRegionArray.msg"
     "srv/StartUpSrv.srv"
     "action/ExecuteTree.action"
     "action/Navigation.action"
     "action/FirmwareMission.action"
     "action/Fibonacci.action"
-    DEPENDENCIES geometry_msgs action_msgs std_msgs builtin_interfaces
+    DEPENDENCIES geometry_msgs sensor_msgs action_msgs std_msgs builtin_interfaces
 )
 
 ament_export_dependencies(rosidl_default_runtime)

@@ -1,0 +1,12 @@
+# Static action-aware attribute map (paper 2310.08873 uses an LLM for this;
+# milestone 1 keeps it as deterministic config). For each landmark label:
+#   traversable: true  -> the SemanticTraversabilityLayer may clear it
+#   traversable: false -> stays a normal obstacle
+#
+# The detector prompt is built from these labels (Grounding DINO caption).
+semantic_targets:
+  curtain: true
+  grass: true
+  chair: false
+  table: false
+  wall: false

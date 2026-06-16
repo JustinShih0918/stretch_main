@@ -1,0 +1,112 @@
+# `src/semantic_nav/` — Action-aware semantic traversability
+
+Implements the idea from **arXiv:2310.08873** ("Interactive Navigation in
+Environments with Traversable Obstacles Using Large Language and Vision-Language
+Models") as a **Nav2-native layered-costmap** pipeline: the robot can plan a path
+*through* obstacles that are physically traversable (curtains, grass) instead of
+treating them as hard `LETHAL` obstacles.
+
+This group is **not** part of the CI build subset (CI stays `--packages-up-to
+bt_engine`). It is built in the **sim** image now, and is designed to be built in
+the **deploy** image for the real robot later (see *Real robot* below).
+
+## Data flow
+
+```
+/rgb ─► grounding_dino_node ─► /semantic_detection (SemanticDetection2D: bbox+label+traversable)
+                                      │
+/depth + /camera_info + TF ─► projection_node ─► /semantic_regions (SemanticRegionArray: ground polygons)
+                                      │
+/laser_scan ─► ObstacleLayer (marks curtain 254) ─► SemanticTraversabilityLayer
+                                                       (overwrite 254 → traversable_cost inside polygon)
+                                                     ─► InflationLayer ─► planner/controller ─► /cmd_vel
+```
+
+The LiDAR `ObstacleLayer` still marks the curtain `LETHAL`; our layer runs
+**after** it and **before** `InflationLayer`, clearing only the cells inside the
+camera-derived polygon of a class flagged `traversable`.
+
+## Packages
+
+### `semantic_traversability/` (C++, `ament_cmake`) — environment-agnostic
+- **`SemanticTraversabilityLayer`** (`nav2_costmap_2d::Layer`, pluginlib):
+  subscribes `SemanticRegionArray`, and in `updateCosts()` overwrites every
+  master-grid cell that is inside a traversable polygon **and** currently
+  `>= override_threshold` (default `254`) with `traversable_cost`.
+  - Params: `enabled`, `polygon_topic` (`/semantic_regions`),
+    `traversable_cost` (**`-1` = honor each region's `cost`; `>=0` forces this
+    value**; `0` = FREESPACE, matching the paper), `override_threshold` (`254`),
+    `transform_tolerance`.
+- **`projection_node`**: deprojects the detection's pixels with `/depth` +
+  `/camera_info`, transforms to `target_frame` (default `odom`), drops Z, and
+  publishes the convex-hull ground footprint. Handles `32FC1`(m) and `16UC1`(mm)
+  depth. Params: `depth_topic`, `camera_info_topic`, `regions_topic`,
+  `target_frame`, `camera_optical_frame`, `pixel_step`, `min/max_depth`.
+
+### `semantic_perception/` (Python, `ament_python`) — sim / off-board
+- **`grounding_dino_node`**: open-set VLM. Builds its prompt from
+  `config/semantic_targets.yaml` (or `~/instruction`), runs Grounding DINO on
+  `/rgb`, publishes one `SemanticDetection2D` per box with the static
+  `traversable` attribute. Torch + weights are installed only when the image is
+  built with `GROUNDING_DINO=YES` (see `docker/sim/modules/install_grounding_dino.sh`);
+  the node degrades gracefully (logs + no detections) if the model is absent.
+- **`static_region_publisher`**: milestone-1 helper that publishes a
+  hand-authored traversable polygon directly on `/semantic_regions`, so the
+  costmap layer + planner can be validated **without** the VLM.
+
+### Interfaces
+Added to the vendored `src/common/btcpp_ros2_interfaces/`:
+`SemanticDetection2D`, `SemanticRegion`, `SemanticRegionArray`.
+
+## Run (Isaac Sim)
+
+Build the sim image with the VLM, then inside the container:
+
+```bash
+# Milestone 1 — no ML: prove the layer + planner with a static polygon.
+ros2 launch stretch3_navigation semantic_navigation.launch.py perception:=static
+#   -> watch the curtain cells clear in RViz; send a goal behind it; a path
+#      appears. Set semantic_traversability_layer.enabled:=False to see it fail.
+
+# Full pipeline — Grounding DINO.
+ros2 launch stretch3_navigation semantic_navigation.launch.py \
+    perception:=dino \
+    model_config:=/opt/grounding_dino/GroundingDINO_SwinT_OGC.py \
+    model_weights:=/opt/grounding_dino/groundingdino_swint_ogc.pth
+```
+
+Switch the active landmark from a behavior tree with the `SetSemanticInstruction`
+node (see `src/common/bt_engine/bt/semantic_tree.xml`).
+
+### Tuning note
+The default planner/controller (NavFn + DWB) are intentionally left unchanged.
+NavFn barely weights intermediate costs, so the default `traversable_cost: 0`
+(FREESPACE) is what makes it reliably cross. To get true *risk-aware* routing
+(cross only when the detour is longer), raise `traversable_cost` (~100) **and**
+switch the planner to a cost-aware one (e.g. Smac2D) — out of scope here.
+
+## Real robot (Stretch 3 — later phase)
+
+The C++ `semantic_traversability` package is environment-agnostic and is the
+reusable core. To bring this up on the real robot:
+
+1. **Build it in the deploy image**: add `semantic_traversability` (and, if the
+   VLM runs on-robot, `semantic_perception`) to the `--packages-up-to` list in
+   `docker/deploy/docker-compose.yaml`; add any system deps to
+   `docker/deploy/Dockerfile`.
+2. **Add the layer to the deploy params**: insert `semantic_traversability_layer`
+   after the obstacle/voxel layer and before inflation in
+   `src/deploy/stretch_nav2/config/nav2_voxel_params.yaml` (via a params overlay —
+   do **not** edit the vendored file in place). The on-robot stack localizes in
+   `map` (AMCL) rather than sim's ground-truth `world`; set `target_frame`
+   accordingly (`map` or `odom`).
+3. **Perception**: either run our `grounding_dino_node` against the robot's
+   RealSense D435i (already in the Stretch URDF) — likely **off-board** given
+   on-robot GPU limits — or consume detections from
+   [`hello-robot/stretch_ai`](https://github.com/hello-robot/stretch_ai) and adapt
+   them into `SemanticDetection2D` (same topic contract, so the projection node
+   and costmap layer are unchanged).
+4. **Frames/calibration**: verify the camera optical-frame convention and the
+   `map → odom → base_link → camera_*` TF chain; set `camera_optical_frame` on the
+   projection node if the depth image's `header.frame_id` is not the optical frame.
+```
