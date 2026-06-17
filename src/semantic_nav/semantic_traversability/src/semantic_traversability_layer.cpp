@@ -39,6 +39,28 @@ void SemanticTraversabilityLayer::onInitialize() {
       std::bind(&SemanticTraversabilityLayer::regionsCallback, this,
                 std::placeholders::_1));
 
+  // Watch runtime parameter changes so ros2 param set takes effect immediately.
+  param_cb_handle_ = node->add_on_set_parameters_callback(
+      [this](const std::vector<rclcpp::Parameter>& params)
+          -> rcl_interfaces::msg::SetParametersResult {
+        const std::string prefix = name_ + ".";
+        for (const auto& p : params) {
+          if (p.get_name().rfind(prefix, 0) != 0) continue;
+          const std::string local = p.get_name().substr(prefix.size());
+          if (local == "enabled") {
+            enabled_ = p.as_bool();
+          } else if (local == "traversable_cost") {
+            traversable_cost_ = p.as_double();
+          } else if (local == "override_threshold") {
+            override_threshold_ = static_cast<unsigned char>(
+                std::clamp(static_cast<int>(p.as_int()), 0, 255));
+          }
+        }
+        rcl_interfaces::msg::SetParametersResult result;
+        result.successful = true;
+        return result;
+      });
+
   current_ = true;
   RCLCPP_INFO(node->get_logger(),
               "[%s] SemanticTraversabilityLayer up: topic=%s traversable_cost=%.0f "

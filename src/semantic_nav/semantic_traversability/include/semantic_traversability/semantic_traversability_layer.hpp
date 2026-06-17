@@ -50,6 +50,7 @@ private:
 
   rclcpp::Subscription<btcpp_ros2_interfaces::msg::SemanticRegionArray>::SharedPtr
       regions_sub_;
+  rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr param_cb_handle_;
 
   std::mutex mutex_;
   btcpp_ros2_interfaces::msg::SemanticRegionArray::SharedPtr latest_regions_;
