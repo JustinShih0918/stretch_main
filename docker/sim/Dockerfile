@@ -77,8 +77,8 @@ COPY modules/install_cuda_toolkit.sh /tmp/install_cuda_toolkit.sh
 RUN --mount=type=cache,target=/var/cache/apt,sharing=private \
     /tmp/install_cuda_toolkit.sh && rm /tmp/install_cuda_toolkit.sh
 # Ref: https://docs.nvidia.com/cuda/cuda-installation-guide-linux/#post-installation-actions
-ENV PATH="${PATH}:/usr/local/cuda-${CUDA_TOOLKIT_VERSION}/bin"
-ENV LD_LIBRARY_PATH="${LD_LIBRARY_PATH}:/usr/local/cuda-${CUDA_TOOLKIT_VERSION}/lib64"
+ENV PATH="${PATH}:/usr/local/cuda/bin"
+ENV LD_LIBRARY_PATH="${LD_LIBRARY_PATH}:/usr/local/cuda/lib64"
 
 # Arguments for the default user
 ARG USERNAME=user
@@ -108,6 +108,7 @@ RUN mkdir /home/$USERNAME/.gazebo
 ARG ISAAC_SIM_VERSION=5.1.0
 # Ref: https://isaac-sim.github.io/IsaacLab/v2.3.2/source/setup/installation/binaries_installation.html
 ENV ISAACSIM_PATH="/home/$USERNAME/isaacsim"
+ENV LD_LIBRARY_PATH="${LD_LIBRARY_PATH}:${ISAACSIM_PATH}/kit/python/lib/python3.11/site-packages/nvidia/cusparselt/lib:${ISAACSIM_PATH}/kit/python/lib/python3.11/site-packages/nvidia/cudnn/lib:${ISAACSIM_PATH}/kit/python/lib/python3.11/site-packages/nvidia/nccl/lib:${ISAACSIM_PATH}/kit/python/lib/python3.11/site-packages/nvidia/nvshmem/lib:${ISAACSIM_PATH}/kit/python/lib/python3.11/site-packages/nvidia/cu13/lib"
 # Copy and run Isaac Sim installation script
 COPY --chown=$USERNAME:$USERNAME \
      modules/install_isaac_sim.sh /tmp/install_isaac_sim.sh
@@ -178,6 +179,8 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=private \
 # download navigation2 and point cloud for stretch3
 RUN --mount=type=cache,target=/var/cache/apt,sharing=private \
     sudo apt-get update && sudo apt-get install -y \
+    ros-${ROS_DISTRO}-behaviortree-cpp \
+    ros-${ROS_DISTRO}-generate-parameter-library \
     ros-${ROS_DISTRO}-navigation2 \
     ros-${ROS_DISTRO}-nav2-bringup \
     ros-${ROS_DISTRO}-pointcloud-to-laserscan \

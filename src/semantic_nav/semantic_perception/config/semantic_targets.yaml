@@ -5,6 +5,8 @@
 #
 # The detector prompt is built from these labels (Grounding DINO caption).
 semantic_targets:
+  human: true
+  person: true
   curtain: true
   grass: true
   chair: false

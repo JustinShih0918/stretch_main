@@ -44,7 +44,7 @@ services:
         # TODO: Set the USER_UID
         USER_UID: "${USER_UID:-1000}"
         # TODO: Set CUDA Toolkit version or set to "" if not using CUDA Toolkit
-        # CUDA_TOOLKIT_VERSION: ""
+        CUDA_TOOLKIT_VERSION: "12.8"
         # TODO: Set Isaac Sim version, set to "" if not using Isaac Sim, set to "5.1.0" for the binary install, or set to "develop" to build upstream IsaacSim from source
         # ISAAC_SIM_VERSION: "5.1.0" # "develop"
         # TODO: Set Isaac Lab version or set to "" if not using Isaac Lab, set to "2.3.2" for the latest stable version, or set to "develop" to build upstream Isaac Lab from source
@@ -52,19 +52,19 @@ services:
         # TODO: Set to "YES" if using Isaac ROS or set to "" if not using Isaac ROS
         # ISAAC_ROS: ""
         # TODO: Set to "YES" if using Cartographer or set to "" if not using Cartographer
-        CARTOGRAPHER: "YES"
+        # CARTOGRAPHER: "YES"
         # TODO: Set to "YES" if using RTAB-Map or set to "" if not using RTAB-Map
         RTABMAP: "YES"
         # TODO: Set to "YES" if using RealSense or set to "" if not using RealSense
-        # REALSENSE: ""
+        REALSENSE: "YES"
         # TODO: Set to "YES" if using NVIDIA OpenUSD tools or set to "" if not using NVIDIA OpenUSD tools
         # NV_OPENUSD: ""
         # TODO: Set to "YES" if using Newton Tools or set to "" if not using Newton Tools
         # NEWTON_TOOLS: ""
         # TODO: Set to "YES" if using Claude Code CLI or set to "" if not using Claude Code CLI
-        # CLAUDE_CODE: ""
+        CLAUDE_CODE: "YES"
         # TODO: Set to "YES" if using Codex CLI or set to "" if not using Codex CLI
-        # CODEX: ""
+        CODEX: "YES"
         # TODO: Set to "YES" if using OpenCode CLI or set to "" if not using OpenCode CLI
         # OPENCODE: ""
       cache_from:
@@ -100,9 +100,12 @@ services:
       - RMW_IMPLEMENTATION=rmw_fastrtps_cpp
       # Set the ROS workspace path.
       - ROS2_WS=/home/user/stretch_main
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=all
       # TODO: Add more environment variables here.
     # Enable GPU support.
     # Reference: https://docs.docker.com/compose/gpu-support/
+    gpus: all
     deploy:
       resources:
         reservations:
@@ -112,7 +115,11 @@ services:
               capabilities: [ gpu ]
     # Enable NVIDIA runtime (for older docker setup).
     # Reference: https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/sample-workload.html
-    # runtime: nvidia
+    runtime: nvidia
+    ulimits:
+      nofile:
+        soft: 1048576
+        hard: 1048576
     volumes:
       # Mount local timezone into container.
       # Reference: https://stackoverflow.com/questions/57607381/how-do-i-change-timezone-in-a-docker-container

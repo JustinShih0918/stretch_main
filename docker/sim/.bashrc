@@ -9,6 +9,9 @@ if [ -d "$HOME/.local/bin" ] ; then
 fi
 
 # TODO: Environment independent commands here (e.g., set up symbolic link upon first launch)
+if [ -d /usr/local/cuda/lib64 ]; then
+    export LD_LIBRARY_PATH="/usr/local/cuda/lib64:${LD_LIBRARY_PATH}"
+fi
 # Source global ROS2 environment
 source /opt/ros/$ROS_DISTRO/setup.bash
 # Source colcon-argcomplete

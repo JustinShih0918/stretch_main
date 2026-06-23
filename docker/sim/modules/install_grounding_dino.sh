@@ -26,7 +26,11 @@ TORCH_INDEX="${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu121}"
 pip3 install --index-url "${TORCH_INDEX}" torch torchvision
 
 # Grounding DINO python package + runtime deps.
-pip3 install groundingdino-py transformers addict yapf timm
+# Pin transformers<5 (groundingdino uses BERT APIs removed in 5.x),
+# numpy<2 (system matplotlib was compiled against numpy 1.x ABI),
+# and Pillow>=9.1 (transformers 4.x needs PIL.Image.Resampling).
+pip3 install "Pillow>=9.1" "numpy<2" "transformers>=4.24,<5" \
+    groundingdino-py addict yapf timm
 
 # Fetch the SwinT-OGC checkpoint + config to a known location.
 WEIGHTS_DIR="${GROUNDING_DINO_DIR:-/opt/grounding_dino}"

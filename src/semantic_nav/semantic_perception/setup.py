@@ -28,6 +28,7 @@ setup(
             "grounding_dino_node = semantic_perception.grounding_dino_node:main",
             "static_region_publisher = "
             "semantic_perception.static_region_publisher:main",
+            "detection_viz_node = semantic_perception.detection_viz_node:main",
         ],
     },
 )

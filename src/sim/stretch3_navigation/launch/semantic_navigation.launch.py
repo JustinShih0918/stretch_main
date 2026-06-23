@@ -16,9 +16,10 @@ Prerequisites (provided by Isaac Sim): world->odom->base_link TF, /laser_scan,
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
-from launch.conditions import LaunchConfigurationEquals
+from launch.conditions import IfCondition, LaunchConfigurationEquals
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
 
 
@@ -38,12 +39,24 @@ ARGUMENTS = [
         description="Frame the projected ground polygons are published in.",
     ),
     DeclareLaunchArgument(
+        "region_hold_sec", default_value="-1.0",
+        description="How long to keep a detected region alive after the last "
+                    "detection (rides out close-range detector drop-outs). "
+                    "<0 = hold forever (once detected, never re-blocked); "
+                    "0 = no hold; >0 = seconds (sim time).",
+    ),
+    DeclareLaunchArgument(
         "depth_topic", default_value="/depth",
         description="Aligned depth image topic.",
     ),
     DeclareLaunchArgument(
         "camera_info_topic", default_value="/camera_info",
         description="Camera intrinsics topic.",
+    ),
+    DeclareLaunchArgument(
+        "detection_viz", default_value="true",
+        description="Run detection_viz_node: draws Grounding DINO boxes onto "
+                    "the RGB image -> /semantic_detection_viz (for RViz).",
     ),
     DeclareLaunchArgument(
         "rgb_topic", default_value="/rgb",
@@ -91,6 +104,8 @@ def generate_launch_description():
             "camera_info_topic": LaunchConfiguration("camera_info_topic"),
             "regions_topic": "/semantic_regions",
             "target_frame": LaunchConfiguration("target_frame"),
+            "region_hold_sec": ParameterValue(
+                LaunchConfiguration("region_hold_sec"), value_type=float),
         }],
         remappings=[("~/detection", "/semantic_detection")],
     )
@@ -120,9 +135,20 @@ def generate_launch_description():
         parameters=[{"use_sim_time": use_sim_time, "frame_id": "world"}],
     )
 
+    detection_viz = Node(
+        package="semantic_perception",
+        executable="detection_viz_node",
+        name="detection_viz_node",
+        output="screen",
+        condition=IfCondition(LaunchConfiguration("detection_viz")),
+        parameters=[{"use_sim_time": use_sim_time}],
+        remappings=[("/rgb", LaunchConfiguration("rgb_topic"))],
+    )
+
     ld = LaunchDescription(ARGUMENTS)
     ld.add_action(nav2)
     ld.add_action(projection)
     ld.add_action(dino)
     ld.add_action(static_pub)
+    ld.add_action(detection_viz)
     return ld

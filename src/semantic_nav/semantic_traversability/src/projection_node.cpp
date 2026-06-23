@@ -13,7 +13,9 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -49,6 +51,19 @@ public:
     min_depth_ = declare_parameter<double>("min_depth", 0.15);
     max_depth_ = declare_parameter<double>("max_depth", 6.0);
     transform_tolerance_ = declare_parameter<double>("transform_tolerance", 0.2);
+    // Keep a detected region alive (republished) after the last time it was
+    // seen, so a detector drop-out (e.g. when the robot is too close and the
+    // object fills the frame) does not wipe the costmap override.
+    //   <0  -> hold forever: once detected, the region is never expired.
+    //    0  -> no hold: publish only on detection.
+    //   >0  -> hold for this many seconds (sim time under use_sim_time).
+    region_hold_sec_ = declare_parameter<double>("region_hold_sec", -1.0);
+    // Below this footprint area (m^2) the detection is treated as a thin/vertical
+    // surface and widened to min_polygon_thickness (m) so it covers the cells
+    // the LiDAR marked LETHAL (a curtain/wall otherwise projects to a 1D line).
+    min_polygon_area_ = declare_parameter<double>("min_polygon_area", 0.02);
+    min_polygon_thickness_ =
+        declare_parameter<double>("min_polygon_thickness", 0.30);
 
     tf_buffer_ = std::make_shared<tf2_ros::Buffer>(get_clock());
     tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
@@ -77,11 +92,22 @@ public:
         create_publisher<btcpp_ros2_interfaces::msg::SemanticRegionArray>(
             regions_topic_, pub_qos);
 
+    if (region_hold_sec_ != 0.0) {
+      // Republish held regions at 5 Hz and expire them once age > hold. Use the
+      // node clock (sim time when use_sim_time=true) so the republish cadence
+      // and the age test live in the SAME time domain as the cached stamps:
+      // consistent under sim time-scaling and safe if the sim is paused.
+      publish_timer_ = rclcpp::create_timer(
+          this, get_clock(), rclcpp::Duration::from_seconds(0.2),
+          std::bind(&ProjectionNode::publishRegions, this));
+    }
+
     RCLCPP_INFO(get_logger(),
                 "semantic_projection_node up: depth=%s info=%s -> regions=%s "
-                "(target_frame=%s)",
+                "(target_frame=%s region_hold_sec=%.1f)",
                 depth_topic_.c_str(), camera_info_topic_.c_str(),
-                regions_topic_.c_str(), target_frame_.c_str());
+                regions_topic_.c_str(), target_frame_.c_str(),
+                region_hold_sec_);
   }
 
 private:
@@ -122,6 +148,73 @@ private:
     }
     hull.resize(k > 0 ? k - 1 : 0);
     return hull;
+  }
+
+  // Shoelace area of a polygon (absolute value).
+  static double polygonArea(const std::vector<std::array<double, 2>>& poly) {
+    if (poly.size() < 3) {
+      return 0.0;
+    }
+    double a = 0.0;
+    for (size_t i = 0, n = poly.size(); i < n; ++i) {
+      const auto& p = poly[i];
+      const auto& q = poly[(i + 1) % n];
+      a += p[0] * q[1] - q[0] * p[1];
+    }
+    return std::abs(a) * 0.5;
+  }
+
+  // Oriented bounding box of the points with a guaranteed minimum thickness on
+  // each axis. A thin vertical surface (curtain/wall) deprojects to a near-1D
+  // line whose convex hull is degenerate; this turns that line into a 2D
+  // rectangle wide enough to cover the LETHAL cells the LiDAR marked.
+  static std::vector<std::array<double, 2>> minThicknessBox(
+      const std::vector<std::array<double, 2>>& pts, double min_thickness) {
+    double cx = 0.0, cy = 0.0;
+    for (const auto& p : pts) {
+      cx += p[0];
+      cy += p[1];
+    }
+    cx /= pts.size();
+    cy /= pts.size();
+
+    double sxx = 0.0, sxy = 0.0, syy = 0.0;
+    for (const auto& p : pts) {
+      const double dx = p[0] - cx, dy = p[1] - cy;
+      sxx += dx * dx;
+      sxy += dx * dy;
+      syy += dy * dy;
+    }
+    // Principal axis (u) from the covariance; minor axis (v) is perpendicular.
+    const double theta = 0.5 * std::atan2(2.0 * sxy, sxx - syy);
+    const double ux = std::cos(theta), uy = std::sin(theta);
+    const double vx = -uy, vy = ux;
+
+    double umin = 1e9, umax = -1e9, vmin = 1e9, vmax = -1e9;
+    for (const auto& p : pts) {
+      const double du = (p[0] - cx) * ux + (p[1] - cy) * uy;
+      const double dv = (p[0] - cx) * vx + (p[1] - cy) * vy;
+      umin = std::min(umin, du);
+      umax = std::max(umax, du);
+      vmin = std::min(vmin, dv);
+      vmax = std::max(vmax, dv);
+    }
+    const double half = min_thickness * 0.5;
+    if (umax - umin < min_thickness) {
+      const double m = (umin + umax) * 0.5;
+      umin = m - half;
+      umax = m + half;
+    }
+    if (vmax - vmin < min_thickness) {
+      const double m = (vmin + vmax) * 0.5;
+      vmin = m - half;
+      vmax = m + half;
+    }
+    auto corner = [&](double du, double dv) -> std::array<double, 2> {
+      return {cx + du * ux + dv * vx, cy + du * uy + dv * vy};
+    };
+    return {corner(umin, vmin), corner(umax, vmin),
+            corner(umax, vmax), corner(umin, vmax)};
   }
 
   void onDetection(
@@ -192,7 +285,20 @@ private:
       }
     }
 
-    const auto hull = convexHull(std::move(ground_pts));
+    if (ground_pts.size() < 3) {
+      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000,
+                           "detection '%s' has too few valid depth points (%zu)",
+                           det->label.c_str(), ground_pts.size());
+      return;
+    }
+    // Convex hull for genuine 2D footprints (grass, rugs, ...). For a thin
+    // vertical surface (curtain/wall) the points collapse to a line and the
+    // hull is degenerate (~zero area); fall back to a minimum-thickness box so
+    // the region actually covers the LETHAL cells the LiDAR marked.
+    auto hull = convexHull(ground_pts);
+    if (polygonArea(hull) < min_polygon_area_) {
+      hull = minThicknessBox(ground_pts, min_polygon_thickness_);
+    }
     if (hull.size() < 3) {
       RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000,
                            "detection '%s' produced no valid ground polygon",
@@ -214,21 +320,69 @@ private:
       region.polygon.polygon.points.push_back(pt);
     }
 
+    // No hold: publish the single fresh region immediately (legacy behavior).
+    if (region_hold_sec_ == 0.0) {
+      btcpp_ros2_interfaces::msg::SemanticRegionArray out;
+      out.header.stamp = now();
+      out.header.frame_id = target_frame_;
+      out.regions.push_back(region);
+      regions_pub_->publish(out);
+      return;
+    }
+
+    // Hold enabled: cache by label (latest detection wins) and republish the
+    // surviving set. The timer keeps these flowing if detections stop.
+    {
+      std::lock_guard<std::mutex> lock(cache_mutex_);
+      region_cache_[region.label] = CachedRegion{region, now()};
+    }
+    publishRegions();
+  }
+
+  // Republish every cached region younger than region_hold_sec_, dropping the
+  // expired ones. Held regions are re-stamped to now(): they live in the stable
+  // target frame, so this keeps them inside the costmap's transform tolerance.
+  void publishRegions() {
+    const rclcpp::Time tnow = now();
     btcpp_ros2_interfaces::msg::SemanticRegionArray out;
-    out.header.stamp = now();
+    out.header.stamp = tnow;
     out.header.frame_id = target_frame_;
-    out.regions.push_back(region);
+    {
+      std::lock_guard<std::mutex> lock(cache_mutex_);
+      for (auto it = region_cache_.begin(); it != region_cache_.end();) {
+        const bool expired = region_hold_sec_ >= 0.0 &&
+                             (tnow - it->second.stamp).seconds() > region_hold_sec_;
+        if (expired) {
+          it = region_cache_.erase(it);
+        } else {
+          auto region = it->second.region;
+          region.polygon.header.stamp = tnow;
+          out.regions.push_back(std::move(region));
+          ++it;
+        }
+      }
+    }
     regions_pub_->publish(out);
   }
+
+  struct CachedRegion {
+    btcpp_ros2_interfaces::msg::SemanticRegion region;
+    rclcpp::Time stamp;
+  };
 
   std::string depth_topic_, camera_info_topic_, regions_topic_;
   std::string target_frame_, camera_optical_frame_;
   int pixel_step_;
-  double min_depth_, max_depth_, transform_tolerance_;
+  double min_depth_, max_depth_, transform_tolerance_, region_hold_sec_;
+  double min_polygon_area_, min_polygon_thickness_;
 
   std::mutex mutex_;
   sensor_msgs::msg::Image::SharedPtr latest_depth_;
   sensor_msgs::msg::CameraInfo::SharedPtr latest_info_;
+
+  std::mutex cache_mutex_;
+  std::map<std::string, CachedRegion> region_cache_;
+  rclcpp::TimerBase::SharedPtr publish_timer_;
 
   std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
   std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
