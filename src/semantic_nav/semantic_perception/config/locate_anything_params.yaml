@@ -1,0 +1,9 @@
+locate_anything_node:
+  ros__parameters:
+    prompt: ""
+    model_path: "/opt/locate_anything/LocateAnything-3B"
+    worker_path: "/home/user/stretch_main/src/models/Eagle/Embodied"
+    device: "cuda"
+    dtype: "bfloat16"
+    generation_mode: "hybrid"
+    max_new_tokens: 512

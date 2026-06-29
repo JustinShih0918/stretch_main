@@ -1,0 +1,8 @@
+grounding_dino_node:
+  ros__parameters:
+    prompt: ""
+    box_threshold: 0.35
+    text_threshold: 0.25
+    model_config: "/opt/grounding_dino/GroundingDINO_SwinT_OGC.py"
+    model_weights: "/opt/grounding_dino/groundingdino_swint_ogc.pth"
+    device: "cuda"

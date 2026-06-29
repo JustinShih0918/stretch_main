@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Draws Grounding DINO bounding boxes + labels onto the RGB image and
+"""Draws VLM bounding boxes + labels onto the RGB image and
 publishes the annotated result on /semantic_detection_viz for RViz."""
 
 import rclpy
+from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from sensor_msgs.msg import Image
 from btcpp_ros2_interfaces.msg import SemanticDetection2D
@@ -23,7 +24,8 @@ class DetectionVizNode(Node):
         self._bridge = CvBridge()
         self._lock = threading.Lock()
         self._latest_img = None
-        self._latest_det = None
+        self._detections = []
+        self._latest_stamp = None
 
         self.create_subscription(Image, "/rgb", self._on_image, 1)
         self.create_subscription(
@@ -31,7 +33,9 @@ class DetectionVizNode(Node):
         )
         self._pub = self.create_publisher(Image, "/semantic_detection_viz", 1)
         self.create_timer(0.1, self._publish)          # 10 Hz output
-        self.get_logger().info("detection_viz_node ready → /semantic_detection_viz")
+        self.get_logger().info(
+            "detection_viz_node ready → /semantic_detection_viz"
+        )
 
     def _on_image(self, msg: Image):
         with self._lock:
@@ -39,19 +43,23 @@ class DetectionVizNode(Node):
 
     def _on_det(self, msg: SemanticDetection2D):
         with self._lock:
-            self._latest_det = msg
+            stamp = (msg.header.stamp.sec, msg.header.stamp.nanosec)
+            if stamp != self._latest_stamp:
+                self._latest_stamp = stamp
+                self._detections = []
+            self._detections.append(msg)
 
     def _publish(self):
         with self._lock:
             img_msg = self._latest_img
-            det = self._latest_det
+            detections = list(self._detections)
         if img_msg is None:
             return
 
         frame = self._bridge.imgmsg_to_cv2(img_msg, desired_encoding="rgb8")
         frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
 
-        if det is not None:
+        for det in detections:
             col = _COL_TRAV if det.traversable else _COL_NTRAV
             x1, y1 = det.x, det.y
             x2, y2 = det.x + det.width, det.y + det.height
@@ -79,11 +87,15 @@ def main(args=None):
     node = DetectionVizNode()
     try:
         rclpy.spin(node)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
-        node.destroy_node()
-        rclpy.shutdown()
+        try:
+            node.destroy_node()
+        except KeyboardInterrupt:
+            pass
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == "__main__":

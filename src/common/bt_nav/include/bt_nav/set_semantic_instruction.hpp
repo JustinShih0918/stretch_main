@@ -11,7 +11,7 @@ namespace bt_nav {
 // LLM instruction-parser plugs in. Returns SUCCESS once published.
 //
 // Usage in XML (topic_name is required by RosTopicPubNode):
-//   <SetSemanticInstruction topic_name="/grounding_dino_node/instruction"
+//   <SetSemanticInstruction topic_name="/semantic_instruction"
 //                           instruction="curtain"/>
 class SetSemanticInstruction
     : public BT::RosTopicPubNode<std_msgs::msg::String> {

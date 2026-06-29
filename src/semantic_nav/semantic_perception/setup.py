@@ -19,13 +19,15 @@ setup(
     zip_safe=True,
     maintainer="justinshih",
     maintainer_email="justinshih@gapp.nthu.edu.tw",
-    description="Open-set VLM (Grounding DINO) perception for action-aware "
-                "navigation (arXiv:2310.08873).",
+    description="Open-set VLM perception for action-aware navigation "
+                "(arXiv:2310.08873).",
     license="MIT",
     tests_require=["pytest"],
     entry_points={
         "console_scripts": [
             "grounding_dino_node = semantic_perception.grounding_dino_node:main",
+            "locate_anything_node = "
+            "semantic_perception.locate_anything_node:main",
             "static_region_publisher = "
             "semantic_perception.static_region_publisher:main",
             "detection_viz_node = semantic_perception.detection_viz_node:main",

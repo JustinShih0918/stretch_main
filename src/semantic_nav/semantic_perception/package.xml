@@ -4,9 +4,9 @@
   <name>semantic_perception</name>
   <version>0.1.0</version>
   <description>
-    Open-set VLM (Grounding DINO) perception node producing action-aware
-    SemanticDetection2D messages, plus a static region publisher for testing.
-    Adapted from arXiv:2310.08873. Used in the Isaac Sim image.
+    Open-set VLM perception nodes for LocateAnything and Grounding DINO,
+    producing action-aware SemanticDetection2D messages, plus a static region
+    publisher for testing. Adapted from arXiv:2310.08873.
   </description>
 
   <maintainer email="justinshih@gapp.nthu.edu.tw">justinshih</maintainer>
@@ -20,8 +20,8 @@
   <exec_depend>geometry_msgs</exec_depend>
   <exec_depend>cv_bridge</exec_depend>
   <exec_depend>btcpp_ros2_interfaces</exec_depend>
-  <!-- torch + groundingdino are installed via
-       docker/sim/modules/install_grounding_dino.sh (not an apt/rosdep key). -->
+  <!-- Model runtimes are installed by docker/sim/modules/install_* scripts,
+       not through rosdep keys. -->
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

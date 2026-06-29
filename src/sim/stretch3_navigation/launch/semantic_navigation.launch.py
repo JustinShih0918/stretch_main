@@ -1,4 +1,6 @@
-"""Action-aware semantic navigation for Stretch3 in Isaac Sim (arXiv:2310.08873).
+"""Action-aware semantic navigation for Stretch3 in Isaac Sim.
+
+Implements the approach from arXiv:2310.08873.
 
 Brings up the Nav2 stack with the SemanticTraversabilityLayer plus the
 perception/projection pipeline that feeds it:
@@ -6,21 +8,45 @@ perception/projection pipeline that feeds it:
   Nav2 (nav2_params.yaml, semantic layer enabled)
   + projection_node  (detection + /depth + /camera_info -> /semantic_regions)
   + perception       (one of):
-      perception:=dino    -> Grounding DINO node  (needs model installed)
-      perception:=static  -> static_region_publisher (milestone-1 testing)
-      perception:=none    -> nothing (publish /semantic_regions yourself)
+      perception:=locate_anything -> LocateAnything node (default)
+      perception:=dino            -> Grounding DINO node
+      perception:=static          -> static_region_publisher
+      perception:=none            -> publish /semantic_regions yourself
 
 Prerequisites (provided by Isaac Sim): world->odom->base_link TF, /laser_scan,
 /odom, /rgb, /depth, /camera_info.
 """
 
+import os
+
+from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.actions import (
+    DeclareLaunchArgument,
+    IncludeLaunchDescription,
+    OpaqueFunction,
+)
 from launch.conditions import IfCondition, LaunchConfigurationEquals
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
+
+
+PERCEPTION_BACKENDS = {
+    "locate_anything": {
+        "package": "semantic_perception",
+        "executable": "locate_anything_node",
+        "name": "locate_anything_node",
+        "default_params": "locate_anything_params.yaml",
+    },
+    "dino": {
+        "package": "semantic_perception",
+        "executable": "grounding_dino_node",
+        "name": "grounding_dino_node",
+        "default_params": "grounding_dino_params.yaml",
+    },
+}
 
 
 ARGUMENTS = [
@@ -29,10 +55,10 @@ ARGUMENTS = [
         description="Enable use_sim_time for Isaac Sim",
     ),
     DeclareLaunchArgument(
-        "perception", default_value="dino",
-        choices=["dino", "static", "none"],
-        description="Semantic region source: Grounding DINO, static test "
-                    "publisher, or none.",
+        "perception", default_value="locate_anything",
+        choices=["locate_anything", "dino", "static", "none"],
+        description="Semantic region source: LocateAnything, Grounding DINO, "
+                    "static test publisher, or none.",
     ),
     DeclareLaunchArgument(
         "target_frame", default_value="odom",
@@ -55,22 +81,67 @@ ARGUMENTS = [
     ),
     DeclareLaunchArgument(
         "detection_viz", default_value="true",
-        description="Run detection_viz_node: draws Grounding DINO boxes onto "
-                    "the RGB image -> /semantic_detection_viz (for RViz).",
+        description="Draw VLM boxes onto the RGB image and publish "
+                    "/semantic_detection_viz for RViz.",
     ),
     DeclareLaunchArgument(
         "rgb_topic", default_value="/rgb",
         description="RGB image topic for the VLM.",
     ),
     DeclareLaunchArgument(
-        "model_config", default_value="",
-        description="Grounding DINO config .py path (perception:=dino).",
-    ),
-    DeclareLaunchArgument(
-        "model_weights", default_value="",
-        description="Grounding DINO weights .pth path (perception:=dino).",
+        "perception_params_file",
+        default_value="",
+        description="Optional YAML file for the selected perception backend. "
+                    "When empty, the backend default in semantic_perception/"
+                    "config is used.",
     ),
 ]
+
+
+def _default_perception_params_file(backend: str) -> str:
+    return os.path.join(
+        get_package_share_directory("semantic_perception"),
+        "config",
+        PERCEPTION_BACKENDS[backend]["default_params"],
+    )
+
+
+def _make_perception_node(context, *args, **kwargs):
+    backend_name = LaunchConfiguration("perception").perform(context)
+    backend = PERCEPTION_BACKENDS.get(backend_name)
+    if backend is None:
+        return []
+
+    params_file = LaunchConfiguration("perception_params_file").perform(
+        context
+    )
+    if not params_file:
+        params_file = _default_perception_params_file(backend_name)
+
+    targets_file = os.path.join(
+        get_package_share_directory("semantic_perception"),
+        "config",
+        "semantic_targets.yaml",
+    )
+
+    return [
+        Node(
+            package=backend["package"],
+            executable=backend["executable"],
+            name=backend["name"],
+            output="screen",
+            parameters=[
+                params_file,
+                {
+                    "use_sim_time": LaunchConfiguration("use_sim_time"),
+                    "rgb_topic": LaunchConfiguration("rgb_topic"),
+                    "detection_topic": "/semantic_detection",
+                    "targets_file": targets_file,
+                },
+            ],
+            remappings=[("~/instruction", "/semantic_instruction")],
+        )
+    ]
 
 
 def generate_launch_description():
@@ -79,13 +150,14 @@ def generate_launch_description():
     nav2_params_file = PathJoinSubstitution(
         [FindPackageShare("stretch3_navigation"), "config", "nav2_params.yaml"]
     )
-    targets_file = PathJoinSubstitution(
-        [FindPackageShare("semantic_perception"), "config", "semantic_targets.yaml"]
-    )
 
     nav2 = IncludeLaunchDescription(
         PathJoinSubstitution(
-            [FindPackageShare("nav2_bringup"), "launch", "navigation_launch.py"]
+            [
+                FindPackageShare("nav2_bringup"),
+                "launch",
+                "navigation_launch.py",
+            ]
         ),
         launch_arguments={
             "params_file": nav2_params_file,
@@ -110,21 +182,7 @@ def generate_launch_description():
         remappings=[("~/detection", "/semantic_detection")],
     )
 
-    dino = Node(
-        package="semantic_perception",
-        executable="grounding_dino_node",
-        name="grounding_dino_node",
-        output="screen",
-        condition=LaunchConfigurationEquals("perception", "dino"),
-        parameters=[{
-            "use_sim_time": use_sim_time,
-            "rgb_topic": LaunchConfiguration("rgb_topic"),
-            "detection_topic": "/semantic_detection",
-            "targets_file": targets_file,
-            "model_config": LaunchConfiguration("model_config"),
-            "model_weights": LaunchConfiguration("model_weights"),
-        }],
-    )
+    perception_node = OpaqueFunction(function=_make_perception_node)
 
     static_pub = Node(
         package="semantic_perception",
@@ -148,7 +206,7 @@ def generate_launch_description():
     ld = LaunchDescription(ARGUMENTS)
     ld.add_action(nav2)
     ld.add_action(projection)
-    ld.add_action(dino)
+    ld.add_action(perception_node)
     ld.add_action(static_pub)
     ld.add_action(detection_viz)
     return ld
