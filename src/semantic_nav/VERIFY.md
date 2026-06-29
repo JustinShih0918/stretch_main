@@ -95,7 +95,25 @@ costmap update cycle. ✓
 
 ## Still to verify
 
-### Step 5 — Full VLM pipeline (Grounding DINO)
+### Step 5 — Full VLM pipeline
+
+LocateAnything is the default backend and is enabled by the sim Compose build:
+
+```bash
+docker compose -f docker/sim/compose.yaml build
+ros2 launch stretch3_navigation semantic_navigation.launch.py
+```
+
+The cached checkpoint should exist at
+`/opt/locate_anything/LocateAnything-3B`. To validate the upstream worker
+directly:
+
+```bash
+cd src/models/Eagle/Embodied
+LOCATE_ANYTHING_MODEL_PATH=/opt/locate_anything/LocateAnything-3B python3 test.py
+```
+
+Grounding DINO remains available as an optional backend:
 
 **Blocker:** Image was not built with `GROUNDING_DINO=YES`; weights are absent
 at `/opt/grounding_dino/`.
@@ -106,10 +124,13 @@ docker compose -f docker/sim/compose.yaml build --build-arg GROUNDING_DINO=YES
 
 # Then inside container:
 ros2 launch stretch3_navigation semantic_navigation.launch.py \
-  perception:=dino \
-  model_config:=/opt/grounding_dino/GroundingDINO_SwinT_OGC.py \
-  model_weights:=/opt/grounding_dino/groundingdino_swint_ogc.pth
+  perception:=dino
 ```
+
+Grounding DINO model paths and thresholds are configured in
+`semantic_perception/config/grounding_dino_params.yaml`. Use
+`perception_params_file:=/path/to/custom_grounding_dino_params.yaml` for an
+experiment-specific override.
 
 **Checks to run (in order — isolates failure):**
 1. `ros2 topic hz /rgb /depth /camera_info` — all flowing?
@@ -129,11 +150,11 @@ ros2 topic pub --once /start std_msgs/Empty "{}"
 ```
 
 **Expect:** `SetSemanticInstruction` publishes `curtain` to
-`/grounding_dino_node/instruction`, then `NavigateToPose` navigates to
+`/semantic_instruction`, then `NavigateToPose` navigates to
 `(3.0, 0.0)`. Try switching prompt live:
 
 ```bash
-ros2 topic pub --once /grounding_dino_node/instruction std_msgs/String "{data: 'grass'}"
+ros2 topic pub --once /semantic_instruction std_msgs/String "{data: 'grass'}"
 ```
 
 Not yet tested (requires VLM or a stub).

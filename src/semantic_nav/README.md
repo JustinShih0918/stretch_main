@@ -13,7 +13,7 @@ the **deploy** image for the real robot later (see *Real robot* below).
 ## Data flow
 
 ```
-/rgb ─► grounding_dino_node ─► /semantic_detection (SemanticDetection2D: bbox+label+traversable)
+/rgb ─► VLM perception node ─► /semantic_detection (SemanticDetection2D: bbox+label+traversable)
                                       │
 /depth + /camera_info + TF ─► projection_node ─► /semantic_regions (SemanticRegionArray: ground polygons)
                                       │
@@ -44,6 +44,12 @@ camera-derived polygon of a class flagged `traversable`.
   `target_frame`, `camera_optical_frame`, `pixel_step`, `min/max_depth`.
 
 ### `semantic_perception/` (Python, `ament_python`) — sim / off-board
+- **`locate_anything_node`**: default open-set VLM backend. Runs
+  `nvidia/LocateAnything-3B`, parses generated labeled boxes, and publishes the
+  existing `SemanticDetection2D` contract. Its checkpoint is cached at
+  `/opt/locate_anything/LocateAnything-3B` when the sim image is built with
+  `LOCATE_ANYTHING=YES`. Generated boxes have synthetic confidence `1.0`
+  because LocateAnything does not emit calibrated detector scores.
 - **`grounding_dino_node`**: open-set VLM. Builds its prompt from
   `config/semantic_targets.yaml` (or `~/instruction`), runs Grounding DINO on
   `/rgb`, publishes one `SemanticDetection2D` per box with the static
@@ -60,7 +66,8 @@ Added to the vendored `src/common/btcpp_ros2_interfaces/`:
 
 ## Run (Isaac Sim)
 
-Build the sim image with the VLM, then inside the container:
+Build the sim image (Compose enables LocateAnything by default), then inside
+the container:
 
 ```bash
 # Milestone 1 — no ML: prove the layer + planner with a static polygon.
@@ -68,15 +75,22 @@ ros2 launch stretch3_navigation semantic_navigation.launch.py perception:=static
 #   -> watch the curtain cells clear in RViz; send a goal behind it; a path
 #      appears. Set semantic_traversability_layer.enabled:=False to see it fail.
 
-# Full pipeline — Grounding DINO.
+# Full pipeline — LocateAnything (default).
+ros2 launch stretch3_navigation semantic_navigation.launch.py
+
+# Optional Grounding DINO backend.
 ros2 launch stretch3_navigation semantic_navigation.launch.py \
-    perception:=dino \
-    model_config:=/opt/grounding_dino/GroundingDINO_SwinT_OGC.py \
-    model_weights:=/opt/grounding_dino/groundingdino_swint_ogc.pth
+    perception:=dino
 ```
 
-Switch the active landmark from a behavior tree with the `SetSemanticInstruction`
-node (see `src/common/bt_engine/bt/semantic_tree.xml`).
+Backend-specific model parameters live in
+`semantic_perception/config/locate_anything_params.yaml` and
+`semantic_perception/config/grounding_dino_params.yaml`. To test a local
+variant without editing the package config, pass
+`perception_params_file:=/path/to/custom_backend_params.yaml`.
+
+Switch the active landmark by publishing to `/semantic_instruction`, including
+through the `SetSemanticInstruction` behavior-tree node.
 
 ### Tuning note
 The default planner/controller (NavFn + DWB) are intentionally left unchanged.
@@ -100,7 +114,7 @@ reusable core. To bring this up on the real robot:
    do **not** edit the vendored file in place). The on-robot stack localizes in
    `map` (AMCL) rather than sim's ground-truth `world`; set `target_frame`
    accordingly (`map` or `odom`).
-3. **Perception**: either run our `grounding_dino_node` against the robot's
+3. **Perception**: run either VLM node against the robot's
    RealSense D435i (already in the Stretch URDF) — likely **off-board** given
    on-robot GPU limits — or consume detections from
    [`hello-robot/stretch_ai`](https://github.com/hello-robot/stretch_ai) and adapt

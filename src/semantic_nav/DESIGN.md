@@ -16,7 +16,7 @@ The robot should plan a path **through** physically-traversable obstacles
 | Paper element | Our implementation |
 |---|---|
 | LLM parses instruction → `{landmark, action-aware attribute}` | **Static config** `semantic_targets.yaml` (`curtain: traversable`). `SetSemanticInstruction` BT node + `~/instruction` topic are the hook where an LLM plugs in later. |
-| VLM (Grounding DINO) → landmark bounding boxes | `grounding_dino_node` (Python), open-set, text-promptable. |
+| VLM → landmark bounding boxes | `locate_anything_node` (default) or `grounding_dino_node`, open-set and text-promptable. |
 | LiDAR points projected into image, segmented traversable/untraversable | We **don't** segment the cloud. RGB-D `projection_node` turns the detection into a ground polygon; the costmap layer clears the LiDAR-marked cells inside it. |
 | Action-aware costmap (traversable pts → cost 0) | `SemanticTraversabilityLayer` overwrites LETHAL→`traversable_cost` (default 0) inside the polygon. |
 | A* finds a feasible path | Unchanged Nav2 planner (NavfnPlanner). |
@@ -77,18 +77,26 @@ changes to the sensor pipeline, and is reusable across sim and the real robot.
 
 ## 3. Component internals
 
-### 3.1 `grounding_dino_node` (semantic_perception)
+### 3.1 VLM nodes (`semantic_perception`)
+- `locate_anything_node` is the default launch backend. It loads the cached
+  `nvidia/LocateAnything-3B` checkpoint, detects configured target categories,
+  parses `<ref>label</ref><box>...</box>` output, and publishes confidence
+  `1.0` because the generated format has no detector score.
+- Both learned backends subscribe to private `~/instruction`; the semantic
+  navigation launch remaps this to the backend-independent
+  `/semantic_instruction` topic.
 - Builds the caption from `semantic_targets.yaml` keys joined by `" . "`
-  (Grounding DINO format), or from `~/instruction` at runtime.
+  for Grounding DINO, or uses the target list for LocateAnything.
 - For each predicted box (normalized `cx,cy,w,h`), converts to pixel
   `x,y,width,height`, matches the phrase back to a known label (substring), and
   sets `traversable` from the config map.
 - **Lazy import**: torch / groundingdino / cv_bridge are imported on first image.
   If unavailable, it logs an error and publishes nothing — the rest of the
   pipeline still runs (use `static_region_publisher` instead).
-- Key params: `rgb_topic`, `detection_topic`, `targets_file`, `prompt`,
-  `box_threshold` (0.35), `text_threshold` (0.25), `model_config`,
-  `model_weights`, `device` (cuda).
+- Common wiring params (`rgb_topic`, `detection_topic`, `targets_file`) are set
+  by `semantic_navigation.launch.py`. Backend/model params are loaded from YAML:
+  `locate_anything_params.yaml` or `grounding_dino_params.yaml`. Use the launch
+  argument `perception_params_file:=...` to point at a custom backend config.
 
 ### 3.2 `projection_node` (semantic_traversability)
 - Caches latest `/depth` + `/camera_info`; on each detection:
@@ -230,9 +238,7 @@ ros2 action send_goal /navigate_to_pose nav2_msgs/action/NavigateToPose \
 ### Step 5 — Milestone 2: full VLM pipeline
 ```bash
 ros2 launch stretch3_navigation semantic_navigation.launch.py \
-  perception:=dino \
-  model_config:=/opt/grounding_dino/GroundingDINO_SwinT_OGC.py \
-  model_weights:=/opt/grounding_dino/groundingdino_swint_ogc.pth
+  perception:=dino
 ```
 **Checks (in order — isolates failures):**
 1. `ros2 topic hz /rgb /depth /camera_info` → all flowing.
@@ -249,10 +255,10 @@ ros2 run bt_engine bt_engine --ros-args \
 ros2 topic pub --once /start std_msgs/Empty "{}"
 ```
 **Expect:** `SetSemanticInstruction` publishes `curtain` to
-`/grounding_dino_node/instruction`, then `NavigateToPose` runs. Try switching the
+`/semantic_instruction`, then `NavigateToPose` runs. Try switching the
 prompt live:
 ```bash
-ros2 topic pub --once /grounding_dino_node/instruction std_msgs/String "{data: 'grass'}"
+ros2 topic pub --once /semantic_instruction std_msgs/String "{data: 'grass'}"
 ```
 
 ### Step 7 — Cost-value behavior (optional)
