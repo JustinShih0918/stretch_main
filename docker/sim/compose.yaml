@@ -57,6 +57,8 @@ services:
         RTABMAP: "YES"
         # TODO: Set to "YES" if using RealSense or set to "" if not using RealSense
         REALSENSE: "YES"
+        # LocateAnything is the default semantic-navigation perception backend.
+        LOCATE_ANYTHING: "YES"
         # TODO: Set to "YES" if using NVIDIA OpenUSD tools or set to "" if not using NVIDIA OpenUSD tools
         # NV_OPENUSD: ""
         # TODO: Set to "YES" if using Newton Tools or set to "" if not using Newton Tools

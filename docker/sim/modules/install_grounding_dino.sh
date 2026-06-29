@@ -44,4 +44,4 @@ wget -q -O "${WEIGHTS_DIR}/GroundingDINO_SwinT_OGC.py" \
 echo "Grounding DINO installed:"
 echo "  model_config:  ${WEIGHTS_DIR}/GroundingDINO_SwinT_OGC.py"
 echo "  model_weights: ${WEIGHTS_DIR}/groundingdino_swint_ogc.pth"
-echo "Pass these to grounding_dino_node via the launch model_config/model_weights args."
+echo "These paths are the defaults in semantic_perception/config/grounding_dino_params.yaml."

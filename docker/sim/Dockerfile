@@ -195,6 +195,16 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=private \
     --mount=type=cache,target=/home/$USERNAME/.cache/pip,sharing=private,uid=$USER_UID,gid=$USER_UID \
     /tmp/install_grounding_dino.sh && rm /tmp/install_grounding_dino.sh
 
+# LocateAnything VLM for action-aware semantic perception.
+# Gated behind LOCATE_ANYTHING=YES (heavy: torch + cached checkpoint).
+ARG LOCATE_ANYTHING=""
+COPY --chown=$USERNAME:$USERNAME \
+     modules/install_locate_anything.sh /tmp/install_locate_anything.sh
+RUN --mount=type=cache,target=/var/cache/apt,sharing=private \
+    --mount=type=cache,target=/home/$USERNAME/.cache/pip,sharing=private,uid=$USER_UID,gid=$USER_UID \
+    --mount=type=cache,target=/home/$USERNAME/.cache/huggingface,sharing=private,uid=$USER_UID,gid=$USER_UID \
+    /tmp/install_locate_anything.sh && rm /tmp/install_locate_anything.sh
+
 COPY --chown=$USERNAME:$USERNAME \
      .bashrc /home/$USERNAME/.bashrc
 # TODO: Copy additional files here
