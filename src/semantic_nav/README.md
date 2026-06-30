@@ -42,6 +42,11 @@ camera-derived polygon of a class flagged `traversable`.
   publishes the convex-hull ground footprint. Handles `32FC1`(m) and `16UC1`(mm)
   depth. Params: `depth_topic`, `camera_info_topic`, `regions_topic`,
   `target_frame`, `camera_optical_frame`, `pixel_step`, `min/max_depth`.
+  It also includes confirmed-region memory for close-range detector drop-outs:
+  after `region_confirmation_hits` spatially consistent detections within
+  `region_match_distance_m`, the region is republished for `region_hold_sec`
+  seconds (`<0` holds forever). Unconfirmed candidates expire after
+  `pending_region_ttl_sec`, so one-frame false positives are not held.
 
 ### `semantic_perception/` (Python, `ament_python`) — sim / off-board
 - **`locate_anything_node`**: default open-set VLM backend. Runs
@@ -77,6 +82,10 @@ ros2 launch stretch3_navigation semantic_navigation.launch.py perception:=static
 
 # Full pipeline — LocateAnything (default).
 ros2 launch stretch3_navigation semantic_navigation.launch.py
+
+# Require 3 matching detections before holding a region forever.
+ros2 launch stretch3_navigation semantic_navigation.launch.py \
+    region_confirmation_hits:=3 region_hold_sec:=-1.0
 
 # Optional Grounding DINO backend.
 ros2 launch stretch3_navigation semantic_navigation.launch.py \
