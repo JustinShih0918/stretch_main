@@ -58,6 +58,14 @@ public:
     //    0  -> no hold: publish only on detection.
     //   >0  -> hold for this many seconds (sim time under use_sim_time).
     region_hold_sec_ = declare_parameter<double>("region_hold_sec", -1.0);
+    // Avoid memorizing one-frame false positives. A region is promoted to the
+    // held cache only after this many spatially consistent detections.
+    region_confirmation_hits_ =
+        declare_parameter<int>("region_confirmation_hits", 2);
+    region_match_distance_m_ =
+        declare_parameter<double>("region_match_distance_m", 0.60);
+    pending_region_ttl_sec_ =
+        declare_parameter<double>("pending_region_ttl_sec", 5.0);
     // Below this footprint area (m^2) the detection is treated as a thin/vertical
     // surface and widened to min_polygon_thickness (m) so it covers the cells
     // the LiDAR marked LETHAL (a curtain/wall otherwise projects to a 1D line).
@@ -104,10 +112,12 @@ public:
 
     RCLCPP_INFO(get_logger(),
                 "semantic_projection_node up: depth=%s info=%s -> regions=%s "
-                "(target_frame=%s region_hold_sec=%.1f)",
+                "(target_frame=%s region_hold_sec=%.1f confirmation_hits=%d "
+                "match_distance=%.2f)",
                 depth_topic_.c_str(), camera_info_topic_.c_str(),
                 regions_topic_.c_str(), target_frame_.c_str(),
-                region_hold_sec_);
+                region_hold_sec_, region_confirmation_hits_,
+                region_match_distance_m_);
   }
 
 private:
@@ -330,13 +340,75 @@ private:
       return;
     }
 
-    // Hold enabled: cache by label (latest detection wins) and republish the
-    // surviving set. The timer keeps these flowing if detections stop.
+    // Hold enabled: promote only repeated, spatially consistent detections to
+    // persistent memory. This prevents one-frame false positives from clearing
+    // cost forever, while confirmed objects survive close-range detector dropouts.
     {
       std::lock_guard<std::mutex> lock(cache_mutex_);
-      region_cache_[region.label] = CachedRegion{region, now()};
+      updateRegionMemory(region, now());
     }
     publishRegions();
+  }
+
+  static std::array<double, 2> polygonCentroid(
+      const btcpp_ros2_interfaces::msg::SemanticRegion& region) {
+    double x = 0.0;
+    double y = 0.0;
+    const auto& points = region.polygon.polygon.points;
+    for (const auto& p : points) {
+      x += p.x;
+      y += p.y;
+    }
+    const double n = static_cast<double>(points.size());
+    return {x / n, y / n};
+  }
+
+  bool sameObject(const std::array<double, 2>& a,
+                  const std::array<double, 2>& b) const {
+    const double dx = a[0] - b[0];
+    const double dy = a[1] - b[1];
+    return dx * dx + dy * dy <=
+           region_match_distance_m_ * region_match_distance_m_;
+  }
+
+  void updateRegionMemory(
+      const btcpp_ros2_interfaces::msg::SemanticRegion& region,
+      const rclcpp::Time& stamp) {
+    const auto centroid = polygonCentroid(region);
+
+    auto confirmed = region_cache_.find(region.label);
+    if (confirmed != region_cache_.end() &&
+        sameObject(centroid, confirmed->second.centroid)) {
+      confirmed->second.region = region;
+      confirmed->second.stamp = stamp;
+      confirmed->second.centroid = centroid;
+      confirmed->second.hits++;
+      return;
+    }
+
+    const int required_hits = std::max(1, region_confirmation_hits_);
+    auto pending = pending_regions_.find(region.label);
+    if (pending == pending_regions_.end() ||
+        !sameObject(centroid, pending->second.centroid) ||
+        (pending_region_ttl_sec_ >= 0.0 &&
+         (stamp - pending->second.stamp).seconds() > pending_region_ttl_sec_)) {
+      pending_regions_[region.label] =
+          CachedRegion{region, stamp, centroid, 1};
+      pending = pending_regions_.find(region.label);
+    } else {
+      pending->second.region = region;
+      pending->second.stamp = stamp;
+      pending->second.centroid = centroid;
+      pending->second.hits++;
+    }
+
+    if (pending->second.hits >= required_hits) {
+      region_cache_[region.label] = pending->second;
+      pending_regions_.erase(pending);
+      RCLCPP_INFO(get_logger(),
+                  "confirmed semantic region '%s' after %d detections",
+                  region.label.c_str(), required_hits);
+    }
   }
 
   // Republish every cached region younger than region_hold_sec_, dropping the
@@ -349,6 +421,16 @@ private:
     out.header.frame_id = target_frame_;
     {
       std::lock_guard<std::mutex> lock(cache_mutex_);
+      for (auto it = pending_regions_.begin(); it != pending_regions_.end();) {
+        const bool expired =
+            pending_region_ttl_sec_ >= 0.0 &&
+            (tnow - it->second.stamp).seconds() > pending_region_ttl_sec_;
+        if (expired) {
+          it = pending_regions_.erase(it);
+        } else {
+          ++it;
+        }
+      }
       for (auto it = region_cache_.begin(); it != region_cache_.end();) {
         const bool expired = region_hold_sec_ >= 0.0 &&
                              (tnow - it->second.stamp).seconds() > region_hold_sec_;
@@ -368,13 +450,16 @@ private:
   struct CachedRegion {
     btcpp_ros2_interfaces::msg::SemanticRegion region;
     rclcpp::Time stamp;
+    std::array<double, 2> centroid;
+    int hits{0};
   };
 
   std::string depth_topic_, camera_info_topic_, regions_topic_;
   std::string target_frame_, camera_optical_frame_;
-  int pixel_step_;
+  int pixel_step_, region_confirmation_hits_;
   double min_depth_, max_depth_, transform_tolerance_, region_hold_sec_;
   double min_polygon_area_, min_polygon_thickness_;
+  double region_match_distance_m_, pending_region_ttl_sec_;
 
   std::mutex mutex_;
   sensor_msgs::msg::Image::SharedPtr latest_depth_;
@@ -382,6 +467,7 @@ private:
 
   std::mutex cache_mutex_;
   std::map<std::string, CachedRegion> region_cache_;
+  std::map<std::string, CachedRegion> pending_regions_;
   rclcpp::TimerBase::SharedPtr publish_timer_;
 
   std::shared_ptr<tf2_ros::Buffer> tf_buffer_;

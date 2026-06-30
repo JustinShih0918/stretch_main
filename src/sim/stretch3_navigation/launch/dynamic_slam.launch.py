@@ -1,20 +1,14 @@
-"""Action-aware semantic navigation for Stretch3 in Isaac Sim.
+"""Dynamic RTAB-Map SLAM pipeline for Stretch3 in Isaac Sim.
 
-Implements the approach from arXiv:2310.08873.
+Pipeline:
+  RTAB-Map raw occupancy grid     -> /rtabmap/map
+  semantic perception/projection  -> /semantic_regions
+  dynamic_map_updater_node        -> /map
+  Nav2 global StaticLayer         <- /map
 
-Brings up the Nav2 stack with the SemanticTraversabilityLayer plus the
-perception/projection pipeline that feeds it:
-
-  Nav2 (nav2_params.yaml, semantic layer enabled)
-  + projection_node  (detection + /depth + /camera_info -> /semantic_regions)
-  + perception       (one of):
-      perception:=locate_anything -> LocateAnything node (default)
-      perception:=dino            -> Grounding DINO node
-      perception:=static          -> static_region_publisher
-      perception:=none            -> publish /semantic_regions yourself
-
-Prerequisites (provided by Isaac Sim): world->odom->base_link TF, /laser_scan,
-/odom, /rgb, /depth, /camera_info.
+The updater only clears stale occupied cells in /map after repeated LiDAR
+free-space evidence through configured dynamic-object semantic regions. The
+local costmap still uses live /laser_scan obstacle marking for collision safety.
 """
 
 import os
@@ -51,64 +45,73 @@ PERCEPTION_BACKENDS = {
 
 ARGUMENTS = [
     DeclareLaunchArgument(
-        "use_sim_time", default_value="True",
-        description="Enable use_sim_time for Isaac Sim",
+        "use_sim_time",
+        default_value="True",
+        description="Enable use_sim_time for Isaac Sim.",
     ),
     DeclareLaunchArgument(
-        "perception", default_value="locate_anything",
+        "perception",
+        default_value="locate_anything",
         choices=["locate_anything", "dino", "static", "none"],
-        description="Semantic region source: LocateAnything, Grounding DINO, "
-                    "static test publisher, or none.",
+        description="Semantic region source.",
     ),
     DeclareLaunchArgument(
-        "target_frame", default_value="odom",
-        description="Frame the projected ground polygons are published in.",
+        "target_frame",
+        default_value="map",
+        description="Frame for projected semantic ground polygons.",
     ),
     DeclareLaunchArgument(
-        "region_hold_sec", default_value="-1.0",
-        description="How long to keep a detected region alive after the last "
-                    "confirmed detection (rides out close-range detector "
-                    "drop-outs). <0 = hold forever; 0 = no hold; >0 = seconds "
-                    "(sim time).",
+        "region_hold_sec",
+        default_value="-1.0",
+        description="How long to keep confirmed regions alive; <0 holds forever.",
     ),
     DeclareLaunchArgument(
-        "region_confirmation_hits", default_value="2",
+        "region_confirmation_hits",
+        default_value="2",
         description="Number of spatially consistent detections required before "
                     "a semantic region is held in memory.",
     ),
     DeclareLaunchArgument(
-        "region_match_distance_m", default_value="0.60",
+        "region_match_distance_m",
+        default_value="0.60",
         description="Maximum centroid distance for detections to count as the "
                     "same semantic region.",
     ),
     DeclareLaunchArgument(
-        "pending_region_ttl_sec", default_value="5.0",
+        "pending_region_ttl_sec",
+        default_value="5.0",
         description="How long an unconfirmed semantic region candidate may wait "
                     "for another matching detection.",
     ),
     DeclareLaunchArgument(
-        "depth_topic", default_value="/depth",
+        "depth_topic",
+        default_value="/depth",
         description="Aligned depth image topic.",
     ),
     DeclareLaunchArgument(
-        "camera_info_topic", default_value="/camera_info",
+        "camera_info_topic",
+        default_value="/camera_info",
         description="Camera intrinsics topic.",
     ),
     DeclareLaunchArgument(
-        "detection_viz", default_value="true",
-        description="Draw VLM boxes onto the RGB image and publish "
-                    "/semantic_detection_viz for RViz.",
+        "rgb_topic",
+        default_value="/rgb",
+        description="RGB image topic for perception.",
     ),
     DeclareLaunchArgument(
-        "rgb_topic", default_value="/rgb",
-        description="RGB image topic for the VLM.",
+        "scan_topic",
+        default_value="/laser_scan",
+        description="LaserScan topic for RTAB-Map, Nav2, and the updater.",
+    ),
+    DeclareLaunchArgument(
+        "detection_viz",
+        default_value="true",
+        description="Publish /semantic_detection_viz.",
     ),
     DeclareLaunchArgument(
         "perception_params_file",
         default_value="",
-        description="Optional YAML file for the selected perception backend. "
-                    "When empty, the backend default in semantic_perception/"
-                    "config is used.",
+        description="Optional YAML file for the selected perception backend.",
     ),
 ]
 
@@ -161,18 +164,69 @@ def _make_perception_node(context, *args, **kwargs):
 
 def generate_launch_description():
     use_sim_time = LaunchConfiguration("use_sim_time")
+    scan_topic = LaunchConfiguration("scan_topic")
 
+    rtabmap_settings = PathJoinSubstitution(
+        [FindPackageShare("stretch3_navigation"), "config", "rtabmap.yaml"]
+    )
     nav2_params_file = PathJoinSubstitution(
-        [FindPackageShare("stretch3_navigation"), "config", "nav2_params.yaml"]
+        [
+            FindPackageShare("stretch3_navigation"),
+            "config",
+            "nav2_dynamic_slam_params.yaml",
+        ]
+    )
+    dynamic_map_params_file = PathJoinSubstitution(
+        [
+            FindPackageShare("stretch3_navigation"),
+            "config",
+            "dynamic_map_updater.yaml",
+        ]
+    )
+
+    remappings = [
+        ("rgb/image", "/rgb"),
+        ("rgb/camera_info", "/camera_info"),
+        ("depth/image", "/depth"),
+        ("scan", scan_topic),
+        ("map", "/rtabmap/map"),
+    ]
+
+    rtabmap_slam = Node(
+        package="rtabmap_slam",
+        executable="rtabmap",
+        name="rtabmap",
+        output="screen",
+        parameters=[rtabmap_settings, {"use_sim_time": use_sim_time}],
+        remappings=remappings,
+        arguments=["-d"],
+    )
+
+    static_tf_world_to_map = Node(
+        package="tf2_ros",
+        executable="static_transform_publisher",
+        name="world_to_map_static_tf",
+        arguments=["0", "0", "0", "0", "0", "0", "world", "map"],
+        parameters=[{"use_sim_time": use_sim_time}],
+    )
+
+    dynamic_map_updater = Node(
+        package="dynamic_mapping",
+        executable="dynamic_map_updater_node",
+        name="dynamic_map_updater_node",
+        output="screen",
+        parameters=[
+            dynamic_map_params_file,
+            {
+                "use_sim_time": use_sim_time,
+                "scan_topic": scan_topic,
+            },
+        ],
     )
 
     nav2 = IncludeLaunchDescription(
         PathJoinSubstitution(
-            [
-                FindPackageShare("nav2_bringup"),
-                "launch",
-                "navigation_launch.py",
-            ]
+            [FindPackageShare("nav2_bringup"), "launch", "navigation_launch.py"]
         ),
         launch_arguments={
             "params_file": nav2_params_file,
@@ -211,7 +265,7 @@ def generate_launch_description():
         name="static_region_publisher",
         output="screen",
         condition=LaunchConfigurationEquals("perception", "static"),
-        parameters=[{"use_sim_time": use_sim_time, "frame_id": "world"}],
+        parameters=[{"use_sim_time": use_sim_time, "frame_id": "map"}],
     )
 
     detection_viz = Node(
@@ -225,9 +279,12 @@ def generate_launch_description():
     )
 
     ld = LaunchDescription(ARGUMENTS)
-    ld.add_action(nav2)
+    ld.add_action(rtabmap_slam)
+    ld.add_action(static_tf_world_to_map)
     ld.add_action(projection)
     ld.add_action(perception_node)
     ld.add_action(static_pub)
     ld.add_action(detection_viz)
+    ld.add_action(dynamic_map_updater)
+    ld.add_action(nav2)
     return ld

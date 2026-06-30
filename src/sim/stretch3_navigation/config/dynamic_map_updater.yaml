@@ -1,0 +1,39 @@
+dynamic_map_updater_node:
+  ros__parameters:
+    use_sim_time: True
+
+    raw_map_topic: /rtabmap/map
+    scan_topic: /laser_scan
+    semantic_regions_topic: /semantic_regions
+    output_map_topic: /map
+    cleared_cells_topic: /dynamic_map/cleared_cells
+    change_events_topic: /dynamic_map/change_events
+
+    map_frame: map
+    base_frame: base_link
+    transform_tolerance: 0.2
+    occupied_threshold: 65
+
+    dynamic_labels:
+      - person
+      - chair
+      - cart
+      - box
+
+    # Khronos-inspired conservative persistence for traversable obstacles:
+    # semantic regions propose candidates, but the cleaned /map only clears
+    # occupied cells after repeated observations from distinct robot poses.
+    enable_traversable_persistence: True
+    traversable_labels:
+      - curtain
+      - grass
+    min_traversable_observations: 4
+    min_traversable_distinct_poses: 3
+    traversable_min_pose_separation_m: 0.25
+    traversable_confidence_radius_m: 0.10
+
+    min_absence_hits: 5
+    min_distinct_poses: 3
+    min_pose_separation_m: 0.25
+    ray_pass_through_margin_m: 0.15
+    publish_change_events: True

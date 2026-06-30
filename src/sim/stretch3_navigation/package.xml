@@ -17,8 +17,12 @@
   <exec_depend>nav2_controller</exec_depend>
   <exec_depend>nav2_planner</exec_depend>
   <exec_depend>nav2_behaviors</exec_depend>
+  <exec_depend>dynamic_mapping</exec_depend>
+  <exec_depend>semantic_perception</exec_depend>
+  <exec_depend>semantic_traversability</exec_depend>
   <exec_depend>rviz2</exec_depend>
   <exec_depend>cartographer_ros</exec_depend>
+  <exec_depend>rtabmap_slam</exec_depend>
   <exec_depend>rclpy</exec_depend>
   <exec_depend>sensor_msgs</exec_depend>
 

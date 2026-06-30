@@ -13,10 +13,11 @@
 
 namespace semantic_traversability {
 
-// Action-aware costmap layer (paper 2310.08873). Runs AFTER the LiDAR
-// ObstacleLayer and BEFORE the InflationLayer: it overwrites LETHAL cells that
-// fall inside a "traversable" semantic polygon with a lower, configurable cost,
-// so the planner can route through traversable obstacles (curtains, grass).
+// Action-aware costmap layer (paper 2310.08873). In the dynamic SLAM config it
+// runs after obstacle/static and inflation layers: it overwrites inflated or
+// lethal cells that fall inside or near a "traversable" semantic polygon with a
+// lower, configurable cost, so the planner can route through traversable
+// obstacles (curtains, grass).
 class SemanticTraversabilityLayer : public nav2_costmap_2d::Layer {
 public:
   SemanticTraversabilityLayer() = default;
@@ -47,6 +48,13 @@ private:
 
   static bool pointInPolygon(double x, double y,
                              const std::vector<geometry_msgs::msg::Point32>& poly);
+  static double distanceToSegmentSquared(
+      double x, double y, const geometry_msgs::msg::Point32& a,
+      const geometry_msgs::msg::Point32& b);
+  static bool pointNearPolygon(
+      double x, double y,
+      const std::vector<geometry_msgs::msg::Point32>& poly,
+      double margin_m);
 
   rclcpp::Subscription<btcpp_ros2_interfaces::msg::SemanticRegionArray>::SharedPtr
       regions_sub_;
@@ -61,6 +69,8 @@ private:
                                        // >=0 = force this cost (0 = FREESPACE, paper)
   unsigned char override_threshold_{254};  // only overwrite cells >= this cost
   double transform_tolerance_{0.2};
+  double clear_margin_m_{0.0};
+  bool clear_unknown_{false};
 };
 
 }  // namespace semantic_traversability
