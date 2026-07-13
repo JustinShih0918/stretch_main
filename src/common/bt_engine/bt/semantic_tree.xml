@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Example: set the VLM prompt, then navigate to a goal behind the curtain.
+     Run with:  ros2 run bt_engine bt_engine --ros-args \
+         -p bt_xml_path:=<install>/share/bt_engine/bt/semantic_tree.xml -->
+<root BTCPP_format="4">
+    <BehaviorTree ID="MainTree">
+        <Sequence>
+            <SetSemanticInstruction topic_name="/semantic_instruction"
+                                    instruction="curtain"/>
+            <NavigateToPose x="3.0" y="0.0" yaw="0.0" frame_id="map"/>
+        </Sequence>
+    </BehaviorTree>
+</root>

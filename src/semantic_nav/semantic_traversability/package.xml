@@ -1,0 +1,31 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>semantic_traversability</name>
+  <version>0.1.0</version>
+  <description>
+    Action-aware semantic traversability for Nav2: a costmap layer that clears
+    LETHAL cells inside traversable semantic polygons, plus a projection node
+    that turns 2D VLM detections + depth into ground-plane polygons.
+    Adapted from arXiv:2310.08873. Environment-agnostic (sim and real robot).
+  </description>
+
+  <maintainer email="justinshih@gapp.nthu.edu.tw">justinshih</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>rclcpp</depend>
+  <depend>pluginlib</depend>
+  <depend>nav2_costmap_2d</depend>
+  <depend>geometry_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>tf2</depend>
+  <depend>tf2_ros</depend>
+  <depend>tf2_geometry_msgs</depend>
+  <depend>btcpp_ros2_interfaces</depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+    <nav2_costmap_2d plugin="${prefix}/nav2_semantic_traversability_plugin.xml" />
+  </export>
+</package>

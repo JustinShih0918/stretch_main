@@ -2,35 +2,50 @@
 
 ## What this repo is
 
-A minimal ROS 2 (Humble) workspace that demonstrates **BehaviorTree.CPP v4 + behaviortree_ros2** ticking a tree which calls **nav2's standard `navigate_to_pose` action`**. It is intentionally trimmed-down compared to the much larger `ref/` reference code.
+A ROS 2 (Humble) workspace whose core is a **BehaviorTree.CPP v4 + behaviortree_ros2** engine ticking a tree that calls **nav2's standard `navigate_to_pose` action**. The same BT engine is the **shared orchestrator** for two runtime environments: an Isaac Sim simulation and the real Stretch robot.
 
-Top-level layout — every dir at repo root that has a `package.xml` is a colcon package:
+All colcon packages live under `src/`, grouped by role (the grouping is cosmetic — colcon recurses all of `src/`; per-image selection is done with `--packages-up-to`):
 
 ```
 stretch_main/
-├── btcpp_ros2_interfaces/     # vendored interfaces pkg (action/srv/msg)
-├── behaviortree_ros2/         # vendored BT.CPP↔ROS2 wrapper (RosActionNode, RosNodeParams, ...)
-├── engine/   → pkg "bt_engine" # the BT runner
-├── nav/      → pkg "bt_nav"    # NavigateToPose BT action node
-├── docker/Dockerfile.ci       # CI image (also used for local docker compose)
-├── docker/docker-compose.yaml # `build` (one-shot colcon) and `dev` (shell) services using Dockerfile.ci
-├── ref/                       # old reference code, NOT a package, NOT built
-├── engine/bt/main_tree.xml    # default BT XML
-├── run.sh                     # tmux launcher
+├── src/
+│   ├── common/                   # built in EVERY image (CI builds only these)
+│   │   ├── btcpp_ros2_interfaces/  # vendored interfaces pkg (action/srv/msg)
+│   │   ├── behaviortree_ros2/      # vendored BT.CPP↔ROS2 wrapper (RosActionNode, ...)
+│   │   ├── bt_engine/              # the BT runner (was engine/)
+│   │   └── bt_nav/                 # NavigateToPose BT action node (was nav/)
+│   ├── sim/                       # Isaac Sim packages (from j3soon/ros2-essentials stretch3_ws)
+│   │   ├── stretch3_navigation/    # nav2 + cartographer/rtabmap launch+config for Isaac
+│   │   └── stretch_urdf/           # hello-robot URDF gen tool (pip pkg, NO package.xml → colcon ignores)
+│   ├── semantic_nav/              # action-aware semantic traversability (arXiv:2310.08873)
+│   │   ├── semantic_traversability/  # C++ nav2 costmap Layer plugin + projection node (env-agnostic)
+│   │   └── semantic_perception/      # Python Grounding DINO node + static region test publisher
+│   └── deploy/                    # vendored from hello-robot/stretch_ros2 (Apache-2.0)
+│       └── stretch_nav2/           # on-robot nav2 + slam_toolbox + AMCL
+├── docker/
+│   ├── ci/      Dockerfile.ci + docker-compose.yaml   # minimal build/test image
+│   ├── sim/     Dockerfile + compose.yaml + modules/  # Isaac Sim 5.1 image (GPU/X11)
+│   └── deploy/  Dockerfile + docker-compose.yaml      # on-robot nav/slam image
+├── isaacsim/assets/              # Stretch USD assets for Isaac Sim
+├── src/common/bt_engine/bt/main_tree.xml   # default BT XML
+├── ref/                          # old reference code, NOT a package, NOT built
+├── run.sh                        # tmux launcher
 └── .github/workflows/ci.yml
 ```
 
 ## Critical project quirks
 
-1. **`behaviortree_ros2` is vendored at the repo root** as a single package (not the upstream monorepo — just the wrapper package itself). It is NOT in the apt repos for Humble; do not try to `apt install ros-humble-behaviortree-ros2`.
-2. **`btcpp_ros2_interfaces/` is a vendored copy** (not a submodule) — it has custom `.action` files (`FirmwareMission`, `Navigation`, etc.) that don't exist upstream. **Do not replace it with the upstream version.** If interfaces are missing, add them here. `behaviortree_ros2/package.xml` declares a `<depend>btcpp_ros2_interfaces</depend>` that is satisfied by this local copy.
-3. **`ref/` is reference-only.** Contains an older, much larger `bt_engine.cpp` that uses a `dock_robot` action and project-specific logic (team/robot/plan parsing, startup service, game timer). It is **not built** (no top-level `package.xml`). Use it as a *pattern reference* — don't try to compile it.
-4. **`docker/` only has `Dockerfile.ci`.** The legacy dev `Dockerfile` and `scripts/` dir (vnc / cli_tools / settings / micro_ros) were removed. `docker-compose.yaml` was rewritten to reuse `Dockerfile.ci` via a YAML anchor (`x-ci-image`); two services: `build` (one-shot `colcon build --packages-up-to bt_engine`) and `dev` (interactive shell). Workspace mounts at `/ws`. Run with `docker compose -f docker/docker-compose.yaml run --rm <build|dev>`.
-5. `Dockerfile.ci` does **not** install `behaviortree_ros2` from apt (it's vendored). It also does not install `libfmt-dev` or `libboost-dev` explicitly — they come transitively via `ros-humble-behaviortree-cpp` and `ros-humble-navigation2`. If those are ever removed, add the libs back.
+1. **`src/common/behaviortree_ros2` is vendored** as a single package (not the upstream monorepo — just the wrapper package itself). It is NOT in the apt repos for Humble; do not try to `apt install ros-humble-behaviortree-ros2`.
+2. **`src/common/btcpp_ros2_interfaces/` is a vendored copy** (not a submodule) — it has custom `.action` files (`FirmwareMission`, `Navigation`, etc.) that don't exist upstream. **Do not replace it with the upstream version.** If interfaces are missing, add them here. `behaviortree_ros2/package.xml` declares a `<depend>btcpp_ros2_interfaces</depend>` satisfied by this local copy.
+3. **`src/deploy/stretch_nav2` is vendored verbatim** from hello-robot/stretch_ros2 (branch `humble`, Apache-2.0 — keep `LICENSE.md`). Don't edit in place; re-sync from upstream (see [src/deploy/README.md](src/deploy/README.md)). Its `navigation.launch.py` pulls `stretch_core` (the hardware driver) + calibrated URDF from the **robot's own hello-robot install** at runtime — those are NOT vendored or built here.
+4. **`src/sim/` is ported from `j3soon/ros2-essentials/stretch3_ws`** (which the maintainer co-owns). `stretch3_navigation` is the Isaac Sim nav stack; `stretch_urdf` has no `package.xml` (pip lib) so colcon ignores it. Isaac USD assets live at repo-root `isaacsim/assets/`.
+5. **`ref/` is reference-only.** Older, larger `bt_engine.cpp` using a `dock_robot` action + project logic. **Not built** (no `package.xml`). Pattern reference only — don't compile it.
+6. **Three Docker environments under `docker/`** (see "Docker environments" below). The `docker/sim/Dockerfile` `COPY`s install scripts from `docker/sim/modules/` — in upstream ros2-essentials those are hard-links to a repo-level `docker_modules/`; here they are **vendored copies** (materialized, not symlinks). If you add/update a sim install step, edit the copy under `docker/sim/modules/`.
+7. CI / deploy Dockerfiles do **not** install `behaviortree_ros2` from apt (vendored), nor `libfmt-dev`/`libboost-dev` explicitly — they come transitively via `ros-humble-behaviortree-cpp` and `ros-humble-navigation2`. If those are removed, add the libs back.
 
 ## Architecture
 
-### `bt_engine` ([engine/](engine/))
+### `bt_engine` ([src/common/bt_engine/](src/common/bt_engine/))
 - `BTEngine : rclcpp::Node`
 - Single executable `bt_engine`
 - Lifecycle:
@@ -42,7 +57,7 @@ stretch_main/
   6. `runTree()`: `tree.tickOnce()` in a `rclcpp::Rate` loop until status != RUNNING
 - `/start` topic type is `std_msgs/Empty` (chosen for simplest one-line publish)
 
-### `bt_nav` ([nav/](nav/))
+### `bt_nav` ([src/common/bt_nav/](src/common/bt_nav/))
 - One BT node: `bt_nav::NavigateToPoseAction`
 - Inherits `BT::RosActionNode<nav2_msgs::action::NavigateToPose>` (from vendored `behaviortree_ros2`)
 - Default action server name: `"navigate_to_pose"` (nav2 standard)
@@ -62,22 +77,43 @@ ros2 run nav2_util fake_action_server navigate_to_pose &
 ./run.sh   # tmux: left runs engine, right pane press 's' to send /start
 ```
 
-CI mirrors this: build `Dockerfile.ci` → `colcon build --packages-up-to bt_engine`. No source-clone step; everything we need is in-tree.
+CI mirrors this: build `docker/ci/Dockerfile.ci` → `colcon build --packages-up-to bt_engine`. No source-clone step; everything we need is in-tree.
+
+## Docker environments
+
+Three independent images under `docker/`, run from the repo root. Each builds a different package subset via `--packages-up-to`; CI builds only `common`.
+
+| Env | Path | Image purpose | Build subset | Run |
+|---|---|---|---|---|
+| `ci` | `docker/ci/` | minimal build/test (CI + local parity) | `bt_engine` | `docker compose -f docker/ci/docker-compose.yaml run --rm <build\|dev>` |
+| `sim` | `docker/sim/` | Isaac Sim 5.1 (GPU/X11/privileged) | `bt_engine stretch3_navigation semantic_traversability semantic_perception` | `docker compose -f docker/sim/compose.yaml run --rm stretch3-ws` |
+| `deploy` | `docker/deploy/` | on-robot nav/slam | `bt_engine stretch_nav2` | `docker compose -f docker/deploy/docker-compose.yaml run --rm <build\|nav\|bt\|dev>` |
+
+- Sim first-launch auto-build is scoped in `docker/sim/.bashrc` (only common + `stretch3_navigation`, NOT the deploy packages which need robot-only deps).
+- Sim compose mounts the repo at `/home/user/stretch_main` (= `$ROS2_WS`); ci/deploy mount at `/ws`. All use host networking.
 
 ## Common tasks → where to edit
 
 | Task | Files |
 |---|---|
-| Add a BT node | new pkg under repo root *or* extend `bt_nav`; register it in `engine/src/bt_engine.cpp::registerNodes()` |
-| Change tree | `engine/bt/main_tree.xml` (rebuild to install) or pass `bt_xml_path` param |
-| Add ROS interface (msg/srv/action) | `btcpp_ros2_interfaces/` + update its `CMakeLists.txt` |
-| Add a system dep | `docker/Dockerfile.ci` (the only Docker image left) |
+| Add a BT node | new pkg under `src/common/` *or* extend `bt_nav`; register it in `src/common/bt_engine/src/bt_engine.cpp::registerNodes()` |
+| Change tree | `src/common/bt_engine/bt/main_tree.xml` (rebuild to install) or pass `bt_xml_path` param |
+| Add ROS interface (msg/srv/action) | `src/common/btcpp_ros2_interfaces/` + update its `CMakeLists.txt` |
+| Add a CI system dep | `docker/ci/Dockerfile.ci` |
+| Add a sim install step | `docker/sim/modules/*.sh` (vendored copies) + `docker/sim/Dockerfile` |
+| Add a deploy system dep | `docker/deploy/Dockerfile` |
+| Tune sim nav2/SLAM | `src/sim/stretch3_navigation/config/` + `launch/` |
+| Semantic traversability (costmap layer / VLM perception) | `src/semantic_nav/` (see [src/semantic_nav/README.md](src/semantic_nav/README.md)); layer wired into `src/sim/stretch3_navigation/config/nav2_params.yaml` |
+| Re-sync vendored deploy nav/slam | see [src/deploy/README.md](src/deploy/README.md) |
 | Change colcon args | `.github/workflows/ci.yml` "colcon build" step |
 
 ## Things to avoid
 
 - Don't compile `ref/` — it expects a different node graph (DockRobot action, custom interfaces, params). It would need significant porting.
-- Don't replace local `btcpp_ros2_interfaces/` with the upstream `BehaviorTree.ROS2/btcpp_ros2_interfaces` — local has more action types.
+- Don't replace local `src/common/btcpp_ros2_interfaces/` with the upstream `BehaviorTree.ROS2/btcpp_ros2_interfaces` — local has more action types.
+- Don't edit `src/deploy/stretch_nav2/` by hand — it's vendored verbatim (Apache-2.0). Re-sync from upstream instead.
+- Don't try to build the deploy or sim packages in the CI image — CI is `--packages-up-to bt_engine` on purpose (Isaac/robot deps aren't present).
+- Don't symlink `docker/sim/modules/` back to an external `docker_modules/` — they are intentionally vendored copies so the sim image builds standalone.
 - Don't add behavior tree node registration outside `BTEngine::registerNodes()` — keeps the engine the single source of truth.
 - Don't skip `init()` after constructing `BTEngine` — `RosNodeParams.nh` needs the shared_ptr.
 - `BT::RosActionNode::providedPorts()` must call `providedBasicPorts({...})` (it injects standard server-name etc. ports). Don't return raw ports.

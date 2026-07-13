@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//opt/**)",
+      "Bash(python3 -c \"import torch; print\\('torch', torch.__version__\\)\")",
+      "Bash(python3 -c \"import groundingdino; print\\('groundingdino ok'\\)\")",
+      "Bash(python3 -c \"import cv_bridge; print\\('cv_bridge ok'\\)\")",
+      "Bash(nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader)",
+      "Bash(nvcc --version)",
+      "Bash(python3 -c \"import torch; print\\(torch.version.cuda\\)\")"
+    ]
+  }
+}
