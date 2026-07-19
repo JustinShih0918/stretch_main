@@ -32,6 +32,9 @@ NUM_FUTURE_STEPS = int(os.environ.get("NUM_FUTURE_STEPS", "4"))
 NUM_FRAMES = int(os.environ.get("NUM_FRAMES", "32"))
 NUM_HISTORY = int(os.environ.get("NUM_HISTORY", "8"))
 MODEL_MAX_LENGTH = int(os.environ.get("MODEL_MAX_LENGTH", "4096"))
+# upstream loads with low_cpu_mem_usage=False (whole model staged in system
+# RAM before .to(device)); set LOW_CPU_MEM=1 on machines with <32 GB RAM
+LOW_CPU_MEM = os.environ.get("LOW_CPU_MEM", "") in ("1", "yes", "YES")
 
 # upstream layout: streamvln/model/... imported as `model.` with the package
 # dir itself on sys.path (their server relies on script-dir resolution)
@@ -93,7 +96,7 @@ def _load_model():
         attn_implementation=attn_impl,
         torch_dtype=torch.bfloat16,
         config=config,
-        low_cpu_mem_usage=False,
+        low_cpu_mem_usage=LOW_CPU_MEM,
     )
     model.model.num_history = NUM_HISTORY
     model.reset(1)

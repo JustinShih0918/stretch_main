@@ -13,9 +13,11 @@
 # Prerequisites:
 #   * Isaac Sim playing isaacsim/assets/stretch3_og_hospital.usda
 #     (publishes /rgb /odom /tf, subscribes cmd_vel)
-#   * for backend:=streamvln — the inference server on GPU 1:
-#       docker compose -f docker/vln/compose.yaml up -d
-#       curl localhost:18080/health   # wait for {"status":"ok",...}
+#   * for backend:=streamvln — the inference server (docker/vln), either on
+#     this machine or remote:
+#       docker compose -f docker/vln/compose.yaml up -d     # on the GPU machine
+#       curl http://<server-ip>:18080/health                # wait for "ok"
+#     remote server: ./run_vln_demo.sh server_url:=http://<server-ip>:18080
 
 set -e
 

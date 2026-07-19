@@ -117,10 +117,15 @@ NaVILA/NaVid, and contract tests that run without a GPU.
 
 ## Serving layout
 
-Isaac Sim owns GPU 0; the model server gets GPU 1 (`device_ids: ["1"]` in
-`docker/vln/compose.yaml`, so it is `cuda:0` inside the container). Both
-sides use host networking → `http://localhost:18080`. The image is
-ROS-free; the sim container is model-free.
+The model server runs wherever a ~24 GB GPU lives — a dedicated inference
+machine (point the agent at it with `server_url`), or GPU 1 of the sim
+machine (`VLN_GPU_ID=1`; Isaac Sim keeps GPU 0). Only the selected GPU is
+exposed to the container, so it is always `cuda:0` inside. The server binds
+0.0.0.0:18080 with host networking; it is unauthenticated HTTP, so keep the
+port inside the lab network. The image is ROS-free; the sim container is
+model-free — this mirrors StreamVLN's own deployment (robot streams to a
+remote 4090 over HTTP with ~0.2 s network overhead, which the per-batch
+execution model absorbs).
 
 ## Future BT hook (out of scope here)
 

@@ -19,17 +19,26 @@ current commanded action visible live. No BT engine involved; the future
 
 1. **Sim** — launch Isaac Sim, open `isaacsim/assets/stretch3_og_hospital.usda`,
    press Play. Verify `/rgb` and `/odom` are publishing.
-2. **Model server** (host, GPU 1) — only for `backend:=streamvln`:
+2. **Model server** (any GPU machine with ~24 GB VRAM; needs only docker +
+   nvidia-container-toolkit + this repo, no ROS) — for `backend:=streamvln`:
 
    ```bash
    docker compose -f docker/vln/compose.yaml up -d
    curl localhost:18080/health        # wait for {"status":"ok",...}
    ```
+
+   Sharing the Isaac Sim machine instead? `VLN_GPU_ID=1 docker compose ...`
+   so Isaac keeps GPU 0. The server is plain HTTP — keep port 18080 inside
+   the lab network.
 3. **Demo** (sim container, workspace built):
 
    ```bash
-   ./run_vln_demo.sh                  # streamvln + cmd_vel (defaults)
+   ./run_vln_demo.sh                  # server on localhost (defaults)
+   ./run_vln_demo.sh server_url:=http://140.114.89.63:18080   # remote server
    ```
+
+   From the sim machine, `curl http://<server-ip>:18080/health` first to
+   confirm reachability (firewall).
 
    Type an instruction in the bottom-right pane, e.g.
    `walk down the hallway, turn left at the reception desk and stop`.

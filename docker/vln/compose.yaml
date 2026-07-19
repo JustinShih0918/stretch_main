@@ -1,15 +1,24 @@
 name: stretch-main-vln
 
-# StreamVLN inference server: GPU 1 of the sim machine, host network, HTTP on
-# :18080. The ROS side (src/semantic_nav/vln_policy) talks to it via the wire
-# contract in src/semantic_nav/vln_policy/DESIGN.md — nothing ROS in here.
+# StreamVLN inference server: host network, HTTP on :18080. The ROS side
+# (src/semantic_nav/vln_policy) talks to it via the wire contract in
+# src/semantic_nav/vln_policy/DESIGN.md — nothing ROS in here, so this can
+# run on any GPU machine (24 GB VRAM fits the 7B model comfortably).
 #
-# Usage (run from the repo root):
+# Usage (run from the repo root, on the GPU machine hosting the model):
 #   docker compose -f docker/vln/compose.yaml up -d
 #   curl localhost:18080/health
+# Then point the demo at it from the sim machine:
+#   ./run_vln_demo.sh server_url:=http://<server-ip>:18080
+#
+# VLN_GPU_ID selects the GPU (default 0 — a dedicated inference machine).
+# When sharing the Isaac Sim machine, use VLN_GPU_ID=1 so Isaac keeps GPU 0.
 #
 # The checkpoint download (~16 GB) is gated: leave STREAMVLN_MODEL empty to
 # build/tinker without it (the server then answers /health with 503).
+#
+# NOTE: the server is unauthenticated HTTP — keep :18080 inside the lab
+# network (firewall), do not expose it to the internet.
 
 services:
   vln-server:
@@ -27,8 +36,8 @@ services:
     restart: unless-stopped
     environment:
       - PORT=18080
-      # Isaac Sim owns GPU 0; only GPU 1 is exposed below, so it is cuda:0
-      # inside the container.
+      # Only the GPU selected below is exposed, so it is always cuda:0
+      # inside the container regardless of VLN_GPU_ID.
       - DEVICE=cuda:0
       # Set to "sdpa" if flash-attn was not built into the image.
       - ATTN_IMPL=${ATTN_IMPL:-flash_attention_2}
@@ -37,7 +46,7 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              device_ids: ["1"]
+              device_ids: ["${VLN_GPU_ID:-0}"]
               capabilities: [gpu]
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:18080/health"]
