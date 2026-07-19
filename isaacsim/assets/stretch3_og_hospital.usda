@@ -7,8 +7,8 @@
                 double radius = 5
             }
             dictionary Perspective = {
-                double3 position = (7.72369810949659, -3.3844219633143298, 5.668680087641649)
-                double3 target = (2.6798228387070253, 0.45426548960820945, -0.7914941689631041)
+                double3 position = (4.634797081050674, -1.1123289873882485, 1.9975142359607478)
+                double3 target = (1.3183083751213123, -0.37004938902093854, 1.254597482041039)
             }
             dictionary Right = {
                 double3 position = (0, -5, 0)
@@ -18,7 +18,7 @@
                 double3 position = (0, 0, 5)
                 double radius = 5
             }
-            string boundCamera = "/OmniverseKit_Persp"
+            string boundCamera = "/World/stretch3/base_link/follow_camera"
         }
         dictionary navmeshSettings = {
             double agentHeight = 1.8
@@ -87,19 +87,6 @@ def Xform "World"
             {
             }
 
-            def Camera "Camera"
-            {
-                float2 clippingRange = (0.01, 10000000)
-                float focalLength = 18.147562
-                float focusDistance = 400
-                bool omni:kit:cameraLock = 0
-                custom uniform vector3d omni:kit:centerOfInterest = (0, 0, -298.74919833298804)
-                quatd xformOp:orient = (-0.5684126372457637, -0.4106189978382764, 0.42060322611615303, 0.575666603698955)
-                double3 xformOp:scale = (1, 1, 1)
-                double3 xformOp:translate = (95.28056847485894, -1.7670701427935533, -30.820432908212066)
-                uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
-            }
-
             def Xform "RPLIDAR_S2E" (
                 prepend references = @https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.0/Isaac/Sensors/Slamtec/RPLIDAR_S2E/Slamtec_RPLIDAR_S2E.usd@
             )
@@ -136,6 +123,216 @@ def Xform "World"
                 double3 xformOp:scale = (1, 1, 1)
                 double3 xformOp:translate = (-0.12838, 0.00316, 0.1474)
                 uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+            }
+
+            def Camera "follow_camera" (
+                customData = {
+                    dictionary omni = {
+                        dictionary kit = {
+                            bool locked = 1
+                        }
+                    }
+                }
+            )
+            {
+                float4[] clippingPlanes (
+                    customData = {
+                        dictionary omni = {
+                            dictionary kit = {
+                                bool locked = 1
+                            }
+                        }
+                    }
+                )
+                float2 clippingRange = (0.01, 10000000) (
+                    customData = {
+                        dictionary omni = {
+                            dictionary kit = {
+                                bool locked = 1
+                            }
+                        }
+                    }
+                )
+                float exposure (
+                    customData = {
+                        dictionary omni = {
+                            dictionary kit = {
+                                bool locked = 1
+                            }
+                        }
+                    }
+                )
+                float focalLength = 18.147562 (
+                    customData = {
+                        dictionary omni = {
+                            dictionary kit = {
+                                bool locked = 1
+                            }
+                        }
+                    }
+                )
+                float focusDistance = 400 (
+                    customData = {
+                        dictionary omni = {
+                            dictionary kit = {
+                                bool locked = 1
+                            }
+                        }
+                    }
+                )
+                float fStop (
+                    customData = {
+                        dictionary omni = {
+                            dictionary kit = {
+                                bool locked = 1
+                            }
+                        }
+                    }
+                )
+                float horizontalAperture (
+                    customData = {
+                        dictionary omni = {
+                            dictionary kit = {
+                                bool locked = 1
+                            }
+                        }
+                    }
+                )
+                float horizontalApertureOffset (
+                    customData = {
+                        dictionary omni = {
+                            dictionary kit = {
+                                bool locked = 1
+                            }
+                        }
+                    }
+                )
+                custom uniform vector3d omni:kit:centerOfInterest = (0, 0, -257.85865668950765) (
+                    customData = {
+                        dictionary omni = {
+                            dictionary kit = {
+                                bool locked = 1
+                            }
+                        }
+                    }
+                )
+                token projection (
+                    customData = {
+                        dictionary omni = {
+                            dictionary kit = {
+                                bool locked = 1
+                            }
+                        }
+                    }
+                )
+                rel proxyPrim (
+                    customData = {
+                        dictionary omni = {
+                            dictionary kit = {
+                                bool locked = 1
+                            }
+                        }
+                    }
+                )
+                uniform token purpose (
+                    customData = {
+                        dictionary omni = {
+                            dictionary kit = {
+                                bool locked = 1
+                            }
+                        }
+                    }
+                )
+                double shutter:close (
+                    customData = {
+                        dictionary omni = {
+                            dictionary kit = {
+                                bool locked = 1
+                            }
+                        }
+                    }
+                )
+                double shutter:open (
+                    customData = {
+                        dictionary omni = {
+                            dictionary kit = {
+                                bool locked = 1
+                            }
+                        }
+                    }
+                )
+                uniform token stereoRole (
+                    customData = {
+                        dictionary omni = {
+                            dictionary kit = {
+                                bool locked = 1
+                            }
+                        }
+                    }
+                )
+                float verticalAperture (
+                    customData = {
+                        dictionary omni = {
+                            dictionary kit = {
+                                bool locked = 1
+                            }
+                        }
+                    }
+                )
+                float verticalApertureOffset (
+                    customData = {
+                        dictionary omni = {
+                            dictionary kit = {
+                                bool locked = 1
+                            }
+                        }
+                    }
+                )
+                token visibility (
+                    customData = {
+                        dictionary omni = {
+                            dictionary kit = {
+                                bool locked = 1
+                            }
+                        }
+                    }
+                )
+                quatd xformOp:orient = (-0.5058944555375231, -0.4940352212711086, 0.505894455537523, 0.49403522127110866) (
+                    customData = {
+                        dictionary omni = {
+                            dictionary kit = {
+                                bool locked = 1
+                            }
+                        }
+                    }
+                )
+                double3 xformOp:scale = (1, 1, 1) (
+                    customData = {
+                        dictionary omni = {
+                            dictionary kit = {
+                                bool locked = 1
+                            }
+                        }
+                    }
+                )
+                double3 xformOp:translate = (-0.4457439655906228, -0.004720449704755156, 0.4320419923571626) (
+                    customData = {
+                        dictionary omni = {
+                            dictionary kit = {
+                                bool locked = 1
+                            }
+                        }
+                    }
+                )
+                uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"] (
+                    customData = {
+                        dictionary omni = {
+                            dictionary kit = {
+                                bool locked = 1
+                            }
+                        }
+                    }
+                )
             }
         }
 
@@ -397,7 +594,6 @@ def Xform "World"
     )
     {
     }
-
 }
 
 def "Render" (
@@ -418,7 +614,7 @@ def "Render" (
                 no_delete = true
             )
             {
-                rel camera = </OmniverseKit_Persp>
+                rel camera = </World/stretch3/base_link/follow_camera>
                 token omni:rtx:background:source:texture:textureMode = "repeatMirrored"
                 token omni:rtx:background:source:type = "domeLight"
                 bool omni:rtx:dlss:frameGeneration = 0
@@ -960,6 +1156,45 @@ def "Render" (
                 custom bool overrideClipRange = 0
                 uniform int2 resolution = (1280, 720)
             }
+
+            def RenderProduct "Replicator_17" (
+                prepend apiSchemas = ["OmniRtxSettingsCommonAdvancedAPI_1", "OmniRtxSettingsRtAdvancedAPI_1", "OmniRtxSettingsPtAdvancedAPI_1", "OmniRtxPostColorGradingAPI_1", "OmniRtxPostChromaticAberrationAPI_1", "OmniRtxPostBloomPhysicalAPI_1", "OmniRtxPostMatteObjectAPI_1", "OmniRtxPostCompositingAPI_1", "OmniRtxPostDofAPI_1", "OmniRtxPostMotionBlurAPI_1", "OmniRtxPostTvNoiseAPI_1", "OmniRtxPostTonemapIrayReinhardAPI_1", "OmniRtxPostDebugSettingsAPI_1", "OmniRtxDebugSettingsAPI_1"]
+                hide_in_stage_window = true
+                no_delete = true
+            )
+            {
+                rel camera = </World/stretch3/base_link/RPLIDAR_S2E/RPLidar_S2E>
+                custom string ogPostProcessPath = "/Render/OmniverseKit/HydraTextures/Replicator_17/PostRender"
+                bool omni:rtx:material:db:syncLoads = 1
+                bool omni:rtx:rt:ecoMode:enabled = 0
+                bool omni:rtx:scene:hydra:materialSyncLoads = 1
+                rel orderedVars = [
+                    </Render/Vars/GenericModelOutput>,
+                    </Render/Vars/RtxSensorMetadata>,
+                ]
+                custom bool overrideClipRange = 0
+                uniform int2 resolution = (1280, 720)
+            }
+
+            def RenderProduct "Replicator_18" (
+                prepend apiSchemas = ["OmniRtxSettingsCommonAdvancedAPI_1", "OmniRtxSettingsRtAdvancedAPI_1", "OmniRtxSettingsPtAdvancedAPI_1", "OmniRtxPostColorGradingAPI_1", "OmniRtxPostChromaticAberrationAPI_1", "OmniRtxPostBloomPhysicalAPI_1", "OmniRtxPostMatteObjectAPI_1", "OmniRtxPostCompositingAPI_1", "OmniRtxPostDofAPI_1", "OmniRtxPostMotionBlurAPI_1", "OmniRtxPostTvNoiseAPI_1", "OmniRtxPostTonemapIrayReinhardAPI_1", "OmniRtxPostDebugSettingsAPI_1", "OmniRtxDebugSettingsAPI_1"]
+                hide_in_stage_window = true
+                no_delete = true
+            )
+            {
+                rel camera = </World/stretch3/link_head_tilt/camera_bottom_screw_frame/camera_link/Realsense/RSD455/Camera_Pseudo_Depth>
+                custom string ogPostProcessPath = "/Render/OmniverseKit/HydraTextures/Replicator_18/PostRender"
+                bool omni:rtx:material:db:syncLoads = 1
+                bool omni:rtx:rt:ecoMode:enabled = 0
+                bool omni:rtx:scene:hydra:materialSyncLoads = 1
+                rel orderedVars = [
+                    </Render/Vars/LdrColorSD>,
+                    </Render/Vars/DistanceToImagePlaneSD>,
+                    </Render/Vars/LdrColor>,
+                ]
+                custom bool overrideClipRange = 0
+                uniform int2 resolution = (1280, 720)
+            }
         }
     }
 
@@ -987,6 +1222,8 @@ def "Render" (
             </Render/OmniverseKit/HydraTextures/Replicator_14>,
             </Render/OmniverseKit/HydraTextures/Replicator_15>,
             </Render/OmniverseKit/HydraTextures/Replicator_16>,
+            </Render/OmniverseKit/HydraTextures/Replicator_17>,
+            </Render/OmniverseKit/HydraTextures/Replicator_18>,
         ]
     }
 
