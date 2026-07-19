@@ -52,6 +52,16 @@ RUN pip install --no-cache-dir \
 RUN pip install --no-cache-dir flash-attn==2.5.9.post1 --no-build-isolation \
     || echo "WARNING: flash-attn install failed; run with ATTN_IMPL=sdpa"
 
+# Deps StreamVLN imports but does not list in requirements.txt (they leak in
+# via habitat in the upstream conda env). Exact closure of the modules the
+# server touches: streamvln_agent needs quaternion + depth_camera_filtering +
+# omegaconf; everything else guarded by try/except upstream.
+# numpy-quaternion 2023.0.4 = last numpy<2 pin with cp310 wheels.
+RUN pip install --no-cache-dir \
+        "numpy-quaternion==2023.0.4" \
+        "omegaconf==2.3.0" \
+        "git+https://github.com/naokiyokoyama/depth_camera_filtering@39d6e2f391c8b2198a67ad96f94bf6da0acd48a0"
+
 # Checkpoint download, gated so the image can build without the ~16 GB model.
 ARG STREAMVLN_MODEL=""
 ARG STREAMVLN_MODEL_ID=mengwei0427/StreamVLN_Video_qwen_1_5_r2r_rxr_envdrop_scalevln_real_world
