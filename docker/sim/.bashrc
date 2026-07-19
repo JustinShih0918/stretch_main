@@ -37,7 +37,8 @@ if [ ! -f $ROS2_WS/install/setup.bash ]; then
     cd $ROS2_WS
     colcon build --symlink-install \
         --packages-up-to bt_engine stretch3_navigation \
-                         semantic_traversability semantic_perception
+                         semantic_traversability semantic_perception \
+                         vln_policy
     echo "Workspace built."
 fi
 

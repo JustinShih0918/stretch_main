@@ -1,0 +1,18 @@
+vln_agent_node:
+  ros__parameters:
+    backend: streamvln          # streamvln | dummy | navila
+    execution_mode: cmd_vel     # cmd_vel | nav2
+    server_url: http://localhost:18080
+    timeout_s: 30.0             # HTTP timeout per request
+    jpeg_quality: 85
+    rgb_topic: /rgb
+    odom_topic: /odom
+    cmd_vel_topic: /cmd_vel
+    goal_frame: odom            # frame for nav2-mode waypoints
+    max_steps: 150              # hard episode cap (discrete actions)
+    v_lin: 0.25                 # m/s   during FORWARD bursts
+    v_ang: 0.5                  # rad/s during TURN bursts
+    action_timeout_s: 6.0       # per discrete action (cmd_vel mode)
+    nav2_goal_timeout_s: 60.0   # per waypoint batch (nav2 mode)
+    dummy_actions: ""           # CSV override for backend=dummy
+    tick_rate_hz: 20.0

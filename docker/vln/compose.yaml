@@ -1,0 +1,47 @@
+name: stretch-main-vln
+
+# StreamVLN inference server: GPU 1 of the sim machine, host network, HTTP on
+# :18080. The ROS side (src/semantic_nav/vln_policy) talks to it via the wire
+# contract in src/semantic_nav/vln_policy/DESIGN.md — nothing ROS in here.
+#
+# Usage (run from the repo root):
+#   docker compose -f docker/vln/compose.yaml up -d
+#   curl localhost:18080/health
+#
+# The checkpoint download (~16 GB) is gated: leave STREAMVLN_MODEL empty to
+# build/tinker without it (the server then answers /health with 503).
+
+services:
+  vln-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        # Set to "" to skip the multi-GB checkpoint download.
+        STREAMVLN_MODEL: "YES"
+        # Pin a StreamVLN commit here once validated (default: main).
+        STREAMVLN_COMMIT: "main"
+    image: stretch-main-vln:latest
+    container_name: stretch-main-vln-server
+    network_mode: host
+    restart: unless-stopped
+    environment:
+      - PORT=18080
+      # Isaac Sim owns GPU 0; only GPU 1 is exposed below, so it is cuda:0
+      # inside the container.
+      - DEVICE=cuda:0
+      # Set to "sdpa" if flash-attn was not built into the image.
+      - ATTN_IMPL=${ATTN_IMPL:-flash_attention_2}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["1"]
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:18080/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 300s

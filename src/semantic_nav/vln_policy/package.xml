@@ -1,0 +1,38 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>vln_policy</name>
+  <version>0.1.0</version>
+  <description>
+    Vision-Language Navigation agent: swappable VLN backends (StreamVLN over
+    HTTP, dummy scripted, NaVILA slot) driving the robot via a direct cmd_vel
+    executor or short-range waypoints to nav2 navigate_to_pose. Standalone
+    verification pipeline; no BT engine required.
+  </description>
+
+  <maintainer email="justinshih@gapp.nthu.edu.tw">justinshih</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_python</buildtool_depend>
+
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>nav_msgs</exec_depend>
+  <exec_depend>nav2_msgs</exec_depend>
+  <exec_depend>cv_bridge</exec_depend>
+  <exec_depend>btcpp_ros2_interfaces</exec_depend>
+  <exec_depend>python3-requests</exec_depend>
+  <!-- The VLN model itself runs in a separate server (docker/vln), never in
+       this package. The ROS side only needs an HTTP client. -->
+
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

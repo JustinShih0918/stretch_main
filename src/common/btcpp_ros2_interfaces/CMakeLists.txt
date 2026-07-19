@@ -22,6 +22,7 @@ rosidl_generate_interfaces(btcpp_ros2_interfaces
     "msg/SemanticDetection2D.msg"
     "msg/SemanticRegion.msg"
     "msg/SemanticRegionArray.msg"
+    "msg/VlnStatus.msg"
     "srv/StartUpSrv.srv"
     "action/ExecuteTree.action"
     "action/Navigation.action"

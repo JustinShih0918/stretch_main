@@ -65,9 +65,17 @@ camera-derived polygon of a class flagged `traversable`.
   hand-authored traversable polygon directly on `/semantic_regions`, so the
   costmap layer + planner can be validated **without** the VLM.
 
+### `vln_policy/` (Python, `ament_python`) — Vision-Language Navigation
+- **`vln_agent_node`**: instruction-driven VLN agent with swappable model
+  backends (StreamVLN via HTTP to `docker/vln/`, scripted `dummy`, `navila`
+  adapter slot) and selectable executors (`cmd_vel` velocity bursts or
+  relative waypoints to nav2 `navigate_to_pose`). Standalone demo:
+  `./run_vln_demo.sh` (repo root). See [vln_policy/README.md](vln_policy/README.md)
+  and the normative HTTP contract in [vln_policy/DESIGN.md](vln_policy/DESIGN.md).
+
 ### Interfaces
 Added to the vendored `src/common/btcpp_ros2_interfaces/`:
-`SemanticDetection2D`, `SemanticRegion`, `SemanticRegionArray`.
+`SemanticDetection2D`, `SemanticRegion`, `SemanticRegionArray`, `VlnStatus`.
 
 ## Run (Isaac Sim)
 
