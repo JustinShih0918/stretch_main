@@ -11,7 +11,7 @@ from vln_policy.action_executor import (
     compose_relative,
     wrap_angle,
 )
-from vln_policy.backends.base import FORWARD_M, TURN_RAD, OdomPose
+from vln_policy.backends.base import BACKWARD, FORWARD_M, TURN_RAD, OdomPose
 
 
 class TwistLog:
@@ -43,6 +43,14 @@ class TestCmdVelExecutor:
             is ExecStatus.RUNNING
         # displacement reached -> done + zero twist
         assert ex.tick(1.0, OdomPose(FORWARD_M, 0, 0)) is ExecStatus.DONE
+        assert log.last == (0.0, 0.0)
+
+    def test_backward_uses_negative_velocity_and_odom_distance(self):
+        ex, log = make_executor()
+        ex.submit([BACKWARD])
+        assert ex.tick(0.0, OdomPose(0, 0, 0)) is ExecStatus.RUNNING
+        assert log.last == (-ex.v_lin, 0.0)
+        assert ex.tick(1.0, OdomPose(-FORWARD_M, 0, 0)) is ExecStatus.DONE
         assert log.last == (0.0, 0.0)
 
     def test_turn_left_and_right_termination(self):
@@ -119,6 +127,12 @@ class TestComposeRelative:
         rel = compose_relative(["TURN_LEFT", "TURN_RIGHT"])
         assert rel.yaw == pytest.approx(0.0)
         assert rel.x == rel.y == 0.0
+
+    def test_backward_is_negative_robot_x(self):
+        rel = compose_relative([BACKWARD, BACKWARD])
+        assert rel.x == pytest.approx(-2 * FORWARD_M)
+        assert rel.y == pytest.approx(0.0)
+        assert rel.yaw == pytest.approx(0.0)
 
 
 class TestNav2WaypointExecutor:

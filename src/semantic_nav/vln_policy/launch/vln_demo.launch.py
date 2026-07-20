@@ -43,6 +43,12 @@ ARGUMENTS = [
         description="RGB image topic streamed to the VLN model.",
     ),
     DeclareLaunchArgument(
+        "rgb_rotation", default_value="clockwise_90",
+        choices=["none", "clockwise_90", "counterclockwise_90", "180"],
+        description="Right-angle correction applied identically to model "
+                    "input and the RViz camera HUD.",
+    ),
+    DeclareLaunchArgument(
         "odom_topic", default_value="/odom",
         description="Odometry topic for the executors.",
     ),
@@ -59,6 +65,15 @@ ARGUMENTS = [
         "params_file", default_value="",
         description="Optional YAML overriding "
                     "vln_policy/config/vln_agent_params.yaml.",
+    ),
+    DeclareLaunchArgument(
+        "viz", default_value="true",
+        description="Run vln_viz_node (/vln/viz_image HUD, /vln/viz_markers, "
+                    "/vln/path for RViz).",
+    ),
+    DeclareLaunchArgument(
+        "rviz", default_value="false",
+        description="Also open RViz with vln_policy/config/vln_demo.rviz.",
     ),
     DeclareLaunchArgument(
         "use_sim_time", default_value="True",
@@ -89,6 +104,7 @@ def _setup(context, *args, **kwargs):
                 "execution_mode": LaunchConfiguration("execution_mode"),
                 "server_url": LaunchConfiguration("server_url"),
                 "rgb_topic": LaunchConfiguration("rgb_topic"),
+                "rgb_rotation": LaunchConfiguration("rgb_rotation"),
                 "odom_topic": LaunchConfiguration("odom_topic"),
                 "cmd_vel_topic": LaunchConfiguration("cmd_vel_topic"),
                 "dummy_actions": LaunchConfiguration("dummy_actions"),
@@ -97,6 +113,41 @@ def _setup(context, *args, **kwargs):
         remappings=[("~/instruction", "/vln_instruction")],
     )
     actions = [agent]
+
+    if LaunchConfiguration("viz").perform(context).lower() == "true":
+        actions.append(
+            Node(
+                package="vln_policy",
+                executable="vln_viz_node",
+                name="vln_viz_node",
+                output="screen",
+                parameters=[{
+                    "use_sim_time": LaunchConfiguration("use_sim_time"),
+                    "rgb_topic": LaunchConfiguration("rgb_topic"),
+                    "rgb_rotation": LaunchConfiguration("rgb_rotation"),
+                    "odom_topic": LaunchConfiguration("odom_topic"),
+                }],
+            )
+        )
+
+    if LaunchConfiguration("rviz").perform(context).lower() == "true":
+        rviz_config = os.path.join(
+            get_package_share_directory("vln_policy"),
+            "config",
+            "vln_demo.rviz",
+        )
+        actions.append(
+            Node(
+                package="rviz2",
+                executable="rviz2",
+                name="rviz2",
+                output="screen",
+                arguments=["-d", rviz_config],
+                parameters=[{
+                    "use_sim_time": LaunchConfiguration("use_sim_time"),
+                }],
+            )
+        )
 
     if LaunchConfiguration("execution_mode").perform(context) == "nav2":
         # resolved lazily so cmd_vel mode works without the sim nav stack

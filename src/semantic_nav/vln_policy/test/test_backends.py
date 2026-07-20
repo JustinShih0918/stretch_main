@@ -21,6 +21,10 @@ class TestValidateActions:
         with pytest.raises(BackendError):
             validate_actions(["FORWARD", "JUMP"])
 
+    def test_backward_is_not_a_streamvln_wire_action(self):
+        with pytest.raises(BackendError):
+            validate_actions(["BACKWARD"])
+
 
 class TestDummyBackend:
     def test_chunks_and_stops(self):
