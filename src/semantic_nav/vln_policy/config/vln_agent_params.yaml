@@ -6,6 +6,7 @@ vln_agent_node:
     timeout_s: 30.0             # HTTP timeout per request
     jpeg_quality: 85
     rgb_topic: /rgb
+    rgb_rotation: clockwise_90  # none | clockwise_90 | counterclockwise_90 | 180
     odom_topic: /odom
     cmd_vel_topic: /cmd_vel
     goal_frame: odom            # frame for nav2-mode waypoints

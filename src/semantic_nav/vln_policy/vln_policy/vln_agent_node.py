@@ -38,11 +38,14 @@ from .action_executor import (
 )
 from .backends import make_backend
 from .backends.base import (
+    FORWARD_M,
     STOP,
     BackendError,
     OdomPose,
     StepResult,
 )
+from .motion_intent import parse_robot_relative_command
+from .image_rotation import normalize_rgb_rotation, rotate_rgb_image
 
 # node states (mirrors VlnStatus.msg STATE_* constants)
 IDLE = "IDLE"
@@ -70,6 +73,7 @@ class VlnAgentNode(Node):
         self.declare_parameter("timeout_s", 30.0)
         self.declare_parameter("jpeg_quality", 85)
         self.declare_parameter("rgb_topic", "/rgb")
+        self.declare_parameter("rgb_rotation", "clockwise_90")
         self.declare_parameter("odom_topic", "/odom")
         self.declare_parameter("cmd_vel_topic", "/cmd_vel")
         self.declare_parameter("goal_frame", "odom")
@@ -87,6 +91,9 @@ class VlnAgentNode(Node):
             raise ValueError("execution_mode must be 'cmd_vel' or 'nav2'")
         self.goal_frame = str(self.get_parameter("goal_frame").value)
         self.max_steps = int(self.get_parameter("max_steps").value)
+        self.rgb_rotation = normalize_rgb_rotation(
+            self.get_parameter("rgb_rotation").value
+        )
 
         self.backend = self._make_backend()
         self.executor_impl = self._make_executor()
@@ -98,6 +105,7 @@ class VlnAgentNode(Node):
         self.step_count = 0
         self.detail = ""
         self.episode_done_pending = False
+        self.completion_detail = "model returned STOP"
         self._lock = threading.Lock()
         self._pending: Optional[dict] = None
         self._worker: Optional[threading.Thread] = None
@@ -109,9 +117,12 @@ class VlnAgentNode(Node):
         self._nav2_client = None
         self._nav2_goal_handle = None
 
-        self.status_pub = self.create_publisher(VlnStatus, "/vln/status", 10)
+        # Status is a snapshot, not an event stream.  Keeping only the newest
+        # sample prevents a late RViz/monitor subscriber from working through
+        # an obsolete backlog.
+        self.status_pub = self.create_publisher(VlnStatus, "/vln/status", 1)
         self.action_pub = self.create_publisher(
-            String, "/vln/current_action", 10
+            String, "/vln/current_action", 1
         )
         self.cmd_vel_pub = self.create_publisher(
             Twist, str(self.get_parameter("cmd_vel_topic").value), 10
@@ -134,7 +145,8 @@ class VlnAgentNode(Node):
 
         self.get_logger().info(
             f"vln_agent_node up: backend={self.backend_name} "
-            f"mode={self.execution_mode} — waiting for instruction on "
+            f"mode={self.execution_mode} rgb_rotation={self.rgb_rotation} "
+            f"— waiting for instruction on "
             "~/instruction"
         )
 
@@ -193,12 +205,42 @@ class VlnAgentNode(Node):
         if not instruction:
             return
         self.get_logger().info(f"[VLN] new instruction: '{instruction}'")
+        direct_actions = parse_robot_relative_command(instruction)
         self._cancel_motion()
         self.instruction = instruction
         self.step_count = 0
         self.detail = ""
         self.episode_done_pending = False
+        self.completion_detail = "model returned STOP"
         self._episode_seq += 1
+        with self._lock:
+            self._pending = None
+
+        if direct_actions is not None:
+            requested_steps = len(direct_actions)
+            actions = direct_actions[:self.max_steps]
+            self.step_count = len(actions)
+            self.episode_done_pending = True
+            distance_m = len(actions) * FORWARD_M
+            self.detail = (
+                f"local robot-relative reverse command: {distance_m:.2f} m"
+            )
+            if len(actions) < requested_steps:
+                self.detail += f" (limited by max_steps={self.max_steps})"
+            self.completion_detail = "robot-relative reverse command complete"
+            self.get_logger().info(
+                f"[VLN] interpreted locally -> {' '.join(actions)}"
+            )
+            if self.execution_mode == "cmd_vel":
+                self.executor_impl.submit(actions)
+            else:
+                self.executor_impl.submit(actions, self._odom, self._now_s())
+                if self.executor_impl.status is ExecStatus.ERROR:
+                    self._set_state(ERROR, self.executor_impl.error)
+                    return
+            self._set_state(EXECUTING)
+            return
+
         self._set_state(RESETTING)
         self._spawn_worker("reset", instruction=instruction)
 
@@ -291,7 +333,7 @@ class VlnAgentNode(Node):
                     self.get_logger().info(
                         f"[VLN] episode DONE after {self.step_count} actions"
                     )
-                    self._set_state(DONE, "model returned STOP")
+                    self._set_state(DONE, self.completion_detail)
                 elif self.step_count >= self.max_steps:
                     self.get_logger().warn(
                         f"[VLN] max_steps={self.max_steps} reached, stopping"
@@ -320,7 +362,8 @@ class VlnAgentNode(Node):
         if self._bridge is None:
             from cv_bridge import CvBridge
             self._bridge = CvBridge()
-        return self._bridge.imgmsg_to_cv2(msg, desired_encoding="rgb8")
+        rgb = self._bridge.imgmsg_to_cv2(msg, desired_encoding="rgb8")
+        return rotate_rgb_image(rgb, self.rgb_rotation)
 
     def _handle_step_result(self, step: StepResult):
         actions = list(step.actions)
