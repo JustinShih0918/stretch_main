@@ -14,10 +14,14 @@ from typing import Optional
 # these into motion, so the constants live here, shared by both sides.
 STOP = "STOP"
 FORWARD = "FORWARD"
+BACKWARD = "BACKWARD"
 TURN_LEFT = "TURN_LEFT"
 TURN_RIGHT = "TURN_RIGHT"
+# StreamVLN's model/wire vocabulary.  BACKWARD is deliberately local-only:
+# the robot-relative command interpreter can request it without pretending
+# that the pretrained policy knows how to emit a fifth action token.
 ACTIONS = (STOP, FORWARD, TURN_LEFT, TURN_RIGHT)
-MOTION_ACTIONS = (FORWARD, TURN_LEFT, TURN_RIGHT)
+MOTION_ACTIONS = (FORWARD, BACKWARD, TURN_LEFT, TURN_RIGHT)
 
 FORWARD_M = 0.25
 TURN_RAD = math.radians(15.0)

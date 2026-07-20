@@ -15,6 +15,7 @@ from enum import Enum
 from typing import Callable, List, Optional
 
 from .backends.base import (
+    BACKWARD,
     FORWARD,
     FORWARD_M,
     MOTION_ACTIONS,
@@ -45,6 +46,9 @@ def compose_relative(actions: List[str]) -> OdomPose:
         if action == FORWARD:
             x += FORWARD_M * math.cos(yaw)
             y += FORWARD_M * math.sin(yaw)
+        elif action == BACKWARD:
+            x -= FORWARD_M * math.cos(yaw)
+            y -= FORWARD_M * math.sin(yaw)
         elif action == TURN_LEFT:
             yaw = wrap_angle(yaw + TURN_RAD)
         elif action == TURN_RIGHT:
@@ -155,6 +159,8 @@ class CmdVelExecutor:
 
         if self._active == FORWARD:
             self._publish(self.v_lin, 0.0)
+        elif self._active == BACKWARD:
+            self._publish(-self.v_lin, 0.0)
         elif self._active == TURN_LEFT:
             self._publish(0.0, self.v_ang)
         elif self._active == TURN_RIGHT:
@@ -163,7 +169,7 @@ class CmdVelExecutor:
 
     def _finished(self, odom: OdomPose) -> bool:
         start = self._start_pose
-        if self._active == FORWARD:
+        if self._active in (FORWARD, BACKWARD):
             dist = math.hypot(odom.x - start.x, odom.y - start.y)
             return dist >= FORWARD_M
         delta = wrap_angle(odom.yaw - start.yaw)
