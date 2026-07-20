@@ -33,8 +33,9 @@ current commanded action visible live. No BT engine involved; the future
 3. **Demo** (sim container, workspace built):
 
    ```bash
-   ./run_vln_demo.sh                  # server on localhost (defaults)
-   ./run_vln_demo.sh server_url:=http://140.114.89.63:18080   # remote server
+   ./run_vln_demo.sh                  # lab server 140.114.89.63 (default)
+   ./run_vln_demo.sh server_url:=http://localhost:18080       # local server
+   VLN_SERVER_URL=http://other-host:18080 ./run_vln_demo.sh   # another server
    ```
 
    From the sim machine, `curl http://<server-ip>:18080/health` first to
@@ -46,6 +47,43 @@ current commanded action visible live. No BT engine involved; the future
 
 No GPU / no server? `./run_vln_demo.sh backend:=dummy` replays a scripted
 action sequence through the same executors.
+
+## RViz visualization
+
+`vln_viz_node` runs by default (`viz:=false` to disable) and renders:
+
+* **`/vln/viz_image`** — the camera frame the model sees, with a HUD:
+  instruction, state (color-coded), step count, server latency, and the
+  action batch with the currently executing action highlighted.
+* **`/vln/viz_markers`** (odom frame) — the commanded batch drawn as a green
+  trajectory ribbon on the floor + an orange arrow for the final heading,
+  and a floating state label above the robot.
+* **`/vln/path`** — breadcrumbs of the actually executed motion (compare
+  against the ribbon to see command vs. execution). The path is cleared on
+  every new `/vln_instruction` and stops recording at `DONE` or `ERROR`, so it
+  only shows the current episode.
+
+Open RViz preconfigured with all of it:
+
+```bash
+./run_vln_demo.sh server_url:=http://140.114.89.63:18080 rviz:=true
+```
+
+or add the displays to an existing RViz session (fixed frame `odom`; config
+lives at `vln_policy/config/vln_demo.rviz`). In Nav2 mode the config also
+shows the global/local costmaps, laser scan, and robot footprint. The Nav2
+global/local plan displays are included but disabled by default to avoid
+overlaying extra long lines on `/vln/path`; enable them when debugging Nav2.
+All VLN snapshot displays use a keep-last depth of one.
+
+The top-right tmux pane is a compact latest-only status page. It refreshes in
+place instead of retaining every `/vln/status` heartbeat.
+
+The hospital scene publishes its camera rolled sideways, so the launch
+defaults `rgb_rotation:=clockwise_90`. The same correction is applied to the
+JPEG sent to StreamVLN and `/vln/viz_image`, ensuring RViz shows exactly the
+upright orientation used by the model. Use `rgb_rotation:=none` with a camera
+that already publishes upright images.
 
 ## Backends (`backend:=`)
 
@@ -68,6 +106,21 @@ contract in [DESIGN.md](DESIGN.md) and pointing `server_url` at it.
   `stretch3_navigation`'s params). Costmaps — including the
   semantic_traversability layer — get veto power over the motion.
 
+## Robot-relative reverse commands
+
+Simple direct instructions such as `move backward`, `back up 50 cm`, and
+`reverse 1 meter` are interpreted locally instead of being sent to
+StreamVLN. They become odometry-closed-loop `BACKWARD` actions, quantized to
+the same 0.25 m action step used by `FORWARD`. In the default `cmd_vel` mode
+this publishes negative `linear.x`; in `nav2` mode it requests a relative
+waypoint behind the robot and lets the planner choose the path.
+
+The rule is deliberately narrow: `go to the back of the room`, `go back to
+the kitchen`, and similar room/place-relative instructions still go to the
+visual navigation model. Direct reverse motion uses the forward-camera-blind
+side of the robot, so it should only be used where lidar/costmap coverage or
+operator supervision makes that safe.
+
 ## Key topics
 
 | topic | type | direction |
@@ -78,6 +131,9 @@ contract in [DESIGN.md](DESIGN.md) and pointing `server_url` at it.
 | `/vln/status` | `btcpp_ros2_interfaces/VlnStatus` | out — full live status |
 | `/vln/current_action` | `std_msgs/String` | out — bare action token |
 | `/cmd_vel` | `geometry_msgs/Twist` | out (cmd_vel mode) |
+| `/vln/viz_image` | `sensor_msgs/Image` | out — camera + HUD overlay (viz node) |
+| `/vln/viz_markers` | `visualization_msgs/MarkerArray` | out — action ribbon/arrow + state text (viz node) |
+| `/vln/path` | `nav_msgs/Path` | out — executed breadcrumb path (viz node) |
 
 `/vln_instruction` is deliberately separate from `/semantic_instruction`
 (perception prompts): a VLN instruction has episode-reset semantics.
