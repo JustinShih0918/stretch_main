@@ -1,0 +1,135 @@
+# StreamVLN inference server image — NVIDIA Jetson AGX Thor (JetPack 7 / L4T r39).
+#
+# Jetson variant of ./Dockerfile. Same server, same wire contract, different
+# base + pins; pick one, they are mutually exclusive (both bind :18080).
+#   ./Dockerfile         + ./compose.yaml         -> x86_64 dGPU (CUDA 12.1)
+#   ./Dockerfile.jetson  + ./compose.jetson.yaml  -> Thor aarch64 (CUDA 13)
+#
+# Deliberately separate from docker/sim: this image carries no ROS at all. The
+# ROS side only talks HTTP (contract in src/semantic_nav/vln_policy/DESIGN.md).
+#
+# Build (from repo root):
+#   docker compose -f docker/vln/compose.jetson.yaml build
+#
+# Base image choice (Thor is the constraint):
+#   Thor is compute capability sm_110 and JetPack 7 ships a CUDA 13 driver.
+#   The `-igpu` NGC tags are JetPack *6* (CUDA 12.9, TRT +jp6, Orin/sm_87) and
+#   do NOT work here. JetPack 7 uses the regular aarch64 (SBSA) NGC images,
+#   whose TORCH_CUDA_ARCH_LIST includes 11.0. Verified inside 25.10-py3 on Thor:
+#     torch 2.9.0a0  python 3.12  numpy 2.1
+#     arch list: sm_80 sm_86 sm_90 sm_100 sm_110 sm_120 compute_120
+#   Do NOT go back to pytorch/pytorch:2.1.2-cuda12.1 or nvcr.io ...:24.02-py3 —
+#   both top out at sm_90, print "GPU not supported", and only limp along by
+#   JIT-ing compute_90 PTX.
+ARG BASE_IMAGE=nvcr.io/nvidia/pytorch:25.10-py3
+FROM ${BASE_IMAGE}
+
+ARG DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        git curl ca-certificates fonts-dejavu-core libgl1 libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+# The NGC image ships a torch/torchvision built for sm_110 that does NOT exist
+# on PyPI. Its PIP_CONSTRAINT file (/etc/pip/constraint.txt) is empty, so any
+# pip install below that pulls in a torch dependency would happily replace it
+# with a generic PyPI wheel and silently break Thor support. Pin the installed
+# versions into that constraint file before installing anything.
+RUN python3 -c "\
+import importlib.metadata as m, os; \
+open(os.environ['PIP_CONSTRAINT'], 'w').write(''.join( \
+    f'{p}=={m.version(p)}\n' for p in ('torch', 'torchvision') \
+))" \
+    && cat "${PIP_CONSTRAINT}"
+
+# StreamVLN source, pinned. Serving needs the model/agent code only —
+# habitat-sim/habitat-lab (benchmark eval) are NOT installed.
+ARG STREAMVLN_REPO=https://github.com/InternRobotics/StreamVLN.git
+ARG STREAMVLN_COMMIT=main
+RUN git clone "${STREAMVLN_REPO}" /opt/streamvln \
+    && cd /opt/streamvln \
+    && git checkout "${STREAMVLN_COMMIT}" \
+    && rm -rf .git
+
+# Inference subset of StreamVLN's requirements.txt (torch ships with the base
+# image; deepspeed/habitat/training deps omitted).
+#
+# Deltas from upstream's pins, all forced by the py3.12 / numpy 2 base:
+#   numpy      -- NOT pinned to 1.26: the base's torch/torchvision/cv are built
+#                 against numpy 2.1. Downgrading breaks them. StreamVLN itself
+#                 is numpy-2 clean (no np.float/np.int aliases anywhere).
+#   opencv     -- 4.12 not 4.9.0.80: the 4.9 wheel is compiled against numpy 1
+#                 and fails to import under numpy 2.
+#   einops     -- left at the base's 0.8.1 (upstream asks 0.6.1); the llava code
+#                 only uses rearrange, and transformer_engine in the base needs
+#                 the newer one.
+#   av         -- upstream pins 14.4.0, which ships no wheels (source-only,
+#                 needs ffmpeg 7). 12.3.0 is the last version with a cp312
+#                 aarch64 manylinux wheel. Kept only so the guarded import in
+#                 llava/utils.py has its other half if decord is ever restored;
+#                 nothing in the serving path decodes video.
+#   decord     -- dropped entirely. It has no aarch64 wheel and its 0.6 source
+#                 build does not work against Ubuntu 24.04's ffmpeg. It is only
+#                 imported inside a `try: import av; from decord import ...
+#                 except ImportError` guard in llava/utils.py, used exclusively
+#                 by the video-file decode path. This server feeds single JPEG
+#                 frames, so that path is never taken.
+RUN pip install --no-cache-dir \
+        "transformers==4.45.1" \
+        "accelerate==0.28.0" \
+        "peft==0.5.0" \
+        "timm==1.0.15" \
+        "einops-exts==0.0.4" \
+        "open-clip-torch==2.32.0" \
+        "av==12.3.0" \
+        "opencv-python-headless==4.12.0.88" \
+        Pillow \
+        fastapi \
+        "uvicorn[standard]"
+
+# Deps StreamVLN imports but does not list in requirements.txt (they leak in
+# via habitat in the upstream conda env). Exact closure of the modules the
+# server touches: streamvln_agent needs quaternion + depth_camera_filtering +
+# omegaconf; everything else guarded by try/except upstream.
+# numpy-quaternion 2024.0.10 (not 2023.0.4) — first line with numpy 2 support
+# and a cp312 aarch64 wheel.
+RUN pip install --no-cache-dir \
+        "numpy-quaternion==2024.0.10" \
+        "omegaconf==2.3.0" \
+        "git+https://github.com/naokiyokoyama/depth_camera_filtering@39d6e2f391c8b2198a67ad96f94bf6da0acd48a0"
+
+# flash-attn is OFF by default on Thor: there is no aarch64/sm_110 wheel, and a
+# source build needs hours plus >32 GB of build RAM. The server runs on torch's
+# sdpa path instead (ATTN_IMPL below). Set BUILD_FLASH_ATTN=1 only on a machine
+# where a matching wheel actually exists; the build stays best-effort so a
+# failure never poisons the image.
+ARG BUILD_FLASH_ATTN=0
+RUN if [ "${BUILD_FLASH_ATTN}" = "1" ]; then \
+        pip install --no-cache-dir flash-attn --no-build-isolation \
+        || echo "WARNING: flash-attn install failed; leave ATTN_IMPL=sdpa"; \
+    else \
+        echo "Skipping flash-attn (BUILD_FLASH_ATTN=0); using ATTN_IMPL=sdpa"; \
+    fi
+
+# Checkpoint download, gated so the image can build without the ~16 GB model.
+# Leave STREAMVLN_MODEL empty and bind-mount a host copy over /opt/streamvln_ckpt
+# instead (see compose.jetson.yaml) to keep the image small — the usual choice
+# on a Jetson: ~29 GB image instead of ~60 GB, and a rebuild does not
+# re-download the weights.
+ARG STREAMVLN_MODEL=""
+ARG STREAMVLN_MODEL_ID=mengwei0427/StreamVLN_Video_qwen_1_5_r2r_rxr_envdrop_scalevln_real_world
+COPY modules/install_streamvln_model.sh /tmp/install_streamvln_model.sh
+RUN --mount=type=cache,target=/root/.cache/huggingface \
+    STREAMVLN_MODEL="${STREAMVLN_MODEL}" \
+    STREAMVLN_MODEL_ID="${STREAMVLN_MODEL_ID}" \
+    bash /tmp/install_streamvln_model.sh \
+    && rm /tmp/install_streamvln_model.sh
+
+COPY server/ /opt/vln_server/
+WORKDIR /opt/vln_server
+
+ENV MODEL_DIR=/opt/streamvln_ckpt \
+    STREAMVLN_ROOT=/opt/streamvln \
+    PORT=18080 \
+    ATTN_IMPL=sdpa
+
+CMD ["sh", "-c", "uvicorn app:app --host 0.0.0.0 --port ${PORT}"]

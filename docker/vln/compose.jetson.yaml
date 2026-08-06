@@ -1,0 +1,89 @@
+name: stretch-main-vln
+
+# StreamVLN inference server: host network, HTTP on :18080. The ROS side
+# (src/semantic_nav/vln_policy) talks to it via the wire contract in
+# src/semantic_nav/vln_policy/DESIGN.md — nothing ROS in here.
+#
+# Target: NVIDIA Jetson AGX Thor (JetPack 7 / L4T r39, CUDA 13, sm_110).
+# See the base-image note at the top of Dockerfile.jetson — the JetPack 6
+# `-igpu` NGC tags do NOT work on Thor.
+#
+# Jetson variant of ./compose.yaml (x86_64 dGPU). Pick one — they are mutually
+# exclusive: same container name, same :18080.
+#
+# Usage (run from the repo root, on the machine hosting the model):
+#   docker compose -f docker/vln/compose.jetson.yaml up -d
+#   curl localhost:18080/health
+# Then point the demo at it from the sim machine:
+#   ./run_vln_demo.sh server_url:=http://<thor-ip>:18080
+#
+# Checkpoint (~15 GB), two options:
+#   1. Bind-mounted from the host (DEFAULT, and what you want on a Jetson):
+#      the image stays ~29 GB instead of ~60 GB and a rebuild does not
+#      re-download the weights. Put the weights in STREAMVLN_CKPT_DIR:
+#        pip install "huggingface_hub[cli]"
+#        hf download mengwei0427/StreamVLN_Video_qwen_1_5_r2r_rxr_envdrop_scalevln_real_world \
+#            --local-dir ~/models/streamvln_ckpt
+#   2. Baked into the image: build with STREAMVLN_MODEL: "YES" below and drop
+#      the volume mount. The server answers /health with 503 if neither is set.
+#
+# Thor has unified CPU/GPU memory and exactly one GPU, so there is no GPU to
+# select — the VLN_GPU_ID / deploy.resources.device_ids knob does not apply
+# here. Need to pick a GPU (e.g. GPU 1 of the Isaac Sim machine, so Isaac
+# keeps GPU 0)? That is the x86 variant: use ./compose.yaml instead.
+#
+# NOTE: the server is unauthenticated HTTP — keep :18080 inside the lab
+# network (firewall), do not expose it to the internet.
+
+services:
+  vln-server:
+    build:
+      context: .
+      dockerfile: Dockerfile.jetson
+      args:
+        # Thor-capable base (CUDA 13 / sm_110). Override only if you know the
+        # replacement also builds torch for sm_110.
+        BASE_IMAGE: "nvcr.io/nvidia/pytorch:25.10-py3"
+        # "" = do not bake the checkpoint in; use the volume mount below.
+        STREAMVLN_MODEL: ""
+        # Pin a StreamVLN commit here once validated (default: main).
+        STREAMVLN_COMMIT: "main"
+        # No sm_110 flash-attn wheel exists; the server uses sdpa.
+        # See Dockerfile.jetson.
+        BUILD_FLASH_ATTN: "0"
+    # Distinct tag so building this never clobbers the x86 image from
+    # ./compose.yaml (which tags stretch-main-vln:latest).
+    image: stretch-main-vln:jetson
+    container_name: stretch-main-vln-server
+    network_mode: host
+    restart: unless-stopped
+    runtime: nvidia
+    volumes:
+      # Host checkpoint -> where the server looks (MODEL_DIR). Drop this line
+      # if you baked the weights in with STREAMVLN_MODEL=YES.
+      - ${STREAMVLN_CKPT_DIR:-~/models/streamvln_ckpt}:/opt/streamvln_ckpt:ro
+    environment:
+      - PORT=18080
+      # Thor exposes a single iGPU, so it is always cuda:0.
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - DEVICE=cuda:0
+      # sdpa, not flash_attention_2: no flash-attn build for sm_110 aarch64.
+      - ATTN_IMPL=${ATTN_IMPL:-sdpa}
+      # Thor's RAM is shared with the GPU; stage weights layer-by-layer rather
+      # than holding a second full copy of the model in system RAM.
+      - LOW_CPU_MEM=1
+    # NGC PyTorch images want these; the default 64 MB /dev/shm is not enough.
+    ipc: host
+    ulimits:
+      memlock: -1
+      stack: 67108864
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:18080/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      # Thor loads the 7B checkpoint from eMMC/NVMe noticeably slower than a
+      # dGPU box; keep a generous grace period before the container is
+      # declared unhealthy.
+      start_period: 600s

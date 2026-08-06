@@ -8,7 +8,7 @@ current commanded action visible live. No BT engine involved; the future
 
 ```
 /vln_instruction ─► vln_agent_node ─► backend (HTTP) ─► StreamVLN server
-      (String)          │                                 (docker/vln, GPU 1)
+      (String)          │                                 (docker/vln, x86 or Thor)
                         │  discrete actions: FORWARD / TURN_LEFT / TURN_RIGHT / STOP
                         ├─► cmd_vel executor  (velocity bursts, closed-loop /odom)
                         └─► nav2 executor     (relative waypoint -> navigate_to_pose)
@@ -19,17 +19,24 @@ current commanded action visible live. No BT engine involved; the future
 
 1. **Sim** — launch Isaac Sim, open `isaacsim/assets/stretch3_og_hospital.usda`,
    press Play. Verify `/rgb` and `/odom` are publishing.
-2. **Model server** (any GPU machine with ~24 GB VRAM; needs only docker +
-   nvidia-container-toolkit + this repo, no ROS) — for `backend:=streamvln`:
+2. **Model server** (any machine with ~17 GB of free VRAM; needs only docker
+   + nvidia-container-toolkit + this repo, no ROS) — for `backend:=streamvln`,
+   pick the variant matching the hardware:
 
    ```bash
+   # x86_64 dGPU (VLN_GPU_ID=1 shares the Isaac Sim machine, Isaac keeps GPU 0)
    docker compose -f docker/vln/compose.yaml up -d
+   # NVIDIA Jetson AGX Thor (JetPack 7 / CUDA 13 / sm_110)
+   docker compose -f docker/vln/compose.jetson.yaml up -d
+
    curl localhost:18080/health        # wait for {"status":"ok",...}
    ```
 
-   Sharing the Isaac Sim machine instead? `VLN_GPU_ID=1 docker compose ...`
-   so Isaac keeps GPU 0. The server is plain HTTP — keep port 18080 inside
-   the lab network.
+   The two are mutually exclusive — same container name, same port. The Thor
+   variant bind-mounts the ~15 GB checkpoint from the host instead of baking
+   it into the image; see the header of `docker/vln/compose.jetson.yaml` for
+   how to fetch it. The server is plain HTTP — keep port 18080 inside the lab
+   network.
 3. **Demo** (sim container, workspace built):
 
    ```bash
@@ -89,7 +96,7 @@ that already publishes upright images.
 
 | name | what it is | needs |
 |---|---|---|
-| `streamvln` | HTTP client to the StreamVLN server (`docker/vln/`) | server on GPU 1 |
+| `streamvln` | HTTP client to the StreamVLN server (`docker/vln/`) | that server (x86 or Thor) |
 | `dummy` | scripted action replay (`dummy_actions:=FORWARD,TURN_LEFT,STOP`) | nothing |
 | `navila` | adapter slot for a NaVILA/NaVid server speaking the same contract (port 18081) | that server (not vendored yet) |
 

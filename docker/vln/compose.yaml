@@ -5,6 +5,10 @@ name: stretch-main-vln
 # src/semantic_nav/vln_policy/DESIGN.md — nothing ROS in here, so this can
 # run on any GPU machine (24 GB VRAM fits the 7B model comfortably).
 #
+# This is the x86_64 dGPU variant. On NVIDIA Jetson AGX Thor (JetPack 7,
+# aarch64/CUDA 13/sm_110) use ./compose.jetson.yaml + ./Dockerfile.jetson
+# instead — this image's CUDA 12.1 torch has no sm_110 kernels.
+#
 # Usage (run from the repo root, on the GPU machine hosting the model):
 #   docker compose -f docker/vln/compose.yaml up -d
 #   curl localhost:18080/health

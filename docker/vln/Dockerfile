@@ -5,6 +5,9 @@
 # transformers 4.57). The ROS side only talks HTTP (contract in
 # src/semantic_nav/vln_policy/DESIGN.md), so this image carries no ROS at all.
 #
+# x86_64 dGPU variant. For NVIDIA Jetson AGX Thor (JetPack 7, aarch64 /
+# CUDA 13 / sm_110) use ./Dockerfile.jetson — this base tops out at sm_90.
+#
 # Build (from repo root):
 #   docker compose -f docker/vln/compose.yaml build
 #
