@@ -13,6 +13,11 @@ from std_msgs.msg import String
 
 from btcpp_ros2_interfaces.msg import SemanticDetection2D
 
+from .image_rotation import (
+    normalize_rgb_rotation,
+    rotate_rgb_image,
+    unrotate_box,
+)
 from .locate_anything_parser import parse_labeled_boxes
 
 
@@ -35,9 +40,14 @@ class LocateAnythingNode(Node):
         self.declare_parameter("dtype", "bfloat16")
         self.declare_parameter("generation_mode", "hybrid")
         self.declare_parameter("max_new_tokens", 512)
+        # none | clockwise_90 | counterclockwise_90 | 180
+        self.declare_parameter("rgb_rotation", "clockwise_90")
 
         rgb_topic = self.get_parameter("rgb_topic").value
         detection_topic = self.get_parameter("detection_topic").value
+        self.rgb_rotation = normalize_rgb_rotation(
+            self.get_parameter("rgb_rotation").value
+        )
         self.targets = self._load_targets(
             self.get_parameter("targets_file").value
         )
@@ -60,7 +70,8 @@ class LocateAnythingNode(Node):
         mode = "phrase grounding" if self.prompt else "target detection"
         self.get_logger().info(
             f"locate_anything_node up: rgb={rgb_topic} -> "
-            f"{detection_topic}; mode={mode}"
+            f"{detection_topic}; mode={mode}; "
+            f"rgb_rotation={self.rgb_rotation}"
         )
 
     def _load_targets(self, path: str) -> dict:
@@ -146,7 +157,9 @@ class LocateAnythingNode(Node):
         from PIL import Image as PILImage
 
         rgb = self._bridge.imgmsg_to_cv2(msg, desired_encoding="rgb8")
-        image = PILImage.fromarray(rgb)
+        # The model sees the upright frame; boxes are mapped back below.
+        model_rgb = rotate_rgb_image(rgb, self.rgb_rotation)
+        image = PILImage.fromarray(model_rgb)
         generation_kwargs = {
             "generation_mode": self.get_parameter(
                 "generation_mode"
@@ -172,7 +185,7 @@ class LocateAnythingNode(Node):
             self.get_logger().error(f"LocateAnything inference failed: {exc}")
             return
 
-        height, width = rgb.shape[:2]
+        height, width = model_rgb.shape[:2]
         detections = parse_labeled_boxes(
             str(result.get("answer", "")),
             width,
@@ -181,16 +194,24 @@ class LocateAnythingNode(Node):
         )
         for box in detections:
             label, traversable = self._attribute_for_label(box["label"])
+            # Back to raw-camera pixels: projection_node pairs these with the
+            # unrotated /depth + /camera_info.
+            x, y, box_width, box_height = unrotate_box(
+                (box["x"], box["y"], box["width"], box["height"]),
+                self.rgb_rotation,
+                width,
+                height,
+            )
             detection = SemanticDetection2D()
             detection.header = msg.header
             detection.label = label
             detection.traversable = traversable
             # LocateAnything's generated output has no calibrated score.
             detection.confidence = 1.0
-            detection.x = box["x"]
-            detection.y = box["y"]
-            detection.width = box["width"]
-            detection.height = box["height"]
+            detection.x = x
+            detection.y = y
+            detection.width = box_width
+            detection.height = box_height
             self.pub.publish(detection)
 
 

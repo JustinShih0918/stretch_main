@@ -7,3 +7,7 @@ locate_anything_node:
     dtype: "bfloat16"
     generation_mode: "hybrid"
     max_new_tokens: 512
+    # Upright the sideways Stretch camera frame before inference; boxes are
+    # mapped back to raw-camera pixels before publishing.
+    # none | clockwise_90 | counterclockwise_90 | 180
+    rgb_rotation: clockwise_90

@@ -130,3 +130,5 @@ ros2 run bt_engine bt_engine --ros-args -p bt_xml_path:=/abs/path/to/your_tree.x
 [`.github/workflows/ci.yml`](.github/workflows/ci.yml) 在每次 push / PR：
 1. 用 [`docker/ci/Dockerfile.ci`](docker/ci/Dockerfile.ci) build 出最小 image（layer 用 GHA cache）
 2. 容器內 `colcon build --packages-up-to bt_engine`
+
+export LD_LIBRARY_PATH=/home/user/isaacsim/kit/python/lib/python3.11/site-packages/nvidia/cusparselt/lib:$LD_LIBRARY_PATH

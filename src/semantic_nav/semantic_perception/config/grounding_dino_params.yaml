@@ -6,3 +6,7 @@ grounding_dino_node:
     model_config: "/opt/grounding_dino/GroundingDINO_SwinT_OGC.py"
     model_weights: "/opt/grounding_dino/groundingdino_swint_ogc.pth"
     device: "cuda"
+    # Upright the sideways Stretch camera frame before inference; boxes are
+    # mapped back to raw-camera pixels before publishing.
+    # none | clockwise_90 | counterclockwise_90 | 180
+    rgb_rotation: clockwise_90

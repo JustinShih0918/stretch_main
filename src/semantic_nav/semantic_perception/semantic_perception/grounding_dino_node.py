@@ -23,6 +23,12 @@ from sensor_msgs.msg import Image
 
 from btcpp_ros2_interfaces.msg import SemanticDetection2D
 
+from .image_rotation import (
+    normalize_rgb_rotation,
+    rotate_rgb_image,
+    unrotate_box,
+)
+
 
 class GroundingDinoNode(Node):
     def __init__(self):
@@ -37,11 +43,16 @@ class GroundingDinoNode(Node):
         self.declare_parameter("model_config", "")
         self.declare_parameter("model_weights", "")
         self.declare_parameter("device", "cuda")
+        # none | clockwise_90 | counterclockwise_90 | 180
+        self.declare_parameter("rgb_rotation", "clockwise_90")
 
         rgb_topic = self.get_parameter("rgb_topic").value
         det_topic = self.get_parameter("detection_topic").value
         self.box_threshold = float(self.get_parameter("box_threshold").value)
         self.text_threshold = float(self.get_parameter("text_threshold").value)
+        self.rgb_rotation = normalize_rgb_rotation(
+            self.get_parameter("rgb_rotation").value
+        )
 
         self.targets = self._load_targets(self.get_parameter("targets_file").value)
         prompt_param = self.get_parameter("prompt").value
@@ -58,7 +69,7 @@ class GroundingDinoNode(Node):
 
         self.get_logger().info(
             f"grounding_dino_node up: rgb={rgb_topic} -> {det_topic}; "
-            f"prompt='{self.prompt}'"
+            f"prompt='{self.prompt}'; rgb_rotation={self.rgb_rotation}"
         )
 
     # ---- config helpers -------------------------------------------------
@@ -127,7 +138,9 @@ class GroundingDinoNode(Node):
         import numpy as np
 
         cv_img = self._bridge.imgmsg_to_cv2(msg, desired_encoding="rgb8")
-        pil = PILImage.fromarray(cv_img)
+        # The model sees the upright frame; boxes are mapped back below.
+        model_img = rotate_rgb_image(cv_img, self.rgb_rotation)
+        pil = PILImage.fromarray(model_img)
         transform = T.Compose(
             [
                 T.RandomResize([800], max_size=1333),
@@ -146,15 +159,21 @@ class GroundingDinoNode(Node):
             device=self._device,
         )
 
-        h, w = cv_img.shape[:2]
+        h, w = model_img.shape[:2]
         for box, score, phrase in zip(boxes, logits, phrases):
-            # box is normalized cx, cy, bw, bh in [0, 1].
+            # box is normalized cx, cy, bw, bh in [0, 1] of the rotated image.
             cx, cy, bw, bh = (float(v) for v in box)
-            px = int((cx - bw / 2.0) * w)
-            py = int((cy - bh / 2.0) * h)
-            pw = int(bw * w)
-            ph = int(bh * h)
+            px = max(0, int((cx - bw / 2.0) * w))
+            py = max(0, int((cy - bh / 2.0) * h))
+            pw = max(0, int(bw * w))
+            ph = max(0, int(bh * h))
             label, traversable = self._attr_for_label(phrase)
+
+            # Back to raw-camera pixels: projection_node pairs these with the
+            # unrotated /depth + /camera_info.
+            px, py, pw, ph = unrotate_box(
+                (px, py, pw, ph), self.rgb_rotation, w, h
+            )
 
             det = SemanticDetection2D()
             det.header = msg.header

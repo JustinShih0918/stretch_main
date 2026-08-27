@@ -64,6 +64,17 @@ camera-derived polygon of a class flagged `traversable`.
 - **`static_region_publisher`**: milestone-1 helper that publishes a
   hand-authored traversable polygon directly on `/semantic_regions`, so the
   costmap layer + planner can be validated **without** the VLM.
+- **`image_rotation`**: shared right-angle RGB correction (`rgb_rotation`
+  param, default `clockwise_90`, same convention as `vln_policy`). The Stretch
+  head camera publishes its frame rolled sideways, which the open-set VLMs
+  ground poorly on, so both perception nodes rotate the image **upright before
+  inference** and map the detected boxes **back to raw-camera pixels** before
+  publishing `SemanticDetection2D`. That back-mapping is what keeps
+  `projection_node` correct: `/depth` and `/camera_info` are never rotated, so
+  the published detection contract stays in camera pixel coordinates
+  regardless of this setting. `detection_viz_node` takes the same parameter and
+  publishes `/semantic_detection_viz` in the upright orientation the model saw.
+  Use `rgb_rotation:=none` with a camera that already publishes upright.
 
 ### `vln_policy/` (Python, `ament_python`) — Vision-Language Navigation
 - **`vln_agent_node`**: instruction-driven VLN agent with swappable model
@@ -88,8 +99,8 @@ ros2 launch stretch3_navigation semantic_navigation.launch.py perception:=static
 #   -> watch the curtain cells clear in RViz; send a goal behind it; a path
 #      appears. Set semantic_traversability_layer.enabled:=False to see it fail.
 
-# Full pipeline — LocateAnything (default).
-ros2 launch stretch3_navigation semantic_navigation.launch.py
+# Full pipeline — LocateAnything (default), with the RViz scene.
+ros2 launch stretch3_navigation semantic_navigation.launch.py rviz:=true
 
 # Require 3 matching detections before holding a region forever.
 ros2 launch stretch3_navigation semantic_navigation.launch.py \
@@ -98,7 +109,37 @@ ros2 launch stretch3_navigation semantic_navigation.launch.py \
 # Optional Grounding DINO backend.
 ros2 launch stretch3_navigation semantic_navigation.launch.py \
     perception:=dino
+
+# Camera already upright (no sideways roll to correct).
+ros2 launch stretch3_navigation semantic_navigation.launch.py \
+    rgb_rotation:=none
 ```
+
+### RViz scene (`rviz:=true`)
+
+`stretch3_navigation/rviz/semantic_navigation.rviz` (fixed frame `world`)
+shows, in one window:
+
+| Display | Topic | What it tells you |
+|---|---|---|
+| **RGB + Detections** | `/semantic_detection_viz` | upright camera frame with the VLM boxes + `TRAVERSABLE`/`BLOCKED` labels |
+| **Global Costmap** | `/global_costmap/costmap` | curtain cells cleared to `traversable_cost` by the semantic layer |
+| **Local Costmap** | `/local_costmap/costmap` | what the controller actually drives against |
+| **Robot Frames (TF)** + **Robot Footprint** | `/tf`, `/local_costmap/published_footprint` | robot pose and body outline |
+| **LaserScan** | `/laser_scan` | the LETHAL marks the semantic layer overrides |
+| **Global Plan** / **Goal Pose** | `/plan`, `/goal_pose` | the path through the traversable region |
+
+Both costmap displays subscribe **transient-local** (as nav2's own
+`nav2_default_view.rviz` does); a volatile subscription can sit empty waiting
+for the next periodic publish. An empty **RGB + Detections** panel means
+`detection_viz_node` is publishing nothing at all — it republishes the plain
+(rotated) frame even when the VLM finds nothing, so check `/rgb` is flowing
+and the node is alive, not the detector.
+
+A `RobotModel` display is included but **disabled**: nothing in this stack
+publishes `/robot_description` (Isaac Sim supplies TF only). Enable it if you
+run a `robot_state_publisher` alongside. Point `rviz_config:=/path/to.rviz` at
+your own file to override the scene.
 
 Backend-specific model parameters live in
 `semantic_perception/config/locate_anything_params.yaml` and

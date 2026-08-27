@@ -109,6 +109,16 @@ ARGUMENTS = [
         description="Publish /semantic_detection_viz.",
     ),
     DeclareLaunchArgument(
+        "rgb_rotation",
+        default_value="clockwise_90",
+        choices=["none", "clockwise_90", "counterclockwise_90", "180"],
+        description="Right-angle correction applied to /rgb before the VLM "
+                    "sees it (the Stretch head camera publishes sideways). "
+                    "Detections are mapped back to raw-camera pixels, so "
+                    "projection stays aligned with /depth. The same rotation "
+                    "is applied to /semantic_detection_viz.",
+    ),
+    DeclareLaunchArgument(
         "perception_params_file",
         default_value="",
         description="Optional YAML file for the selected perception backend.",
@@ -155,6 +165,7 @@ def _make_perception_node(context, *args, **kwargs):
                     "rgb_topic": LaunchConfiguration("rgb_topic"),
                     "detection_topic": "/semantic_detection",
                     "targets_file": targets_file,
+                    "rgb_rotation": LaunchConfiguration("rgb_rotation"),
                 },
             ],
             remappings=[("~/instruction", "/semantic_instruction")],
@@ -274,7 +285,10 @@ def generate_launch_description():
         name="detection_viz_node",
         output="screen",
         condition=IfCondition(LaunchConfiguration("detection_viz")),
-        parameters=[{"use_sim_time": use_sim_time}],
+        parameters=[{
+            "use_sim_time": use_sim_time,
+            "rgb_rotation": LaunchConfiguration("rgb_rotation"),
+        }],
         remappings=[("/rgb", LaunchConfiguration("rgb_topic"))],
     )
 

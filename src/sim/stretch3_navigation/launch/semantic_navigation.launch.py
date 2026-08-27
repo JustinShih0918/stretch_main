@@ -13,6 +13,10 @@ perception/projection pipeline that feeds it:
       perception:=static          -> static_region_publisher
       perception:=none            -> publish /semantic_regions yourself
 
+Add rviz:=true for the preconfigured scene (RGB + detection boxes, global and
+local costmaps, laser scan, robot frames/footprint, global plan) from
+stretch3_navigation/rviz/semantic_navigation.rviz.
+
 Prerequisites (provided by Isaac Sim): world->odom->base_link TF, /laser_scan,
 /odom, /rgb, /depth, /camera_info.
 """
@@ -104,6 +108,25 @@ ARGUMENTS = [
         description="RGB image topic for the VLM.",
     ),
     DeclareLaunchArgument(
+        "rgb_rotation", default_value="clockwise_90",
+        choices=["none", "clockwise_90", "counterclockwise_90", "180"],
+        description="Right-angle correction applied to /rgb before the VLM "
+                    "sees it (the Stretch head camera publishes sideways). "
+                    "Detections are mapped back to raw-camera pixels, so "
+                    "projection stays aligned with /depth. The same rotation "
+                    "is applied to /semantic_detection_viz.",
+    ),
+    DeclareLaunchArgument(
+        "rviz", default_value="false",
+        description="Open RViz with the semantic_navigation scene (RGB + "
+                    "detection boxes, global/local costmaps, robot frames).",
+    ),
+    DeclareLaunchArgument(
+        "rviz_config", default_value="",
+        description="Override the RViz config used by rviz:=true. Empty uses "
+                    "stretch3_navigation/rviz/semantic_navigation.rviz.",
+    ),
+    DeclareLaunchArgument(
         "perception_params_file",
         default_value="",
         description="Optional YAML file for the selected perception backend. "
@@ -152,9 +175,38 @@ def _make_perception_node(context, *args, **kwargs):
                     "rgb_topic": LaunchConfiguration("rgb_topic"),
                     "detection_topic": "/semantic_detection",
                     "targets_file": targets_file,
+                    "rgb_rotation": LaunchConfiguration("rgb_rotation"),
                 },
             ],
             remappings=[("~/instruction", "/semantic_instruction")],
+        )
+    ]
+
+
+def _make_rviz_node(context, *args, **kwargs):
+    if LaunchConfiguration("rviz").perform(context).lower() not in (
+        "true", "1", "yes", "on"
+    ):
+        return []
+
+    rviz_config = LaunchConfiguration("rviz_config").perform(context)
+    if not rviz_config:
+        rviz_config = os.path.join(
+            get_package_share_directory("stretch3_navigation"),
+            "rviz",
+            "semantic_navigation.rviz",
+        )
+
+    return [
+        Node(
+            package="rviz2",
+            executable="rviz2",
+            name="rviz2",
+            output="screen",
+            arguments=["-d", rviz_config],
+            parameters=[{
+                "use_sim_time": LaunchConfiguration("use_sim_time"),
+            }],
         )
     ]
 
@@ -220,9 +272,14 @@ def generate_launch_description():
         name="detection_viz_node",
         output="screen",
         condition=IfCondition(LaunchConfiguration("detection_viz")),
-        parameters=[{"use_sim_time": use_sim_time}],
+        parameters=[{
+            "use_sim_time": use_sim_time,
+            "rgb_rotation": LaunchConfiguration("rgb_rotation"),
+        }],
         remappings=[("/rgb", LaunchConfiguration("rgb_topic"))],
     )
+
+    rviz = OpaqueFunction(function=_make_rviz_node)
 
     ld = LaunchDescription(ARGUMENTS)
     ld.add_action(nav2)
@@ -230,4 +287,5 @@ def generate_launch_description():
     ld.add_action(perception_node)
     ld.add_action(static_pub)
     ld.add_action(detection_viz)
+    ld.add_action(rviz)
     return ld

@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """Draws VLM bounding boxes + labels onto the RGB image and
-publishes the annotated result on /semantic_detection_viz for RViz."""
+publishes the annotated result on /semantic_detection_viz for RViz.
+
+Detections arrive in raw-camera pixels; with `rgb_rotation` set the annotated
+image is published in the same upright orientation the VLM was given, so RViz
+shows exactly what the model saw."""
 
 import rclpy
 from rclpy.executors import ExternalShutdownException
@@ -10,6 +14,12 @@ from btcpp_ros2_interfaces.msg import SemanticDetection2D
 from cv_bridge import CvBridge
 import cv2
 import threading
+
+from .image_rotation import (
+    normalize_rgb_rotation,
+    rotate_box,
+    rotate_rgb_image,
+)
 
 
 # Colour per traversability
@@ -27,6 +37,13 @@ class DetectionVizNode(Node):
         self._detections = []
         self._latest_stamp = None
 
+        # none | clockwise_90 | counterclockwise_90 | 180 — must match the
+        # perception node's rgb_rotation for the overlay to line up.
+        self.declare_parameter("rgb_rotation", "clockwise_90")
+        self.rgb_rotation = normalize_rgb_rotation(
+            self.get_parameter("rgb_rotation").value
+        )
+
         self.create_subscription(Image, "/rgb", self._on_image, 1)
         self.create_subscription(
             SemanticDetection2D, "/semantic_detection", self._on_det, 10
@@ -34,7 +51,8 @@ class DetectionVizNode(Node):
         self._pub = self.create_publisher(Image, "/semantic_detection_viz", 1)
         self.create_timer(0.1, self._publish)          # 10 Hz output
         self.get_logger().info(
-            "detection_viz_node ready → /semantic_detection_viz"
+            "detection_viz_node ready → /semantic_detection_viz "
+            f"(rgb_rotation={self.rgb_rotation})"
         )
 
     def _on_image(self, msg: Image):
@@ -58,11 +76,20 @@ class DetectionVizNode(Node):
 
         frame = self._bridge.imgmsg_to_cv2(img_msg, desired_encoding="rgb8")
         frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+        raw_height, raw_width = frame.shape[:2]
+        frame = rotate_rgb_image(frame, self.rgb_rotation)
 
         for det in detections:
             col = _COL_TRAV if det.traversable else _COL_NTRAV
-            x1, y1 = det.x, det.y
-            x2, y2 = det.x + det.width, det.y + det.height
+            # Detections are in raw-camera pixels; rotate them the same way
+            # the frame was rotated.
+            x1, y1, box_w, box_h = rotate_box(
+                (det.x, det.y, det.width, det.height),
+                self.rgb_rotation,
+                raw_width,
+                raw_height,
+            )
+            x2, y2 = x1 + box_w, y1 + box_h
             cv2.rectangle(frame, (x1, y1), (x2, y2), col, 2)
 
             label = f"{det.label} {det.confidence:.2f}"

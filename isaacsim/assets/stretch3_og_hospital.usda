@@ -8,7 +8,7 @@
             }
             dictionary Perspective = {
                 double3 position = (4.634797081050674, -1.1123289873882485, 1.9975142359607478)
-                double3 target = (1.3183083751213123, -0.37004938902093854, 1.254597482041039)
+                double3 target = (1.3183083751213114, -0.3700493890209393, 1.254597482041039)
             }
             dictionary Right = {
                 double3 position = (0, -5, 0)
@@ -297,7 +297,7 @@ def Xform "World"
                         }
                     }
                 )
-                quatd xformOp:orient = (-0.5058944555375231, -0.4940352212711086, 0.505894455537523, 0.49403522127110866) (
+                quatd xformOp:orient = (0.5698520682738696, 0.42244117694955985, -0.4325818079522135, -0.5564935325143125) (
                     customData = {
                         dictionary omni = {
                             dictionary kit = {
@@ -315,7 +315,7 @@ def Xform "World"
                         }
                     }
                 )
-                double3 xformOp:translate = (-0.4457439655906228, -0.004720449704755156, 0.4320419923571626) (
+                double3 xformOp:translate = (-2.33037594621507, -0.004720449704755444, 1.4062114139348967) (
                     customData = {
                         dictionary omni = {
                             dictionary kit = {

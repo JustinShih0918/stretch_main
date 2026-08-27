@@ -65,6 +65,13 @@ changes to the sensor pipeline, and is reusable across sim and the real robot.
 > with matching durability so a late-joining costmap still receives the last
 > published region.
 
+> `SemanticDetection2D` boxes are **always in raw `/rgb` pixel coordinates**.
+> The perception nodes' `rgb_rotation` parameter (default `clockwise_90`, to
+> upright the sideways Stretch head camera) applies only to the image handed to
+> the VLM; the resulting boxes are rotated back before publishing, because
+> `projection_node` deprojects them against the unrotated `/depth` +
+> `/camera_info`. Any new detector must publish in the same raw-pixel frame.
+
 ### Frames
 
 - Global costmap frame: **`world`**; local costmap frame: **`odom`**.
