@@ -6,10 +6,11 @@
 #   Bottom right: type an instruction + Enter to publish /vln_instruction
 #
 # Usage (inside the sim container, workspace built):
-#   ./run_vln_demo.sh                                   # lab StreamVLN + cmd_vel
+#   ./run_vln_demo.sh                                   # lab StreamVLN + shared follower
 #   ./run_vln_demo.sh backend:=dummy                    # no model needed
-#   ./run_vln_demo.sh backend:=streamvln execution_mode:=nav2
-#   VLN_SERVER_URL=http://other-host:18080 ./run_vln_demo.sh
+#   ./run_vln_demo.sh backend:=streamvln
+#   ./run_vln_demo.sh backend:=dualvln
+#   STREAMVLN_SERVER_URL=http://other-host:18080 ./run_vln_demo.sh
 #
 # Prerequisites:
 #   * Isaac Sim playing isaacsim/assets/stretch3_og_hospital.usda
@@ -19,6 +20,8 @@
 #       docker compose -f docker/vln/compose.yaml up -d     # on the GPU machine
 #       curl http://<server-ip>:18080/health                # wait for "ok"
 #     remote server: ./run_vln_demo.sh server_url:=http://<server-ip>:18080
+#   * for backend:=dualvln — docker/dualvln on a remote GPU, plus synchronized
+#     /depth and /camera_info topics in the simulation.
 
 set -e
 
@@ -28,8 +31,8 @@ SETUP_FILE="${WORKSPACE_ROOT}/install/setup.bash"
 LAUNCH_ARGS=("$@")
 
 # This workspace normally uses the lab inference server.  An explicit ROS
-# launch argument wins, followed by VLN_SERVER_URL, then the lab default.
-# Keep localhost available via server_url:=http://localhost:18080.
+# launch argument wins; the launch file then selects STREAMVLN_SERVER_URL or
+# DUALVLN_SERVER_URL (and finally its backend-specific default).
 BACKEND_NAME=streamvln
 HAS_SERVER_URL=false
 for arg in "${LAUNCH_ARGS[@]}"; do
@@ -38,10 +41,11 @@ for arg in "${LAUNCH_ARGS[@]}"; do
     server_url:=*) HAS_SERVER_URL=true ;;
   esac
 done
-if [ "${BACKEND_NAME}" = streamvln ] && [ "${HAS_SERVER_URL}" = false ]; then
-  LAUNCH_ARGS+=(
-    "server_url:=${VLN_SERVER_URL:-http://140.114.89.63:18080}"
-  )
+if [ "${HAS_SERVER_URL}" = false ] && [ -n "${VLN_SERVER_URL:-}" ]; then
+  echo "WARNING: VLN_SERVER_URL is deprecated; use STREAMVLN_SERVER_URL."
+  if [ "${BACKEND_NAME}" = streamvln ]; then
+    LAUNCH_ARGS+=("server_url:=${VLN_SERVER_URL}")
+  fi
 fi
 
 # Quote every passthrough argument for the shell tmux creates for the pane.

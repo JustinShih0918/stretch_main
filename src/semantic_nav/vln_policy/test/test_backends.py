@@ -164,6 +164,9 @@ class TestRegistry:
     def test_known_backends(self):
         assert make_backend("dummy").name == "dummy"
         assert make_backend("streamvln").name == "streamvln"
+        dualvln = make_backend("dualvln")
+        assert dualvln.name == "dualvln"
+        assert dualvln.server_url == "http://localhost:18082"
         navila = make_backend("navila")
         assert navila.name == "navila"
         assert navila.server_url == "http://localhost:18081"

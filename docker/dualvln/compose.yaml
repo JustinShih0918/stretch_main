@@ -1,0 +1,32 @@
+name: stretch-main-dualvln
+
+services:
+  dualvln-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        DUALVLN_MODEL: "YES"
+        INTERNNAV_COMMIT: "7a5c62400ac45b313d9b709c740b64191556a242"
+        CHECKPOINT_REVISION: "a698a9e898b4001621a319e1bc89f02ec715cc86"
+    image: stretch-main-dualvln:latest
+    container_name: stretch-main-dualvln-server
+    network_mode: host
+    restart: unless-stopped
+    environment:
+      - PORT=18082
+      - DEVICE=cuda:0
+      - PLAN_STEP_GAP=${DUALVLN_PLAN_STEP_GAP:-0}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["${DUALVLN_GPU_ID:-0}"]
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:18082/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 300s

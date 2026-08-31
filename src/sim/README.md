@@ -32,3 +32,10 @@ git clone --depth 1 https://github.com/j3soon/ros2-essentials.git /tmp/ros2-esse
 cp -R /tmp/ros2-essentials/stretch3_ws/src/stretch3_navigation src/sim/
 cp -R /tmp/ros2-essentials/stretch3_ws/src/stretch_urdf        src/sim/
 ```
+## Automated benchmark resets
+
+The simulation image includes `ros-humble-simulation-interfaces`. Start
+Isaac Sim 5.1 with `isaac-sim-ros-control` so the documented
+`isaacsim.ros2.sim_control` extension exposes `/set_entity_state`; then open
+the hospital USD and press Play. The VLN benchmark deliberately fails if the
+service or reset-confirming odometry is absent.

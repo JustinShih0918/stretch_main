@@ -27,7 +27,8 @@ stretch_main/
 │   ├── ci/      Dockerfile.ci + docker-compose.yaml   # minimal build/test image
 │   ├── sim/     Dockerfile + compose.yaml + modules/  # Isaac Sim 5.1 image (GPU/X11)
 │   ├── deploy/  Dockerfile + docker-compose.yaml      # on-robot nav/slam image
-│   └── vln/     Dockerfile + compose.yaml + server/   # StreamVLN inference server (GPU 1, no ROS)
+│   ├── vln/     Dockerfile + compose.yaml + server/   # StreamVLN inference server (no ROS)
+│   └── dualvln/ Dockerfile + compose.yaml + server/   # DualVLN inference server (no ROS)
 ├── isaacsim/assets/              # Stretch USD assets for Isaac Sim
 ├── src/common/bt_engine/bt/main_tree.xml   # default BT XML
 ├── ref/                          # old reference code, NOT a package, NOT built
@@ -44,7 +45,7 @@ stretch_main/
 5. **`ref/` is reference-only.** Older, larger `bt_engine.cpp` using a `dock_robot` action + project logic. **Not built** (no `package.xml`). Pattern reference only — don't compile it.
 6. **Three Docker environments under `docker/`** (see "Docker environments" below). The `docker/sim/Dockerfile` `COPY`s install scripts from `docker/sim/modules/` — in upstream ros2-essentials those are hard-links to a repo-level `docker_modules/`; here they are **vendored copies** (materialized, not symlinks). If you add/update a sim install step, edit the copy under `docker/sim/modules/`.
 7. CI / deploy Dockerfiles do **not** install `behaviortree_ros2` from apt (vendored), nor `libfmt-dev`/`libboost-dev` explicitly — they come transitively via `ros-humble-behaviortree-cpp` and `ros-humble-navigation2`. If those are removed, add the libs back.
-8. **VLN model inference never runs in a ROS image.** `docker/vln/` is a separate, ROS-free container (StreamVLN pins torch 2.1.2/cu121 vs sim's cu128) that runs on any GPU machine (GPU selected via `VLN_GPU_ID`, default 0; use 1 when sharing the Isaac machine); the ROS side (`src/semantic_nav/vln_policy/`) is a thin HTTP client pointed at it with `server_url`. The wire contract is normative in `src/semantic_nav/vln_policy/DESIGN.md` — swap models by implementing that contract, never by adding model deps to ROS packages. Demo: `./run_vln_demo.sh` + Isaac playing `isaacsim/assets/stretch3_og_hospital.usda`.
+8. **VLN model inference never runs in a ROS image.** `docker/vln/` and `docker/dualvln/` are separate ROS-free StreamVLN and DualVLN containers. The ROS side (`src/semantic_nav/vln_policy/`) is a shared HTTP client plus trajectory follower. The v2 wire contract is normative in `src/semantic_nav/vln_policy/DESIGN.md` — never add model deps to ROS packages. Demo: `./run_vln_demo.sh backend:=streamvln|dualvln` + Isaac playing `isaacsim/assets/stretch3_og_hospital.usda`.
 
 ## Architecture
 

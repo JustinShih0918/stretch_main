@@ -22,8 +22,8 @@ setup(
     zip_safe=True,
     maintainer="justinshih",
     maintainer_email="justinshih@gapp.nthu.edu.tw",
-    description="Swappable VLN backends (StreamVLN first) with cmd_vel and "
-                "nav2 waypoint executors for the Stretch robot.",
+    description="Remote StreamVLN/DualVLN backends, shared trajectory "
+                "execution, and Isaac Sim benchmarking for Stretch.",
     license="MIT",
     tests_require=["pytest"],
     entry_points={
@@ -31,6 +31,8 @@ setup(
             "vln_agent_node = vln_policy.vln_agent_node:main",
             "vln_status_monitor = vln_policy.vln_status_monitor:main",
             "vln_viz_node = vln_policy.vln_viz_node:main",
+            "vln_benchmark_trial = vln_policy.benchmark_trial_node:main",
+            "vln_benchmark = vln_policy.benchmark_orchestrator:main",
         ],
     },
 )

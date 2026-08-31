@@ -1,0 +1,6 @@
+# Reset the remote model before a benchmark measurement window begins.
+string instruction
+---
+bool accepted
+string episode_id
+string message

@@ -13,6 +13,11 @@ The BehaviorTree engine (`bt_engine` / `bt_nav`, in [`../src/common/`](../src/co
 is shared across all three: it drives the `navigate_to_pose` action server that
 sim (Isaac + nav2) or deploy (robot nav2) brings up.
 
+VLN inference is additionally isolated in two ROS-free remote GPU images:
+[`vln/`](vln/) serves StreamVLN on port 18080 and
+[`dualvln/`](dualvln/) serves the pinned official DualVLN checkpoint on port
+18082. Neither model image is part of the colcon workspace.
+
 ## ci
 
 Same image used by `.github/workflows/ci.yml`. Services: `build` (one-shot

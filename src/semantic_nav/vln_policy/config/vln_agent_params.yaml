@@ -1,19 +1,31 @@
 vln_agent_node:
   ros__parameters:
-    backend: streamvln          # streamvln | dummy | navila
-    execution_mode: cmd_vel     # cmd_vel | nav2
+    backend: streamvln          # streamvln | dualvln | dummy | navila
+    execution_mode: trajectory  # trajectory | cmd_vel | nav2
     server_url: http://localhost:18080
     timeout_s: 30.0             # HTTP timeout per request
     jpeg_quality: 85
     rgb_topic: /rgb
+    depth_topic: /depth
+    camera_info_topic: /camera_info
+    sync_slop_s: 0.08
     rgb_rotation: clockwise_90  # none | clockwise_90 | counterclockwise_90 | 180
     odom_topic: /odom
     cmd_vel_topic: /cmd_vel
     goal_frame: odom            # frame for nav2-mode waypoints
     max_steps: 150              # hard episode cap (discrete actions)
+    max_model_steps: 150        # hard cap on completed remote updates
     v_lin: 0.25                 # m/s   during FORWARD bursts
     v_ang: 0.5                  # rad/s during TURN bursts
     action_timeout_s: 6.0       # per discrete action (cmd_vel mode)
     nav2_goal_timeout_s: 60.0   # per waypoint batch (nav2 mode)
+    trajectory_lookahead_m: 0.35
+    trajectory_final_tolerance_m: 0.12
+    trajectory_turn_tolerance_deg: 5.0
+    trajectory_linear_accel_mps2: 0.5
+    trajectory_angular_accel_rps2: 1.0
+    trajectory_watchdog_s: 6.0
+    trajectory_odom_timeout_s: 1.0
+    dualvln_replan_period_s: 0.3
     dummy_actions: ""           # CSV override for backend=dummy
     tick_rate_hz: 20.0

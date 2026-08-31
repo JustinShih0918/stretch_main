@@ -32,6 +32,8 @@ NUM_FUTURE_STEPS = int(os.environ.get("NUM_FUTURE_STEPS", "4"))
 NUM_FRAMES = int(os.environ.get("NUM_FRAMES", "32"))
 NUM_HISTORY = int(os.environ.get("NUM_HISTORY", "8"))
 MODEL_MAX_LENGTH = int(os.environ.get("MODEL_MAX_LENGTH", "4096"))
+MODEL_REVISION = os.environ.get("MODEL_REVISION", "unknown")
+PROTOCOL_VERSION = "2.0"
 # upstream loads with low_cpu_mem_usage=False (whole model staged in system
 # RAM before .to(device)); set LOW_CPU_MEM=1 on machines with <32 GB RAM
 LOW_CPU_MEM = os.environ.get("LOW_CPU_MEM", "") in ("1", "yes", "YES")
@@ -62,6 +64,10 @@ class StepRequest(BaseModel):
     session_id: str
     image_jpeg_b64: str
     odom: dict | None = None
+    depth_png_b64: str | None = None
+    depth_scale_m: float | None = None
+    camera_intrinsics: dict | None = None
+    image_timestamp_s: float | None = None
 
 
 def _load_model():
@@ -146,6 +152,14 @@ def health():
         "status": "ok",
         "backend": "streamvln",
         "model": os.path.basename(MODEL_DIR.rstrip("/")) or MODEL_DIR,
+        "model_revision": MODEL_REVISION,
+        "protocol_version": PROTOCOL_VERSION,
+        "capabilities": {
+            "outputs": ["actions"],
+            "rgb": True,
+            "depth": False,
+            "timings": ["total_ms", "preprocessing_ms", "system2_ms"],
+        },
         "device": DEVICE,
     }
 
@@ -154,11 +168,14 @@ def health():
 def reset(req: ResetRequest):
     if _state["evaluator"] is None:
         raise HTTPException(503, f"model not loaded: {_state['load_error']}")
+    instruction = req.instruction.strip()
+    if not instruction:
+        raise HTTPException(400, "instruction must not be blank")
     with _lock:
         _state["evaluator"].reset_memory()
         _state["session_id"] = uuid.uuid4().hex
-        _state["instruction"] = req.instruction
-    print(f"reset: instruction='{req.instruction}'")
+        _state["instruction"] = instruction
+    print(f"reset: instruction='{instruction}'")
     return {"session_id": _state["session_id"]}
 
 
@@ -166,19 +183,21 @@ def reset(req: ResetRequest):
 def step(req: StepRequest):
     if _state["evaluator"] is None:
         raise HTTPException(503, f"model not loaded: {_state['load_error']}")
-    if req.session_id != _state["session_id"]:
-        raise HTTPException(409, "unknown session_id (server was reset)")
-
     import cv2
 
+    total_started = time.perf_counter()
+    preprocessing_started = time.perf_counter()
     jpeg = np.frombuffer(base64.b64decode(req.image_jpeg_b64), dtype=np.uint8)
     bgr = cv2.imdecode(jpeg, cv2.IMREAD_COLOR)
     if bgr is None:
         raise HTTPException(400, "image_jpeg_b64 did not decode as an image")
+    preprocessing_ms = (time.perf_counter() - preprocessing_started) * 1000.0
     # upstream feeds BGR (PIL RGB reversed); cv2 already decodes to BGR
 
-    started = time.time()
+    inference_started = time.perf_counter()
     with _lock:
+        if req.session_id != _state["session_id"]:
+            raise HTTPException(409, "unknown session_id (server was reset)")
         evaluator = _state["evaluator"]
         action_seq = None
         # one frame in -> NUM_FUTURE_STEPS internal steps, model regenerates
@@ -191,7 +210,7 @@ def step(req: StepRequest):
             if ret_action is not None:
                 action_seq = ret_action
             evaluator.step_id += 1
-    latency_ms = (time.time() - started) * 1000.0
+    system2_ms = (time.perf_counter() - inference_started) * 1000.0
 
     ids = [int(a) for a in (action_seq if action_seq is not None else [0])]
     actions = []
@@ -202,5 +221,17 @@ def step(req: StepRequest):
             done = True
             break
 
-    print(f"step: {actions} done={done} {latency_ms:.0f}ms")
-    return {"actions": actions, "done": done, "latency_ms": latency_ms}
+    total_ms = (time.perf_counter() - total_started) * 1000.0
+    print(f"step: {actions} done={done} {total_ms:.0f}ms")
+    return {
+        "actions": actions,
+        "done": done,
+        # Retained for protocol-v1 clients.
+        "latency_ms": total_ms,
+        "timings": {
+            "total_ms": total_ms,
+            "preprocessing_ms": preprocessing_ms,
+            "system1_ms": None,
+            "system2_ms": system2_ms,
+        },
+    }

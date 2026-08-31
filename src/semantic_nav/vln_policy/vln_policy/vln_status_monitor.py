@@ -16,6 +16,11 @@ def format_status(msg) -> str:
     active = msg.current_action or "-"
     pending = " -> ".join(msg.pending_actions) or "-"
     detail = msg.detail or "-"
+    episode_id = getattr(msg, "episode_id", "") or "-"
+    model_steps = getattr(msg, "model_step_count", 0)
+    inference = getattr(msg, "inference_active", False)
+    motion = getattr(msg, "motion_active", False)
+    terminal = getattr(msg, "terminal_reason", "") or "-"
     return (
         "== /vln/status (latest) ==\n"
         f"state       : {msg.state}\n"
@@ -23,6 +28,10 @@ def format_status(msg) -> str:
         f"action      : {active}\n"
         f"pending     : {pending}\n"
         f"step        : {msg.step_count}\n"
+        f"model step  : {model_steps}\n"
+        f"episode     : {episode_id}\n"
+        f"active      : inference={inference} motion={motion}\n"
+        f"terminal    : {terminal}\n"
         f"backend     : {msg.backend} / {msg.execution_mode}\n"
         f"detail      : {detail}\n"
         "\nThis pane refreshes in place; old heartbeat samples are discarded.\n"

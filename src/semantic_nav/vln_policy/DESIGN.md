@@ -1,140 +1,144 @@
-# vln_policy design
+# VLN policy design and wire contract
 
-## Why
+`vln_agent_node` is the model-free ROS boundary between remote VLN inference
+and robot motion. StreamVLN and DualVLN share one HTTP client and one
+odometry-closed-loop trajectory follower. Model libraries and checkpoints
+never enter the ROS/simulation image.
 
-Verify VLN capability in Isaac Sim (hospital scene) before wiring it into
-the BT engine. Target architecture (from the project plan):
+## Protocol v2 (backward compatible)
 
-```
-instruction ─► BT engine (future FollowInstruction BT node)
-                   │
-                   ▼
-           VLN action server            ◄── /rgb (D435i / head camera)
-        StreamVLN: discrete actions / short-range waypoints
-                   │
-                   ▼
-        waypoint -> NavigateToPose (bt_nav)   or   short actions -> controller
-                   │
-                   ▼
-        global/local costmap (obstacle + semantic_traversability
-        + dynamic_mapping-cleaned /map) = safety veto layer
-```
+All servers implement:
 
-This package is the standalone middle of that diagram: swappable model
-backends, both execution paths, live status output. The BT wrapper comes
-later (see "Future BT hook").
+- `GET /health`
+- `POST /reset`
+- `POST /step`
 
-## Architecture
+`/health` returns `status`, `backend`, `model`, `model_revision`,
+`protocol_version`, `device`, and a `capabilities` object. A server that is
+still loading returns HTTP 503.
 
-```
-             ┌────────────────────────── vln_agent_node ──────────────────────────┐
-/vln_instruction ─► state machine (20 Hz):                                        │
-             │   IDLE ─► RESETTING ─► [ THINKING ─► EXECUTING ]* ─► DONE / ERROR  │
-/rgb ────────►   latest-frame cache      │              │                         │
-/odom ───────►   OdomPose cache          │              │                         │
-             │                   VLNBackend.step()   executor.tick()              │
-             │                   (worker thread,        │                         │
-             │                    HTTP or scripted)     ├─ CmdVelExecutor ─► /cmd_vel
-             │                                          └─ Nav2WaypointExecutor ─► navigate_to_pose
-             │   /vln/status + /vln/current_action on every transition + 2 Hz     │
-             └────────────────────────────────────────────────────────────────────┘
-```
+`/reset` accepts an instruction and must clear every episode-specific history
+or cache. It returns a new opaque session ID; issuing another reset makes the
+old ID invalid.
 
-* **Backends** (`vln_policy/backends/`): `VLNBackend` ABC with
-  `reset(instruction)` / `step(rgb, odom) -> StepResult(actions, done,
-  detail)`. Registry in `backends/__init__.py` (lazy factories, mirroring
-  `PERCEPTION_BACKENDS` in `semantic_navigation.launch.py`). The action
-  vocabulary and its geometry (`FORWARD_M = 0.25`, `TURN_RAD = 15°`) live in
-  `backends/base.py` and are shared with the executors.
-* **Executors** (`action_executor.py`): pure Python, ROS I/O injected as
-  callbacks, unit-tested without rclpy.
-  * `CmdVelExecutor`: one action at a time as a velocity burst; completion
-    by odometry displacement, not time; per-action watchdog
-    (`action_timeout_s`) that also catches odometry silence; zero-twist
-    between actions and on any stop path.
-  * `Nav2WaypointExecutor`: folds a whole action batch into one SE(2)
-    relative pose (`compose_relative`), expressed in the `odom` frame at
-    submit time, sent as a single `navigate_to_pose` goal. STOP truncates
-    the batch. Nav2's costmaps (semantic_traversability included) can veto.
-* **Model inference is out-of-process.** StreamVLN pins python/torch
-  versions incompatible with the ROS image, and a 7B model must not load
-  inside a ROS callback context. The node only speaks HTTP.
-
-## Wire contract (normative)
-
-Every VLN model server must implement exactly this; the ROS side never
-changes when the model does. `test/test_backends.py` is the executable
-client-side spec; `docker/vln/server/app.py` is the reference server.
-
-### `GET /health`
-
-* 200 `{"status": "ok", "backend": "<name>", "model": "<id>", "device": "cuda:0"}`
-* 503 with a JSON `detail` when the model is not loaded.
-
-### `POST /reset` — start an episode
-
-Request: `{"instruction": "<natural language>"}`
-Response 200: `{"session_id": "<opaque>"}`
-
-Must clear all episode state (frame history, KV cache, memory tokens). A
-later `/reset` invalidates prior sessions (single-session servers are fine
-— StreamVLN's KV cache is global).
-
-### `POST /step` — one frame in, an action batch out
-
-Request:
 ```json
-{"session_id": "<from /reset>",
- "image_jpeg_b64": "<base64 JPEG, robot's forward RGB>",
- "odom": {"x": 0.0, "y": 0.0, "yaw": 0.0} | null}
+{"instruction": "Turn left at reception and stop by the door."}
 ```
-Response 200:
+
+`/step` accepts the protocol-v1 RGB/odometry fields plus optional synchronized
+depth, calibration, and image time:
+
 ```json
-{"actions": ["FORWARD", "TURN_LEFT", "TURN_RIGHT", "STOP"],
- "done": false, "latency_ms": 270.0}
+{
+  "session_id": "opaque",
+  "image_jpeg_b64": "...",
+  "depth_png_b64": "...",
+  "depth_scale_m": 0.001,
+  "camera_intrinsics": {
+    "fx": 585.0, "fy": 585.0, "cx": 320.0, "cy": 240.0,
+    "width": 640, "height": 480
+  },
+  "image_timestamp_s": 123.45,
+  "odom": {"x": 0.0, "y": 0.0, "yaw": 0.0}
+}
 ```
 
-* `actions`: 1..N tokens from exactly {STOP, FORWARD, TURN_LEFT,
-  TURN_RIGHT}; geometry fixed at 0.25 m / 15°. Models with continuous
-  outputs (NaVILA velocities, NaVid distances) must quantize server-side —
-  the adapter owns that mapping, not the robot client.
-* `STOP` anywhere ends the episode (`done` should agree; the client
-  truncates at STOP regardless).
-* Errors: 409 unknown/stale `session_id`; 400 undecodable image; 503 model
-  not loaded. Any non-200 surfaces as a `BackendError` → agent `ERROR`
-  state → recoverable by the next instruction.
-* JSON + base64 (no multipart/websockets) on purpose: the ROS client needs
-  only `requests`, and any exchange is replayable with `curl`.
+Depth PNG values multiplied by `depth_scale_m` produce metres. RGB, depth,
+and intrinsics are transformed by the same configured right-angle rotation.
 
-## Why an owned wrapper instead of StreamVLN's own server
+A successful response contains exactly one output:
 
-`streamvln/http_realworld_server.py` upstream is Go2-specific: one
-`/eval_vln` multipart endpoint, the instruction **hardcoded** in the file,
-Flask state as globals. Wrapping StreamVLN's `VLNEvaluator` behind our
-contract costs ~200 lines (`docker/vln/server/app.py` reuses their exact
-load + step loop) and buys: instruction-per-episode, a documented seam for
-NaVILA/NaVid, and contract tests that run without a GPU.
+```json
+{
+  "actions": ["FORWARD", "TURN_LEFT"],
+  "done": false,
+  "timings": {
+    "total_ms": 270.0,
+    "preprocessing_ms": 5.0,
+    "system1_ms": null,
+    "system2_ms": 250.0
+  }
+}
+```
 
-## Serving layout
+or:
 
-The model server runs wherever a ~24 GB GPU lives — a dedicated inference
-machine (point the agent at it with `server_url`), or GPU 1 of the sim
-machine (`VLN_GPU_ID=1`; Isaac Sim keeps GPU 0). Only the selected GPU is
-exposed to the container, so it is always `cuda:0` inside. The server binds
-0.0.0.0:18080 with host networking; it is unauthenticated HTTP, so keep the
-port inside the lab network. The image is ROS-free; the sim container is
-model-free — this mirrors StreamVLN's own deployment (robot streams to a
-remote 4090 over HTTP with ~0.2 s network overhead, which the per-batch
-execution model absorbs).
+```json
+{
+  "trajectory": [[0.0, 0.0], [0.25, 0.02], [0.5, 0.08]],
+  "done": false,
+  "timings": {
+    "total_ms": 300.0,
+    "preprocessing_ms": 5.0,
+    "system1_ms": 30.0,
+    "system2_ms": 250.0
+  }
+}
+```
 
-## Future BT hook (out of scope here)
+Trajectory points are finite metres in the robot frame at request time: x is
+forward and y is left. The action vocabulary remains `STOP`, `FORWARD`,
+`TURN_LEFT`, and `TURN_RIGHT`, with 0.25 m / 15 degree geometry. Protocol-v1
+StreamVLN responses with `actions`, `done`, and `latency_ms` remain valid.
+Unknown actions, malformed/non-finite trajectories, ambiguous responses, stale
+sessions, and invalid timings become a recoverable agent `ERROR` state and an
+immediate zero velocity.
 
-Phase 2 wraps this agent in a `FollowInstruction` action server:
+## Execution and scheduling
 
-* new `FollowInstruction.action` in `btcpp_ros2_interfaces`
-  (goal: instruction string; feedback: VlnStatus; result: final state),
-* `vln_agent_node` grows an action-server front end beside the topic one,
-* a `bt_nav`-style `RosActionNode` registered in
-  `BTEngine::registerNodes()`, so trees can do
-  `<FollowInstruction instruction="..."/>` — with nav2 + semantic
-  costmap + dynamic_mapping as the safety veto per the target architecture.
+`execution_mode:=trajectory` is the controlled A/B mode. StreamVLN actions
+are converted one-for-one into relative `(x, y, yaw)` waypoints; zero-distance
+turn waypoints preserve explicit 15 degree rotations. DualVLN points remain a
+continuous path and atomically replace its prior plan.
+
+The follower runs at 20 Hz with:
+
+- 0.25 m/s maximum linear and 0.5 rad/s maximum angular speed
+- 0.35 m lookahead
+- 0.12 m final-position and 5 degree explicit-turn tolerances
+- 0.5 m/s² linear and 1.0 rad/s² angular acceleration limits
+- a six-second physical no-progress watchdog and a separate odometry-loss
+  timeout
+
+Every cancel, STOP, timeout, backend error, and shutdown path commands zero.
+`cmd_vel` and `nav2` execution remain available for compatibility.
+
+StreamVLN requests the next update after the action-derived path finishes.
+DualVLN allows one request at a time and requests a fresh synchronized
+observation no faster than every 0.3 seconds while its prior path is moving.
+Inference and motion are therefore independent flags in `VlnStatus`.
+
+## ROS interfaces
+
+- `/vln_instruction` (`std_msgs/String`) starts an episode.
+- `/vln/status` (`VlnStatus`) is the latest agent snapshot.
+- `/vln/inference_step` (`VlnInferenceStep`) is one event per completed HTTP
+  step, including episode/step IDs, poses, output, and timing fields.
+- `/vln_agent_node/prepare_episode` resets a remote session without starting
+  the measurement window; the benchmark publishes the matching instruction
+  only after reset completion.
+- `/vln_agent_node/cancel` cancels inference correlation and motion.
+
+## Benchmark contract
+
+The versioned YAML manifest owns world-frame starts/goals and verified
+reference polylines. Validation rejects paths whose endpoints differ from the
+route endpoints by more than 0.25 m. Shortest length is the reference-polyline
+length, never straight-line distance or a rolling costmap estimate.
+
+Each trial cancels navigation, zeros velocity, calls Isaac Sim 5.1's standard
+`/set_entity_state`, waits for five consecutive odometry samples within 5 cm
+and 3 degrees, resets the model, and then starts recording as it publishes the
+instruction. Reset and warm-up motion are excluded.
+
+Repetitions 1/3/5 run StreamVLN then DualVLN; 2/4 reverse the order. The
+result directory contains only the manifest snapshot, metadata, model-step
+JSONL, episode CSV, and summary JSON. Success requires model STOP within the
+radius. For radius r:
+
+`SPL_r = success_r * shortest_path / max(shortest_path, executed_path)`
+
+The runner separately reports camera input Hz, completed updates per episode
+second, client request/response Hz, server compute FPS, available S1/S2 FPS,
+and trajectory-control Hz. Raw control ticks are counted but not written as
+rows.

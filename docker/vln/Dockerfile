@@ -19,7 +19,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # StreamVLN source, pinned. Serving needs the model/agent code only —
 # habitat-sim/habitat-lab (benchmark eval) are NOT installed.
 ARG STREAMVLN_REPO=https://github.com/InternRobotics/StreamVLN.git
-ARG STREAMVLN_COMMIT=main
+ARG STREAMVLN_COMMIT=e48f6ff7e9201d93aae003e8f64b04c00cec13bc
 RUN git clone "${STREAMVLN_REPO}" /opt/streamvln \
     && cd /opt/streamvln \
     && git checkout "${STREAMVLN_COMMIT}" \
@@ -65,10 +65,12 @@ RUN pip install --no-cache-dir \
 # Checkpoint download, gated so the image can build without the ~16 GB model.
 ARG STREAMVLN_MODEL=""
 ARG STREAMVLN_MODEL_ID=mengwei0427/StreamVLN_Video_qwen_1_5_r2r_rxr_envdrop_scalevln_real_world
+ARG STREAMVLN_MODEL_REVISION=7b0269ad28e7039a32627b950766c09b5a646f8e
 COPY modules/install_streamvln_model.sh /tmp/install_streamvln_model.sh
 RUN --mount=type=cache,target=/root/.cache/huggingface \
     STREAMVLN_MODEL="${STREAMVLN_MODEL}" \
     STREAMVLN_MODEL_ID="${STREAMVLN_MODEL_ID}" \
+    STREAMVLN_MODEL_REVISION="${STREAMVLN_MODEL_REVISION}" \
     bash /tmp/install_streamvln_model.sh \
     && rm /tmp/install_streamvln_model.sh
 
@@ -77,6 +79,7 @@ WORKDIR /opt/vln_server
 
 ENV MODEL_DIR=/opt/streamvln_ckpt \
     STREAMVLN_ROOT=/opt/streamvln \
+    MODEL_REVISION=${STREAMVLN_MODEL_REVISION} \
     PORT=18080
 
 CMD ["sh", "-c", "uvicorn app:app --host 0.0.0.0 --port ${PORT}"]

@@ -21,6 +21,7 @@ mkdir -p "${MODEL_DIR}"
 # Cache all weights so runtime does not require network.
 hf download \
     "${MODEL_ID}" \
+    --revision "${STREAMVLN_MODEL_REVISION:-main}" \
     --local-dir "${MODEL_DIR}"
 
 echo "StreamVLN checkpoint installed:"

@@ -184,7 +184,13 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=private \
     ros-${ROS_DISTRO}-navigation2 \
     ros-${ROS_DISTRO}-nav2-bringup \
     ros-${ROS_DISTRO}-pointcloud-to-laserscan \
+    ros-${ROS_DISTRO}-simulation-interfaces \
     && sudo rm -rf /var/lib/apt/lists/*
+
+# Start Isaac through this wrapper for the standard /set_entity_state service.
+COPY --chown=$USERNAME:$USERNAME modules/isaac-sim-ros-control.sh \
+    /home/$USERNAME/bin/isaac-sim-ros-control
+RUN chmod +x /home/$USERNAME/bin/isaac-sim-ros-control
 
 # Grounding DINO (open-set VLM) for action-aware semantic perception.
 # Gated behind GROUNDING_DINO=YES (heavy: torch + weights); off by default.

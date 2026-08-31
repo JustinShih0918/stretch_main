@@ -1,0 +1,20 @@
+version: 1
+benchmark_id: stretch_hospital_vln_v1
+scene_id: stretch3_og_hospital
+entity_path: /World/stretch3
+repetitions: 5
+episode_timeout_s: 300.0
+success_radii_m: [1.0, 3.0]
+
+routes:
+  - route_id: hospital_short_hallway_01
+    instruction: "Move straight down the hallway and stop after two meters."
+    start: {x: 0.0, y: 0.0, z: 0.03698, yaw: 0.0}
+    goal: {x: 2.0, y: 0.0}
+    # World-frame navmesh reference, with endpoints tied to start/goal.
+    reference_path:
+      - [0.0, 0.0]
+      - [0.5, 0.0]
+      - [1.0, 0.0]
+      - [1.5, 0.0]
+      - [2.0, 0.0]

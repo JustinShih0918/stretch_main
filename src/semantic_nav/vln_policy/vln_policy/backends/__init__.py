@@ -16,6 +16,11 @@ def _dummy(**kwargs):
     return DummyBackend(**kwargs)
 
 
+def _dualvln(**kwargs):
+    from .dualvln_http import DualVLNHttpBackend
+    return DualVLNHttpBackend(**kwargs)
+
+
 def _navila(**kwargs):
     from .navila_stub import NaVILAHttpBackend
     return NaVILAHttpBackend(**kwargs)
@@ -23,6 +28,7 @@ def _navila(**kwargs):
 
 BACKENDS = {
     "streamvln": _streamvln,
+    "dualvln": _dualvln,
     "dummy": _dummy,
     "navila": _navila,
 }

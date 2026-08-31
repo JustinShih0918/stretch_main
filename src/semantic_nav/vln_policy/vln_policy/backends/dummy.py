@@ -36,7 +36,7 @@ class DummyBackend(VLNBackend):
         self.instruction = instruction
         self._cursor = 0
 
-    def step(self, rgb, odom: Optional[OdomPose]) -> StepResult:
+    def step(self, rgb, odom: Optional[OdomPose], **kwargs) -> StepResult:
         if self._cursor >= len(self._script):
             return StepResult(actions=[STOP], done=True, detail="script done")
         chunk = self._script[self._cursor:self._cursor + self._chunk_size]

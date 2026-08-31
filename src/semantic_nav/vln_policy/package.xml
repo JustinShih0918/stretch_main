@@ -4,10 +4,9 @@
   <name>vln_policy</name>
   <version>0.1.0</version>
   <description>
-    Vision-Language Navigation agent: swappable VLN backends (StreamVLN over
-    HTTP, dummy scripted, NaVILA slot) driving the robot via a direct cmd_vel
-    executor or short-range waypoints to nav2 navigate_to_pose. Standalone
-    verification pipeline; no BT engine required.
+    Vision-Language Navigation agent: remote StreamVLN and DualVLN backends,
+    a shared odometry-closed-loop trajectory follower, legacy cmd_vel/nav2
+    modes, and reset-controlled Isaac Sim SPL/FPS benchmarking.
   </description>
 
   <maintainer email="justinshih@gapp.nthu.edu.tw">justinshih</maintainer>
@@ -23,6 +22,11 @@
   <exec_depend>nav2_msgs</exec_depend>
   <exec_depend>visualization_msgs</exec_depend>
   <exec_depend>cv_bridge</exec_depend>
+  <exec_depend>message_filters</exec_depend>
+  <exec_depend>std_srvs</exec_depend>
+  <exec_depend>action_msgs</exec_depend>
+  <exec_depend>simulation_interfaces</exec_depend>
+  <exec_depend>python3-yaml</exec_depend>
   <exec_depend>btcpp_ros2_interfaces</exec_depend>
   <exec_depend>python3-requests</exec_depend>
   <!-- The VLN model itself runs in a separate server (docker/vln), never in
