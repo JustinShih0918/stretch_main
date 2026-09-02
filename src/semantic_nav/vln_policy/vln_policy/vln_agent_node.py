@@ -20,12 +20,11 @@ import threading
 from typing import Optional
 
 import rclpy
-from geometry_msgs.msg import Twist
+from geometry_msgs.msg import PoseStamped, Twist
 from nav_msgs.msg import Odometry
 from rclpy.action import ActionClient
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
-from sensor_msgs.msg import Image
 from std_msgs.msg import String
 
 from btcpp_ros2_interfaces.msg import VlnStatus
@@ -38,7 +37,6 @@ from .action_executor import (
 )
 from .backends import make_backend
 from .backends.base import (
-    FORWARD_M,
     STOP,
     BackendError,
     OdomPose,
@@ -46,6 +44,7 @@ from .backends.base import (
 )
 from .motion_intent import parse_robot_relative_command
 from .image_rotation import normalize_rgb_rotation, rotate_rgb_image
+from .image_source import SENSOR_QOS, RgbSource
 
 # node states (mirrors VlnStatus.msg STATE_* constants)
 IDLE = "IDLE"
@@ -73,11 +72,25 @@ class VlnAgentNode(Node):
         self.declare_parameter("timeout_s", 30.0)
         self.declare_parameter("jpeg_quality", 85)
         self.declare_parameter("rgb_topic", "/rgb")
+        self.declare_parameter("rgb_transport", "raw")
         self.declare_parameter("rgb_rotation", "clockwise_90")
         self.declare_parameter("odom_topic", "/odom")
         self.declare_parameter("cmd_vel_topic", "/cmd_vel")
+        self.declare_parameter("nav2_action_name", "navigate_to_pose")
+        self.declare_parameter("nav2_goal_interface", "action")
+        self.declare_parameter("nav2_goal_topic", "/goal_pose")
+        self.declare_parameter("nav2_arrival_xy_tol", 0.3)
+        self.declare_parameter("nav2_arrival_yaw_tol", 0.5)
+        self.declare_parameter("nav2_arrival_settle_s", 0.7)
         self.declare_parameter("goal_frame", "odom")
         self.declare_parameter("max_steps", 150)
+        # Geometry of one action token. The VLN-CE reference (what the
+        # pretrained policy assumes) is 0.25 m / 15 deg; raising these makes
+        # nav2 mode fold each batch into a longer waypoint, so the robot drives
+        # one smooth leg instead of stopping every 0.25 m — at the cost of
+        # moving further per token than the policy intended.
+        self.declare_parameter("forward_step_m", 0.25)
+        self.declare_parameter("turn_step_deg", 15.0)
         self.declare_parameter("v_lin", 0.25)
         self.declare_parameter("v_ang", 0.5)
         self.declare_parameter("action_timeout_s", 6.0)
@@ -90,7 +103,25 @@ class VlnAgentNode(Node):
         if self.execution_mode not in ("cmd_vel", "nav2"):
             raise ValueError("execution_mode must be 'cmd_vel' or 'nav2'")
         self.goal_frame = str(self.get_parameter("goal_frame").value)
+        self.nav2_action_name = str(
+            self.get_parameter("nav2_action_name").value
+        )
+        self.nav2_goal_interface = str(
+            self.get_parameter("nav2_goal_interface").value
+        )
+        if self.nav2_goal_interface not in ("action", "topic"):
+            raise ValueError("nav2_goal_interface must be 'action' or 'topic'")
         self.max_steps = int(self.get_parameter("max_steps").value)
+        self.forward_step_m = float(
+            self.get_parameter("forward_step_m").value
+        )
+        turn_step_deg = float(self.get_parameter("turn_step_deg").value)
+        if self.forward_step_m <= 0.0 or turn_step_deg <= 0.0:
+            raise ValueError(
+                "forward_step_m and turn_step_deg must be > 0 "
+                f"(got {self.forward_step_m}, {turn_step_deg})"
+            )
+        self.turn_step_rad = math.radians(turn_step_deg)
         self.rgb_rotation = normalize_rgb_rotation(
             self.get_parameter("rgb_rotation").value
         )
@@ -111,7 +142,7 @@ class VlnAgentNode(Node):
         self._worker: Optional[threading.Thread] = None
         self._episode_seq = 0
 
-        self._latest_rgb: Optional[Image] = None
+        self._latest_rgb = None  # raw Image or CompressedImage, per transport
         self._odom: Optional[OdomPose] = None
         self._bridge = None
         self._nav2_client = None
@@ -127,9 +158,22 @@ class VlnAgentNode(Node):
         self.cmd_vel_pub = self.create_publisher(
             Twist, str(self.get_parameter("cmd_vel_topic").value), 10
         )
-        self.create_subscription(
-            Image, str(self.get_parameter("rgb_topic").value),
-            self._on_rgb, 1,
+        self.goal_pose_pub = None
+        if (self.execution_mode == "nav2"
+                and self.nav2_goal_interface == "topic"):
+            self.goal_pose_pub = self.create_publisher(
+                PoseStamped, str(
+                    self.get_parameter("nav2_goal_topic").value
+                ), 1,
+            )
+        # Over the network the raw stream is ~10x the bytes of the JPEG one
+        # the same driver already publishes; see image_source.py.
+        self.rgb_source = RgbSource(
+            self,
+            str(self.get_parameter("rgb_topic").value),
+            str(self.get_parameter("rgb_transport").value),
+            callback=self._on_rgb,
+            qos=SENSOR_QOS,
         )
         self.create_subscription(
             Odometry, str(self.get_parameter("odom_topic").value),
@@ -146,6 +190,7 @@ class VlnAgentNode(Node):
         self.get_logger().info(
             f"vln_agent_node up: backend={self.backend_name} "
             f"mode={self.execution_mode} rgb_rotation={self.rgb_rotation} "
+            f"rgb={self.rgb_source.topic} ({self.rgb_source.transport}) "
             f"— waiting for instruction on "
             "~/instruction"
         )
@@ -174,12 +219,31 @@ class VlnAgentNode(Node):
                 action_timeout_s=float(
                     self.get_parameter("action_timeout_s").value
                 ),
+                forward_m=self.forward_step_m,
+                turn_rad=self.turn_step_rad,
             )
+        # Topic goals get no result back from nav2, so the batch is completed
+        # on odometry proximity instead (see Nav2WaypointExecutor).
+        topic_mode = self.nav2_goal_interface == "topic"
         return Nav2WaypointExecutor(
             send_goal=self._send_nav2_goal,
             goal_timeout_s=float(
                 self.get_parameter("nav2_goal_timeout_s").value
             ),
+            arrival_xy_tol=(
+                float(self.get_parameter("nav2_arrival_xy_tol").value)
+                if topic_mode else 0.0
+            ),
+            arrival_yaw_tol=(
+                float(self.get_parameter("nav2_arrival_yaw_tol").value)
+                if topic_mode else 0.0
+            ),
+            arrival_settle_s=(
+                float(self.get_parameter("nav2_arrival_settle_s").value)
+                if topic_mode else 0.0
+            ),
+            forward_m=self.forward_step_m,
+            turn_rad=self.turn_step_rad,
         )
 
     # -- ROS I/O ----------------------------------------------------------
@@ -189,7 +253,7 @@ class VlnAgentNode(Node):
         msg.angular.z = angular_z
         self.cmd_vel_pub.publish(msg)
 
-    def _on_rgb(self, msg: Image):
+    def _on_rgb(self, msg):
         self._latest_rgb = msg
 
     def _on_odom(self, msg: Odometry):
@@ -205,7 +269,9 @@ class VlnAgentNode(Node):
         if not instruction:
             return
         self.get_logger().info(f"[VLN] new instruction: '{instruction}'")
-        direct_actions = parse_robot_relative_command(instruction)
+        direct_actions = parse_robot_relative_command(
+            instruction, self.forward_step_m
+        )
         self._cancel_motion()
         self.instruction = instruction
         self.step_count = 0
@@ -221,7 +287,7 @@ class VlnAgentNode(Node):
             actions = direct_actions[:self.max_steps]
             self.step_count = len(actions)
             self.episode_done_pending = True
-            distance_m = len(actions) * FORWARD_M
+            distance_m = len(actions) * self.forward_step_m
             self.detail = (
                 f"local robot-relative reverse command: {distance_m:.2f} m"
             )
@@ -286,7 +352,18 @@ class VlnAgentNode(Node):
             self._publish_status()
 
     def _cancel_motion(self):
+        was_running = self.executor_impl.status is ExecStatus.RUNNING
         self.executor_impl.cancel()
+        if (self.goal_pose_pub is not None and was_running
+                and self._odom is not None):
+            # A topic goal cannot be cancelled (nav2's cancel is a service).
+            # Re-publishing the current pose preempts the in-flight goal with
+            # one that is already reached, which is how the robot stops.
+            self.get_logger().info("[VLN] preempting nav2 goal with the "
+                                   "current pose (topic mode has no cancel)")
+            self.goal_pose_pub.publish(
+                self._goal_pose_msg(self._odom.x, self._odom.y, self._odom.yaw)
+            )
         if self._nav2_goal_handle is not None:
             try:
                 self._nav2_goal_handle.cancel_goal_async()
@@ -351,19 +428,20 @@ class VlnAgentNode(Node):
             if self._latest_rgb is None:
                 self.get_logger().warn(
                     f"[VLN] waiting for image on "
-                    f"{self.get_parameter('rgb_topic').value}",
+                    f"{self.rgb_source.topic}",
                     throttle_duration_sec=5.0,
                 )
                 return
             rgb = self._rgb_to_numpy(self._latest_rgb)
         self._spawn_worker("step", rgb=rgb, odom=self._odom)
 
-    def _rgb_to_numpy(self, msg: Image):
-        if self._bridge is None:
-            from cv_bridge import CvBridge
-            self._bridge = CvBridge()
-        rgb = self._bridge.imgmsg_to_cv2(msg, desired_encoding="rgb8")
-        return rotate_rgb_image(rgb, self.rgb_rotation)
+    def _rgb_to_numpy(self, msg):
+        # Decoded here, not in the subscription callback: the model asks for a
+        # frame about once a second, so frames arriving in between cost
+        # nothing beyond the network hop.
+        return rotate_rgb_image(
+            self.rgb_source.to_rgb(msg), self.rgb_rotation
+        )
 
     def _handle_step_result(self, step: StepResult):
         actions = list(step.actions)
@@ -400,14 +478,36 @@ class VlnAgentNode(Node):
         self._set_state(EXECUTING)
 
     # -- nav2 goal plumbing ------------------------------------------------
+    def _goal_pose_msg(self, x: float, y: float, yaw: float) -> PoseStamped:
+        pose = PoseStamped()
+        pose.header.frame_id = self.goal_frame
+        pose.header.stamp = self.get_clock().now().to_msg()
+        pose.pose.position.x = x
+        pose.pose.position.y = y
+        pose.pose.orientation.z = math.sin(yaw / 2.0)
+        pose.pose.orientation.w = math.cos(yaw / 2.0)
+        return pose
+
     def _send_nav2_goal(self, x: float, y: float, yaw: float):
+        if self.nav2_goal_interface == "topic":
+            # Same thing RViz's goal tool does: publish the pose and let
+            # nav2's own bt_navigator start the action locally. No result
+            # comes back, so the executor completes on odometry arrival.
+            self.get_logger().info(
+                f"[VLN] nav2 goal -> ({x:.2f}, {y:.2f}, "
+                f"yaw {math.degrees(yaw):.0f} deg) in {self.goal_frame} "
+                f"on {self.get_parameter('nav2_goal_topic').value}"
+            )
+            self.goal_pose_pub.publish(self._goal_pose_msg(x, y, yaw))
+            return
         if self._nav2_client is None:
             self._nav2_client = ActionClient(
-                self, NavigateToPose, "navigate_to_pose"
+                self, NavigateToPose, self.nav2_action_name
             )
         if not self._nav2_client.wait_for_server(timeout_sec=5.0):
             self.executor_impl.notify_result(
-                False, "navigate_to_pose server not available"
+                False,
+                f"{self.nav2_action_name} action server not available",
             )
             return
         goal = NavigateToPose.Goal()

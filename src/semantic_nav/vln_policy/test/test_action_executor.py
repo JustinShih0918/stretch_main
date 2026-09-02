@@ -11,7 +11,13 @@ from vln_policy.action_executor import (
     compose_relative,
     wrap_angle,
 )
-from vln_policy.backends.base import BACKWARD, FORWARD_M, TURN_RAD, OdomPose
+from vln_policy.backends.base import (
+    BACKWARD,
+    FORWARD,
+    FORWARD_M,
+    TURN_RAD,
+    OdomPose,
+)
 
 
 class TwistLog:
@@ -172,3 +178,142 @@ class TestNav2WaypointExecutor:
         ex.submit(["FORWARD"], OdomPose(), now=100.0)
         assert ex.tick(105.0, None) is ExecStatus.RUNNING
         assert ex.tick(111.0, None) is ExecStatus.ERROR
+
+
+class TestNav2TopicGoalArrival:
+    """nav2_goal_interface:=topic — /goal_pose gets no result back, so the
+    batch completes on odometry proximity instead."""
+
+    def _executor(self, goals, settle_s=0.0):
+        return Nav2WaypointExecutor(
+            send_goal=lambda x, y, yaw: goals.append((x, y, yaw)),
+            goal_timeout_s=30.0,
+            arrival_xy_tol=0.3,
+            arrival_yaw_tol=0.5,
+            arrival_settle_s=settle_s,
+        )
+
+    def test_completes_on_arrival(self):
+        goals = []
+        ex = self._executor(goals)
+        ex.submit(["FORWARD", "FORWARD"], OdomPose(), now=0.0)
+        gx, gy, gyaw = goals[0]
+        assert ex.tick(1.0, OdomPose(x=0.1, y=0.0, yaw=0.0)) is \
+            ExecStatus.RUNNING
+        assert ex.tick(2.0, OdomPose(x=gx, y=gy, yaw=gyaw)) is ExecStatus.DONE
+
+    def test_batch_already_inside_the_tolerance_still_has_to_move(self):
+        """One FORWARD (0.25 m) is shorter than the 0.3 m tolerance, and a
+        turn-only batch never leaves it: neither may report instant arrival."""
+        for batch in (["FORWARD"], ["TURN_LEFT"]):
+            goals = []
+            ex = self._executor(goals)
+            ex.submit(batch, OdomPose(), now=0.0)
+            assert ex.tick(0.5, OdomPose()) is ExecStatus.RUNNING
+            assert ex.tick(1.0, OdomPose()) is ExecStatus.RUNNING
+
+    def test_within_tolerance_counts_as_arrived(self):
+        goals = []
+        ex = self._executor(goals)
+        ex.submit(["FORWARD", "FORWARD", "FORWARD"], OdomPose(), now=0.0)
+        gx, gy, gyaw = goals[0]
+        ex.tick(0.5, OdomPose(x=0.3, y=0.0, yaw=0.0))    # departed
+        near = OdomPose(x=gx - 0.2, y=gy + 0.1, yaw=gyaw + 0.3)
+        assert ex.tick(1.0, near) is ExecStatus.DONE
+
+    def test_yaw_outside_tolerance_keeps_running(self):
+        goals = []
+        ex = self._executor(goals)
+        ex.submit(["TURN_LEFT"], OdomPose(), now=0.0)
+        gx, gy, gyaw = goals[0]
+        ex.tick(0.5, OdomPose(x=gx, y=gy, yaw=gyaw + 1.5))   # departed
+        assert ex.tick(1.0, OdomPose(x=gx, y=gy, yaw=gyaw + 1.2)) is \
+            ExecStatus.RUNNING
+
+    def test_missing_odom_never_arrives_and_still_times_out(self):
+        ex = self._executor([])
+        ex.submit(["FORWARD"], OdomPose(), now=0.0)
+        assert ex.tick(5.0, None) is ExecStatus.RUNNING
+        assert ex.tick(40.0, None) is ExecStatus.ERROR
+
+    def test_action_mode_ignores_odom_proximity(self):
+        """Without tolerances the executor waits for notify_result, so a
+        robot that happens to sit on the goal does not end the batch early."""
+        goals = []
+        ex = Nav2WaypointExecutor(
+            send_goal=lambda x, y, yaw: goals.append((x, y, yaw))
+        )
+        ex.submit(["FORWARD"], OdomPose(), now=0.0)
+        gx, gy, gyaw = goals[0]
+        assert ex.detects_arrival is False
+        assert ex.tick(1.0, OdomPose(x=gx, y=gy, yaw=gyaw)) is \
+            ExecStatus.RUNNING
+
+    def test_settle_waits_for_the_robot_to_stop(self):
+        """Entering the tolerance ball is not arrival while nav2 is still
+        driving — otherwise each waypoint composes from an under-shot pose."""
+        goals = []
+        ex = self._executor(goals, settle_s=0.7)
+        ex.submit(["FORWARD"], OdomPose(), now=0.0)
+        gx, gy, gyaw = goals[0]
+        # driving: inside the ball but still creeping forward every tick
+        for i, t in enumerate([1.0, 1.4, 1.8, 2.2]):
+            pose = OdomPose(x=0.05 + i * 0.04, y=gy, yaw=gyaw)
+            assert ex.tick(t, pose) is ExecStatus.RUNNING
+        stopped = OdomPose(x=gx - 0.05, y=gy, yaw=gyaw)
+        assert ex.tick(2.6, stopped) is ExecStatus.RUNNING   # not settled yet
+        assert ex.tick(3.4, stopped) is ExecStatus.DONE      # 0.8 s still
+
+    def test_settle_does_not_apply_outside_the_tolerance(self):
+        goals = []
+        ex = self._executor(goals, settle_s=0.7)
+        ex.submit(["FORWARD", "FORWARD"], OdomPose(), now=0.0)
+        far = OdomPose(x=0.0, y=0.0, yaw=0.0)
+        assert ex.tick(5.0, far) is ExecStatus.RUNNING
+        assert ex.tick(9.0, far) is ExecStatus.RUNNING
+
+
+class TestScaledStepGeometry:
+    """forward_m/turn_rad scale the same action batch into a longer leg.
+
+    This is what makes nav2 mode smooth on the real robot: one goal further
+    out instead of a string of 0.25 m hops.
+    """
+
+    def test_compose_relative_scales_with_step(self):
+        rel = compose_relative([FORWARD, FORWARD], forward_m=0.5)
+        assert rel.x == pytest.approx(1.0)
+        assert rel.yaw == pytest.approx(0.0)
+
+    def test_compose_relative_scales_turn(self):
+        rel = compose_relative(["TURN_LEFT"], turn_rad=math.radians(30.0))
+        assert rel.yaw == pytest.approx(math.radians(30.0))
+
+    def test_defaults_stay_at_vln_ce_reference(self):
+        assert compose_relative([FORWARD]).x == pytest.approx(FORWARD_M)
+        assert compose_relative(["TURN_LEFT"]).yaw == pytest.approx(TURN_RAD)
+
+    def test_nav2_goal_uses_scaled_step(self):
+        goals = []
+        ex = Nav2WaypointExecutor(
+            send_goal=lambda x, y, yaw: goals.append((x, y, yaw)),
+            forward_m=0.5,
+            turn_rad=math.radians(30.0),
+        )
+        ex.submit([FORWARD, FORWARD], OdomPose(0.0, 0.0, 0.0), now=0.0)
+        x, y, _ = goals[0]
+        # 2 x 0.5 m, i.e. twice as far as the 0.25 m reference would give.
+        assert x == pytest.approx(1.0)
+        assert y == pytest.approx(0.0)
+
+    def test_cmdvel_finishes_on_the_scaled_distance(self):
+        sent = []
+        ex = CmdVelExecutor(
+            publish_twist=lambda v, w: sent.append((v, w)),
+            forward_m=0.5,
+        )
+        ex.submit([FORWARD])
+        ex.tick(0.0, OdomPose(0.0, 0.0, 0.0))
+        # Past the 0.25 m reference but short of the configured 0.5 m.
+        assert ex.tick(1.0, OdomPose(0.3, 0.0, 0.0)) is ExecStatus.RUNNING
+        assert ex.tick(2.0, OdomPose(0.5, 0.0, 0.0)) is ExecStatus.DONE

@@ -18,10 +18,21 @@ import os
 import rclpy
 import yaml
 from rclpy.node import Node
+from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import String
 from sensor_msgs.msg import Image
 
 from btcpp_ros2_interfaces.msg import SemanticDetection2D
+
+# Cameras publish BEST_EFFORT (RealSense does; Isaac's ROS 2 bridge publishes
+# RELIABLE). A BEST_EFFORT subscriber matches both, while a RELIABLE one
+# receives nothing at all from a BEST_EFFORT publisher — the only symptom is a
+# one-line incompatible-QoS warning at discovery.
+SENSOR_QOS = QoSProfile(
+    reliability=ReliabilityPolicy.BEST_EFFORT,
+    history=HistoryPolicy.KEEP_LAST,
+    depth=1,
+)
 
 
 class GroundingDinoNode(Node):
@@ -51,7 +62,9 @@ class GroundingDinoNode(Node):
         self._bridge = None
 
         self.pub = self.create_publisher(SemanticDetection2D, det_topic, 10)
-        self.sub = self.create_subscription(Image, rgb_topic, self._on_image, 1)
+        self.sub = self.create_subscription(
+            Image, rgb_topic, self._on_image, SENSOR_QOS
+        )
         self.instr_sub = self.create_subscription(
             String, "~/instruction", self._on_instruction, 1
         )

@@ -121,12 +121,18 @@ def _setup(context, *args, **kwargs):
                 executable="vln_viz_node",
                 name="vln_viz_node",
                 output="screen",
-                parameters=[{
-                    "use_sim_time": LaunchConfiguration("use_sim_time"),
-                    "rgb_topic": LaunchConfiguration("rgb_topic"),
-                    "rgb_rotation": LaunchConfiguration("rgb_rotation"),
-                    "odom_topic": LaunchConfiguration("odom_topic"),
-                }],
+                # params_file is passed for its `vln_viz_node` section: the
+                # step geometry must match the agent's, or the previewed
+                # ribbon lands somewhere the robot never goes.
+                parameters=[
+                    params_file,
+                    {
+                        "use_sim_time": LaunchConfiguration("use_sim_time"),
+                        "rgb_topic": LaunchConfiguration("rgb_topic"),
+                        "rgb_rotation": LaunchConfiguration("rgb_rotation"),
+                        "odom_topic": LaunchConfiguration("odom_topic"),
+                    },
+                ],
             )
         )
 

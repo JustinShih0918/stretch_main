@@ -44,8 +44,11 @@ later (see "Future BT hook").
   `reset(instruction)` / `step(rgb, odom) -> StepResult(actions, done,
   detail)`. Registry in `backends/__init__.py` (lazy factories, mirroring
   `PERCEPTION_BACKENDS` in `semantic_navigation.launch.py`). The action
-  vocabulary and its geometry (`FORWARD_M = 0.25`, `TURN_RAD = 15°`) live in
-  `backends/base.py` and are shared with the executors.
+  vocabulary and its reference geometry (`FORWARD_M = 0.25`, `TURN_RAD = 15°`)
+  live in `backends/base.py`. The constants are the DEFAULT, not a fixed
+  value: executors, the viz preview and the reverse-command parser all take
+  `forward_m`/`turn_rad` arguments, driven by the agent's `forward_step_m` /
+  `turn_step_deg` parameters.
 * **Executors** (`action_executor.py`): pure Python, ROS I/O injected as
   callbacks, unit-tested without rclpy.
   * `CmdVelExecutor`: one action at a time as a velocity burst; completion
@@ -95,7 +98,9 @@ Response 200:
 ```
 
 * `actions`: 1..N tokens from exactly {STOP, FORWARD, TURN_LEFT,
-  TURN_RIGHT}; geometry fixed at 0.25 m / 15°. Models with continuous
+  TURN_RIGHT}; the tokens carry no magnitude — how far one token moves the
+  robot is the client's choice (`forward_step_m` / `turn_step_deg`,
+  defaulting to the VLN-CE 0.25 m / 15°). Models with continuous
   outputs (NaVILA velocities, NaVid distances) must quantize server-side —
   the adapter owns that mapping, not the robot client.
 * `STOP` anywhere ends the episode (`done` should agree; the client

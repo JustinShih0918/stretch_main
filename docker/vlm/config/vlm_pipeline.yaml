@@ -1,0 +1,93 @@
+# Pipeline configuration for the on-Thor VLM perception stack (docker/vlm).
+#
+# This one file drives all three nodes started by compose.yaml. Edit it and
+# restart — nothing here needs a rebuild, because the workspace is built
+# --symlink-install and this file is read from the bind-mounted repo:
+#
+#   docker compose -f docker/vlm/compose.yaml restart
+#
+# To keep several setups side by side (robot / Isaac / a second camera), copy
+# this file and point VLM_CONFIG at the copy — the path is interpreted inside
+# the container, where the repo is mounted at /home/user/stretch_main:
+#
+#   VLM_CONFIG=/home/user/stretch_main/docker/vlm/config/my_robot.yaml \
+#     docker compose -f docker/vlm/compose.yaml up -d
+#
+# The top-level keys are ROS 2 node names and must match the names compose.yaml
+# starts the nodes under. Renaming a node here without renaming it there means
+# its parameters are silently ignored.
+
+
+# --- VLM perception: RGB -> SemanticDetection2D ------------------------------
+locate_anything_node:
+  ros__parameters:
+    # Camera input. Defaults are the RealSense D435i topics published by the
+    # Stretch driver. For Isaac Sim use /rgb.
+    rgb_topic: "/camera/color/image_raw"
+    detection_topic: "/semantic_detection"
+
+    # Landmark -> traversable map, and the detector prompt built from it.
+    # Read from the source tree (not the install tree) so edits need no rebuild.
+    targets_file: "/home/user/stretch_main/src/semantic_nav/semantic_perception/config/semantic_targets.yaml"
+    # Non-empty switches from target detection to phrase grounding. Can also be
+    # set at runtime by publishing to /semantic_instruction.
+    prompt: ""
+
+    # The head camera is mounted portrait, so the raw stream reaches the model
+    # lying on its side. This rotates the model input upright; the boxes are
+    # mapped back to raw-image pixels before publishing, so depth projection is
+    # unaffected. One of: none | clockwise_90 | counterclockwise_90 | 180.
+    rgb_rotation: "clockwise_90"
+
+    # Model. The checkpoint is baked into the image by
+    # modules/install_locate_anything.sh; worker_path is the NVlabs/Eagle
+    # sparse clone in the bind-mounted workspace (see README).
+    model_path: "/opt/locate_anything/LocateAnything-3B"
+    worker_path: "/home/user/stretch_main/src/models/Eagle/Embodied"
+    device: "cuda"
+    dtype: "bfloat16"
+    # fast | slow | hybrid  (there is no "ar" mode)
+    generation_mode: "hybrid"
+    max_new_tokens: 512
+
+
+# --- Projection: detection + depth + TF -> ground polygons -------------------
+# Node name is set by compose.yaml (-r __node:=semantic_projection_node).
+semantic_projection_node:
+  ros__parameters:
+    depth_topic: "/camera/aligned_depth_to_color/image_raw"
+    camera_info_topic: "/camera/aligned_depth_to_color/camera_info"
+    regions_topic: "/semantic_regions"
+
+    # Frame the polygons are published in. `map` on the real robot (AMCL), so
+    # regions stay put across localization corrections; Isaac Sim uses `odom`.
+    target_frame: "map"
+    # Set only if the depth image's header.frame_id is not the optical frame.
+    camera_optical_frame: ""
+
+    # Region memory: how long a confirmed region survives after the last
+    # matching detection (<0 = forever, 0 = no hold), how many spatially
+    # consistent detections confirm one, and how far apart they may be.
+    region_hold_sec: -1.0
+    region_confirmation_hits: 2
+    region_match_distance_m: 0.6
+    pending_region_ttl_sec: 5.0
+
+    # Deprojection limits.
+    pixel_step: 4
+    min_depth: 0.15
+    max_depth: 6.0
+    transform_tolerance: 0.2
+    min_polygon_area: 0.02
+    min_polygon_thickness: 0.3
+
+
+# --- Debug overlay: RGB + detections -> annotated image ----------------------
+detection_viz_node:
+  ros__parameters:
+    rgb_topic: "/camera/color/image_raw"
+    detection_topic: "/semantic_detection"
+    viz_topic: "/semantic_detection_viz"
+    # Cosmetic: keep in sync with locate_anything_node's rgb_rotation so the
+    # overlay shows the same upright view the model was given.
+    rgb_rotation: "clockwise_90"

@@ -76,3 +76,18 @@ class TestEpisodePathState:
         assert not records_episode_path("IDLE")
         assert not records_episode_path("DONE")
         assert not records_episode_path("ERROR")
+
+
+def test_trajectory_scales_with_step_geometry():
+    """The preview must use the agent's step geometry, or the ribbon shows a
+    path the robot will not drive."""
+    points, yaw = action_trajectory(
+        OdomPose(0.0, 0.0, 0.0), ["FORWARD", "FORWARD"], forward_m=0.5
+    )
+    assert points[-1][0] == pytest.approx(1.0)
+    assert yaw == pytest.approx(0.0)
+
+    _, yaw = action_trajectory(
+        OdomPose(0.0, 0.0, 0.0), ["TURN_LEFT"], turn_rad=math.radians(30.0)
+    )
+    assert yaw == pytest.approx(math.radians(30.0))

@@ -24,7 +24,7 @@ from nav_msgs.msg import Odometry, Path
 from rclpy.duration import Duration
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
-from sensor_msgs.msg import Image
+from sensor_msgs.msg import CompressedImage, Image
 from std_msgs.msg import ColorRGBA, String
 from visualization_msgs.msg import Marker, MarkerArray
 
@@ -32,6 +32,7 @@ from btcpp_ros2_interfaces.msg import VlnStatus
 
 from .backends.base import BACKWARD, FORWARD, TURN_LEFT, TURN_RIGHT, OdomPose
 from .image_rotation import normalize_rgb_rotation, rotate_rgb_image
+from .image_source import SENSOR_QOS, RgbSource
 from .viz_geometry import action_trajectory, records_episode_path, split_actions
 
 # HUD colors (BGR)
@@ -50,13 +51,18 @@ _STATE_COLOR = {
     "ERROR": _RED,
 }
 
-_GLYPH = {
-    FORWARD: "FWD",
-    BACKWARD: "BACK",
-    TURN_LEFT: "L15",
-    TURN_RIGHT: "R15",
-    "STOP": "STOP",
-}
+
+def _glyphs(turn_step_deg: float) -> dict:
+    """Overlay labels. The turn glyphs carry the configured angle, so an
+    overlay reading L30 is an immediate sign the step geometry was scaled."""
+    turn = f"{turn_step_deg:g}"
+    return {
+        FORWARD: "FWD",
+        BACKWARD: "BACK",
+        TURN_LEFT: f"L{turn}",
+        TURN_RIGHT: f"R{turn}",
+        "STOP": "STOP",
+    }
 
 
 class VlnVizNode(Node):
@@ -64,11 +70,38 @@ class VlnVizNode(Node):
         super().__init__("vln_viz_node")
 
         self.declare_parameter("rgb_topic", "/rgb")
+        self.declare_parameter("rgb_transport", "raw")
         self.declare_parameter("rgb_rotation", "clockwise_90")
+        # The HUD is a view, not data: publishing it at the camera's full
+        # resolution costs another 2.7 MB/frame on the wire (and in RViz's
+        # software renderer) for pixels nobody reads.
+        self.declare_parameter("viz_image_max_width", 640)
+        self.declare_parameter("viz_image_rate_hz", 10.0)
+        # Which HUD topics to publish. The raw one costs ~2 MB per frame
+        # (175 Mbit/s at 10 Hz) for a picture a human looks at; measured on
+        # the robot it alone pushed the displayed frame ~0.8 s behind. RViz
+        # reads /vln/viz_image with the "compressed" transport instead.
+        self.declare_parameter("viz_image_transport", "compressed")
+        # JPEG frames decode at 1/N scale for free (libjpeg does it while
+        # decoding). The HUD is downscaled anyway, so paying for full-size
+        # decode + resize only adds delay.
+        self.declare_parameter("viz_decode_reduction", 2)
         self.declare_parameter("odom_topic", "/odom")
         self.declare_parameter("marker_frame", "odom")
         self.declare_parameter("path_min_step_m", 0.05)
         self.declare_parameter("path_max_poses", 500)
+        # Must match vln_agent_node's values or the previewed ribbon
+        # will not be where the robot actually drives.
+        self.declare_parameter("forward_step_m", 0.25)
+        self.declare_parameter("turn_step_deg", 15.0)
+        self.forward_step_m = float(
+            self.get_parameter("forward_step_m").value
+        )
+        self.turn_step_deg = float(
+            self.get_parameter("turn_step_deg").value
+        )
+        self.turn_step_rad = math.radians(self.turn_step_deg)
+        self.glyphs = _glyphs(self.turn_step_deg)
 
         self._bridge = None
         self.rgb_rotation = normalize_rgb_rotation(
@@ -76,6 +109,7 @@ class VlnVizNode(Node):
         )
         self._lock = threading.Lock()
         self._latest_img = None
+        self._published_stamp = None
         self._status = None
         self._odom = None
         self._odom_msg = None
@@ -84,10 +118,14 @@ class VlnVizNode(Node):
             self.get_parameter("marker_frame").value
         )
         self._episode_active = False
+        self._published_status = None
 
-        self.create_subscription(
-            Image, str(self.get_parameter("rgb_topic").value),
-            self._on_image, 1,
+        self.rgb_source = RgbSource(
+            self,
+            str(self.get_parameter("rgb_topic").value),
+            str(self.get_parameter("rgb_transport").value),
+            callback=self._on_image,
+            qos=SENSOR_QOS,
         )
         self.create_subscription(
             Odometry, str(self.get_parameter("odom_topic").value),
@@ -98,17 +136,33 @@ class VlnVizNode(Node):
             String, "/vln_instruction", self._on_instruction, 1
         )
 
-        self.image_pub = self.create_publisher(Image, "/vln/viz_image", 1)
+        out_transport = str(
+            self.get_parameter("viz_image_transport").value
+        ).lower()
+        if out_transport not in ("compressed", "raw", "both"):
+            raise ValueError("viz_image_transport must be compressed|raw|both")
+        self.image_pub = (
+            self.create_publisher(Image, "/vln/viz_image", 1)
+            if out_transport in ("raw", "both") else None
+        )
+        # image_transport's naming, so RViz's Image display can select the
+        # "compressed" transport on /vln/viz_image and pull ~25x fewer bytes.
+        self.image_compressed_pub = (
+            self.create_publisher(CompressedImage, "/vln/viz_image/compressed", 1)
+            if out_transport in ("compressed", "both") else None
+        )
         self.marker_pub = self.create_publisher(
             MarkerArray, "/vln/viz_markers", 1
         )
         self.path_pub = self.create_publisher(Path, "/vln/path", 1)
 
-        self.create_timer(0.1, self._publish_image)    # 10 Hz HUD
+        hud_hz = max(0.5, float(self.get_parameter("viz_image_rate_hz").value))
+        self.create_timer(1.0 / hud_hz, self._publish_image)
         self.create_timer(0.2, self._publish_markers)  # 5 Hz markers
         self.get_logger().info(
-            f"vln_viz_node ready: rgb_rotation={self.rgb_rotation} -> "
-            "/vln/viz_image /vln/viz_markers /vln/path"
+            f"vln_viz_node ready: rgb={self.rgb_source.topic} "
+            f"({self.rgb_source.transport}) rotation={self.rgb_rotation} -> "
+            f"/vln/viz_image[{out_transport}] /vln/viz_markers /vln/path"
         )
 
     # -- inputs -----------------------------------------------------------
@@ -199,15 +253,33 @@ class VlnVizNode(Node):
             status = self._status
         if img_msg is None:
             return
+        # The HUD timer runs faster than the camera when the link is loaded;
+        # re-encoding a frame we already published just burns CPU that the
+        # next real frame needs.
+        stamp = (img_msg.header.stamp.sec, img_msg.header.stamp.nanosec)
+        if stamp == self._published_stamp and status is self._published_status:
+            return
+        self._published_stamp = stamp
+        self._published_status = status
 
         import cv2
-        if self._bridge is None:
+        if self._bridge is None and self.image_pub is not None:
             from cv_bridge import CvBridge
             self._bridge = CvBridge()
 
-        frame = self._bridge.imgmsg_to_cv2(img_msg, desired_encoding="rgb8")
+        frame = self.rgb_source.to_rgb(
+            img_msg, int(self.get_parameter("viz_decode_reduction").value)
+        )
         frame = rotate_rgb_image(frame, self.rgb_rotation)
         frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+        # Downscale before drawing, so the HUD text keeps its proportions.
+        max_w = int(self.get_parameter("viz_image_max_width").value)
+        if 0 < max_w < frame.shape[1]:
+            scale_f = max_w / float(frame.shape[1])
+            frame = cv2.resize(
+                frame, (max_w, max(1, int(frame.shape[0] * scale_f))),
+                interpolation=cv2.INTER_AREA,
+            )
         h, w = frame.shape[:2]
         font = cv2.FONT_HERSHEY_SIMPLEX
         scale = max(0.45, w / 1400.0)
@@ -244,23 +316,37 @@ class VlnVizNode(Node):
             for token in current.split("+"):
                 if not token:
                     continue
-                text = _GLYPH.get(token, token)
+                text = self.glyphs.get(token, token)
                 (tw, _), _ = cv2.getTextSize(text, font, scale, 2)
                 cv2.putText(frame, text, (x, y), font, scale, _GREEN, 2,
                             cv2.LINE_AA)
                 x += tw + int(14 * scale / 0.45)
             for token in status.pending_actions:
-                text = _GLYPH.get(token, token)
+                text = self.glyphs.get(token, token)
                 (tw, _), _ = cv2.getTextSize(text, font, scale, 1)
                 cv2.putText(frame, text, (x, y), font, scale, _GRAY, 1,
                             cv2.LINE_AA)
                 x += tw + int(14 * scale / 0.45)
 
-        out = self._bridge.cv2_to_imgmsg(
-            cv2.cvtColor(frame, cv2.COLOR_BGR2RGB), encoding="rgb8"
-        )
-        out.header = img_msg.header
-        self.image_pub.publish(out)
+        if self.image_pub is not None:
+            out = self._bridge.cv2_to_imgmsg(
+                cv2.cvtColor(frame, cv2.COLOR_BGR2RGB), encoding="rgb8"
+            )
+            out.header = img_msg.header
+            self.image_pub.publish(out)
+
+        if self.image_compressed_pub is not None:
+            ok, buf = cv2.imencode(".jpg", frame,
+                                   [int(cv2.IMWRITE_JPEG_QUALITY), 80])
+            if ok:
+                jpeg = CompressedImage()
+                jpeg.header = img_msg.header
+                # image_transport's convention (what the RealSense driver
+                # publishes too); a bare "jpeg" is not understood by every
+                # compressed-transport subscriber.
+                jpeg.format = "bgr8; jpeg compressed bgr8"
+                jpeg.data = buf.tobytes()
+                self.image_compressed_pub.publish(jpeg)
 
     # -- 3D markers -------------------------------------------------------
     def _marker(self, mid, mtype):
@@ -302,7 +388,10 @@ class VlnVizNode(Node):
         # commanded batch as a trajectory ribbon + final heading arrow
         actions = split_actions(status)
         if actions:
-            points, final_yaw = action_trajectory(odom, actions)
+            points, final_yaw = action_trajectory(
+                odom, actions,
+                self.forward_step_m, self.turn_step_rad,
+            )
 
             if len(points) > 1:
                 ribbon = self._marker(1, Marker.LINE_STRIP)

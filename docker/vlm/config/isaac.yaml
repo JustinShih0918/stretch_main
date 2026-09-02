@@ -1,0 +1,54 @@
+# Alternative pipeline configuration: this image pointed at Isaac Sim instead
+# of the real robot. Same nodes, same contract — only the camera topic names
+# and the localization frame differ.
+#
+#   VLM_CONFIG=/home/user/stretch_main/docker/vlm/config/isaac.yaml \
+#     docker compose -f docker/vlm/compose.yaml up -d
+#
+# Copy this file as a template for any other setup (a second camera, a bag
+# replay, a different robot). Only the keys that differ from
+# vlm_pipeline.yaml are worth changing; everything else is repeated here so the
+# file stands alone — a params file is not layered over another one.
+
+locate_anything_node:
+  ros__parameters:
+    # Isaac Sim publishes the bare topic names.
+    rgb_topic: "/rgb"
+    detection_topic: "/semantic_detection"
+    targets_file: "/home/user/stretch_main/src/semantic_nav/semantic_perception/config/semantic_targets.yaml"
+    prompt: ""
+    # Isaac's virtual camera is already upright, unlike the robot's.
+    rgb_rotation: "none"
+    model_path: "/opt/locate_anything/LocateAnything-3B"
+    worker_path: "/home/user/stretch_main/src/models/Eagle/Embodied"
+    device: "cuda"
+    dtype: "bfloat16"
+    generation_mode: "hybrid"
+    max_new_tokens: 512
+
+semantic_projection_node:
+  ros__parameters:
+    depth_topic: "/depth"
+    camera_info_topic: "/camera_info"
+    regions_topic: "/semantic_regions"
+    # Isaac's ground-truth odometry is the stable frame here; the sim has no
+    # AMCL `map`.
+    target_frame: "odom"
+    camera_optical_frame: ""
+    region_hold_sec: -1.0
+    region_confirmation_hits: 2
+    region_match_distance_m: 0.6
+    pending_region_ttl_sec: 5.0
+    pixel_step: 4
+    min_depth: 0.15
+    max_depth: 6.0
+    transform_tolerance: 0.2
+    min_polygon_area: 0.02
+    min_polygon_thickness: 0.3
+
+detection_viz_node:
+  ros__parameters:
+    rgb_topic: "/rgb"
+    detection_topic: "/semantic_detection"
+    viz_topic: "/semantic_detection_viz"
+    rgb_rotation: "none"

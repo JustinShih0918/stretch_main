@@ -46,3 +46,16 @@ def test_explicit_distance_is_quantized_to_25_cm(instruction, steps):
 )
 def test_navigation_language_is_not_misclassified(instruction):
     assert parse_robot_relative_command(instruction) is None
+
+
+def test_distance_quantizes_to_the_configured_step():
+    """"back up 1 m" is 4 steps at 0.25 m but 2 at 0.5 m — the parser must
+    use the same step length the executor runs with."""
+    assert parse_robot_relative_command("back up 1 m") == [BACKWARD] * 4
+    assert parse_robot_relative_command(
+        "back up 1 m", forward_m=0.5
+    ) == [BACKWARD] * 2
+
+
+def test_bare_command_is_one_step_whatever_the_step_is():
+    assert parse_robot_relative_command("reverse", forward_m=0.5) == [BACKWARD]

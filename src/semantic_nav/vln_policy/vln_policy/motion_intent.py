@@ -43,11 +43,16 @@ def _distance_m(value: str, unit: Optional[str]) -> float:
     return distance
 
 
-def parse_robot_relative_command(instruction: str) -> Optional[List[str]]:
+def parse_robot_relative_command(
+    instruction: str,
+    forward_m: float = FORWARD_M,
+) -> Optional[List[str]]:
     """Return quantized BACKWARD actions for a direct reverse command.
 
-    A command without a distance means one 0.25 m action.  Explicit distances
-    are rounded to the nearest action step, with one step as the minimum.
+    A command without a distance means one action, i.e. `forward_m` metres.
+    Explicit distances are rounded to the nearest action step, with one step as
+    the minimum, so the quantization has to use the SAME step length the
+    executor runs with — otherwise "back up 1 m" moves the wrong distance.
     Returns None when the instruction is not an unambiguous reverse command.
     """
     match = _REVERSE_COMMAND.fullmatch(instruction)
@@ -62,5 +67,5 @@ def parse_robot_relative_command(instruction: str) -> Optional[List[str]]:
         if not math.isfinite(distance_m) or distance_m <= 0.0:
             return None
         # Avoid Python's bankers' rounding at exact half steps.
-        steps = max(1, int(math.floor(distance_m / FORWARD_M + 0.5)))
+        steps = max(1, int(math.floor(distance_m / float(forward_m) + 0.5)))
     return [BACKWARD] * steps

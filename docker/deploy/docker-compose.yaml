@@ -11,6 +11,8 @@ name: stretch-main-deploy
 #   docker compose -f docker/deploy/docker-compose.yaml run --rm build
 #   docker compose -f docker/deploy/docker-compose.yaml run --rm nav
 #   docker compose -f docker/deploy/docker-compose.yaml run --rm bt
+#   docker compose -f docker/deploy/docker-compose.yaml run --rm vln       # headless
+#   docker compose -f docker/deploy/docker-compose.yaml run --rm vln-console
 
 x-deploy-image: &deploy-image
   build:
@@ -24,12 +26,62 @@ x-deploy-image: &deploy-image
     - ../../:/ws
     # Robot hardware access (lidar, base, etc.)
     - /dev:/dev
+    # X11 socket + auth cookie, for rviz2 (the launch's rviz:=true) and other
+    # GUI tools. The default below is where GDM keeps the cookie on a normal
+    # desktop session — XAUTHORITY itself is usually unset there, and
+    # ~/.Xauthority does not exist. Override for another uid/display manager:
+    #   XAUTHORITY=$(ps -ef | grep -m1 "[X]org" | grep -o "/.*Xauthority")
+    # If the file is missing X refuses with "Authorization required, but no
+    # authorization protocol specified" (docker also leaves an empty dir at
+    # that path); `xhost +local:root` on the host is the blunter fix.
+    - /tmp/.X11-unix:/tmp/.X11-unix
+    - ${XAUTHORITY:-/run/user/1000/gdm/Xauthority}:/tmp/.docker.xauth:ro
+    # The wired-link DDS config, at the SAME absolute path in every image. The
+    # repo itself mounts at /ws here but /home/user/stretch_main in docker/vlm,
+    # so a CYCLONEDDS_URI pointing into the workspace is only valid in the one
+    # image it was written for — exporting it in your shell then breaks the
+    # other with "can't open configuration file". Use this path instead.
+    - ../cyclonedds-eth.xml:/etc/cyclonedds-eth.xml:ro
   privileged: true
   network_mode: host
   environment:
     - RCUTILS_COLORIZED_OUTPUT=1
-    - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+    # Must match whatever the robot's own hello-robot install uses, and
+    # docker/vlm on the Thor — an RMW or domain mismatch means the nodes
+    # simply never see each other's topics (`echo $RMW_IMPLEMENTATION`).
+    - RMW_IMPLEMENTATION=${RMW_IMPLEMENTATION:-rmw_cyclonedds_cpp}
     - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0}
+    - ROS_LOCALHOST_ONLY=${ROS_LOCALHOST_ONLY:-0}
+    # Pin DDS to the wired link to the Thor. BOTH ends must be pinned: the Thor
+    # (docker/vlm) now binds Ethernet only, so a side left on autodetermine can
+    # pick Wi-Fi and then the two never discover each other at all. Empty here
+    # = Cyclone's own default, so unrelated runs are unaffected; opt in with
+    # this robot's wired NIC name (`ip -brief addr` — NOT the Thor's):
+    #   CYCLONEDDS_IFACE=<nic> docker compose -f docker/deploy/... run --rm nav
+    # The same two variables must be exported for any part of the robot stack
+    # that runs OUTSIDE this compose (the hello-robot install, the RealSense
+    # driver) — see docker/cyclonedds-eth.xml.
+    #
+    # NOTE the path: /etc/cyclonedds-eth.xml is the bind mount above, NOT
+    # /home/user/stretch_main/docker/... — that is docker/vlm's mount point and
+    # does not exist in this image. Cyclone's failure there is
+    # "can't open configuration file", followed by rmw_create_node errors.
+    - CYCLONEDDS_URI=${CYCLONEDDS_URI:-/etc/cyclonedds-eth.xml}
+    # enP2p1s0 is the Thor's wired NIC (this compose also gets run there for
+    # rviz2). On the robot itself, override with its own NIC name.
+    - CYCLONEDDS_IFACE=${CYCLONEDDS_IFACE:-enP2p1s0}
+    # VLN: which StreamVLN server (docker/vln) the agent talks to, and which
+    # colcon tree run_vln_robot.sh sources. Pinning the tree matters because
+    # the same bind-mounted workspace also carries the Thor's install_vlm/,
+    # which scripts/vln_tmux.sh would otherwise pick up.
+    - VLN_SERVER_URL=${VLN_SERVER_URL:-http://localhost:18080}
+    - VLN_INSTALL_BASE=/ws/install
+    # GUI (rviz:=true). Empty = no display, which is the normal headless case
+    # on the robot; set it to the host's live display, e.g. DISPLAY=:1, and
+    # run `xhost +local:root` once on the host if X refuses the connection.
+    - DISPLAY=${DISPLAY:-}
+    - XAUTHORITY=/tmp/.docker.xauth
+    - QT_X11_NO_MITSHM=1
 
 services:
   # One-shot build of the deploy package subset.
@@ -41,7 +93,8 @@ services:
       - -lc
       - >-
         source /opt/ros/humble/setup.bash &&
-        colcon build --packages-up-to bt_engine stretch_nav2 --symlink-install
+        colcon build --packages-up-to bt_engine stretch_nav2 vln_policy
+        --symlink-install
 
   # nav2 + slam_toolbox bringup for the real robot.
   nav:
@@ -66,6 +119,37 @@ services:
         source /opt/ros/humble/setup.bash &&
         source install/setup.bash &&
         ros2 run bt_engine bt_engine
+
+  # VLN agent against the real robot: it attaches to the camera and (in
+  # execution_mode:=nav2) the nav2 running here or on the robot, and starts
+  # neither. Topic/action/frame names are the ROBOT_* block in
+  # vln_policy/launch/vln_robot.launch.py.
+  #   ... run --rm vln                                  # defaults
+  #   ... run --rm vln bash -lc "source /opt/ros/humble/setup.bash && \
+  #         source install/setup.bash && ros2 launch vln_policy \
+  #         vln_robot.launch.py execution_mode:=nav2"
+  vln:
+    <<: *deploy-image
+    container_name: stretch-main-deploy-vln
+    command:
+      - bash
+      - -lc
+      - >-
+        source /opt/ros/humble/setup.bash &&
+        source install/setup.bash &&
+        ros2 launch vln_policy vln_robot.launch.py
+        server_url:=$$VLN_SERVER_URL
+
+  # The same thing with the three-pane tmux console (launch + /vln/status +
+  # an instruction prompt). Needs a TTY, so use `run`, not `up`:
+  #   ... run --rm vln-console
+  #   ... run --rm vln-console ./run_vln_robot.sh execution_mode:=nav2
+  vln-console:
+    <<: *deploy-image
+    container_name: stretch-main-deploy-vln-console
+    command: ./run_vln_robot.sh
+    tty: true
+    stdin_open: true
 
   # Interactive shell with the workspace mounted.
   dev:

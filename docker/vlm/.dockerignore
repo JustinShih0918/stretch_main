@@ -1,0 +1,6 @@
+*
+!.bashrc
+!modules
+# Unlike docker/sim (which bind-mounts it), this image bakes the DDS config in
+# so the runtime services need no extra mount.
+!cyclonedds.xml

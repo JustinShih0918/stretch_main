@@ -8,12 +8,32 @@ import rclpy
 import yaml
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
+from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import Image
 from std_msgs.msg import String
 
 from btcpp_ros2_interfaces.msg import SemanticDetection2D
 
+from .image_rotation import (
+    inverse_rotation,
+    normalize_rgb_rotation,
+    rotate_box,
+    rotate_rgb_image,
+    rotate_size,
+)
 from .locate_anything_parser import parse_labeled_boxes
+
+# Cameras publish BEST_EFFORT (RealSense does; Isaac's ROS 2 bridge publishes
+# RELIABLE). A BEST_EFFORT subscriber matches both, while a RELIABLE one
+# receives nothing at all from a BEST_EFFORT publisher — the only symptom is a
+# one-line incompatible-QoS warning at discovery.
+# depth=1, not the stock qos_profile_sensor_data (depth=5): inference takes
+# ~1.5 s/frame, so a queue would only ever hand us stale frames.
+SENSOR_QOS = QoSProfile(
+    reliability=ReliabilityPolicy.BEST_EFFORT,
+    history=HistoryPolicy.KEEP_LAST,
+    depth=1,
+)
 
 
 class LocateAnythingNode(Node):
@@ -31,6 +51,11 @@ class LocateAnythingNode(Node):
             "worker_path",
             "/home/user/stretch_main/src/models/Eagle/Embodied",
         )
+        # Orientation correction for a camera that is not mounted upright. The
+        # rotation applies to the model input only: boxes are mapped back to
+        # the raw image frame before publishing, because the projection node
+        # pairs them with the unrotated depth image and camera_info.
+        self.declare_parameter("rgb_rotation", "none")
         self.declare_parameter("device", "cuda")
         self.declare_parameter("dtype", "bfloat16")
         self.declare_parameter("generation_mode", "hybrid")
@@ -42,6 +67,9 @@ class LocateAnythingNode(Node):
             self.get_parameter("targets_file").value
         )
         self.prompt = str(self.get_parameter("prompt").value).strip()
+        self.rgb_rotation = normalize_rgb_rotation(
+            self.get_parameter("rgb_rotation").value
+        )
 
         self._worker = None
         self._bridge = None
@@ -51,7 +79,7 @@ class LocateAnythingNode(Node):
             SemanticDetection2D, detection_topic, 10
         )
         self.sub = self.create_subscription(
-            Image, rgb_topic, self._on_image, 1
+            Image, rgb_topic, self._on_image, SENSOR_QOS
         )
         self.instruction_sub = self.create_subscription(
             String, "~/instruction", self._on_instruction, 1
@@ -60,7 +88,7 @@ class LocateAnythingNode(Node):
         mode = "phrase grounding" if self.prompt else "target detection"
         self.get_logger().info(
             f"locate_anything_node up: rgb={rgb_topic} -> "
-            f"{detection_topic}; mode={mode}"
+            f"{detection_topic}; mode={mode}; rotation={self.rgb_rotation}"
         )
 
     def _load_targets(self, path: str) -> dict:
@@ -146,7 +174,8 @@ class LocateAnythingNode(Node):
         from PIL import Image as PILImage
 
         rgb = self._bridge.imgmsg_to_cv2(msg, desired_encoding="rgb8")
-        image = PILImage.fromarray(rgb)
+        raw_height, raw_width = rgb.shape[:2]
+        image = PILImage.fromarray(rotate_rgb_image(rgb, self.rgb_rotation))
         generation_kwargs = {
             "generation_mode": self.get_parameter(
                 "generation_mode"
@@ -172,14 +201,18 @@ class LocateAnythingNode(Node):
             self.get_logger().error(f"LocateAnything inference failed: {exc}")
             return
 
-        height, width = rgb.shape[:2]
+        # The model saw the rotated image, so its normalized boxes denormalize
+        # against the rotated size; undo the rotation to get raw-image pixels.
+        width, height = rotate_size(raw_width, raw_height, self.rgb_rotation)
         detections = parse_labeled_boxes(
             str(result.get("answer", "")),
             width,
             height,
             fallback_label=fallback_label,
         )
+        undo = inverse_rotation(self.rgb_rotation)
         for box in detections:
+            box = rotate_box(box, undo, width, height)
             label, traversable = self._attribute_for_label(box["label"])
             detection = SemanticDetection2D()
             detection.header = msg.header

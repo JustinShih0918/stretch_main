@@ -1,13 +1,16 @@
 # Docker environments
 
-Three independent images, each building a different subset of the colcon
-workspace. Run all commands **from the repo root**.
+Independent images, each building a different subset of the colcon workspace
+(`vln/` builds none — it carries no ROS at all). Run all commands **from the
+repo root**.
 
 | Env | Purpose | Build subset | Command |
 |---|---|---|---|
 | [`ci/`](ci/) | Minimal build/test image (CI + local parity) | `bt_engine` | `docker compose -f docker/ci/docker-compose.yaml run --rm build` |
 | [`sim/`](sim/) | Isaac Sim 5.1 simulation (GPU/X11/privileged) | `bt_engine stretch3_navigation` | `docker compose -f docker/sim/compose.yaml run --rm stretch3-ws` |
-| [`deploy/`](deploy/) | On-robot nav2 + slam_toolbox | `bt_engine stretch_nav2` | `docker compose -f docker/deploy/docker-compose.yaml run --rm build` |
+| [`deploy/`](deploy/) | On-robot nav2 + slam_toolbox + the VLN agent | `bt_engine stretch_nav2 vln_policy` | `docker compose -f docker/deploy/docker-compose.yaml run --rm build` |
+| [`vlm/`](vlm/) | VLM semantic perception on Jetson AGX Thor | `semantic_perception semantic_traversability` | `docker compose -f docker/vlm/compose.yaml up -d` |
+| [`vln/`](vln/) | StreamVLN inference server (ROS-free, HTTP) | — | `docker compose -f docker/vln/compose.yaml up -d` |
 
 The BehaviorTree engine (`bt_engine` / `bt_nav`, in [`../src/common/`](../src/common/))
 is shared across all three: it drives the `navigate_to_pose` action server that
@@ -35,4 +38,15 @@ docker compose -f docker/sim/compose.yaml run --rm stretch3-ws
 Runs on the physical Stretch. Builds the vendored `stretch_nav2` (nav2 +
 slam_toolbox + AMCL). The Stretch hardware driver (`stretch_core`) and
 calibrated URDF come from the robot's own hello-robot install — source that as
-an underlay first. Services: `build`, `nav`, `bt`, `dev`.
+an underlay first. Services: `build`, `nav`, `bt`, `vln`, `vln-console`, `dev`.
+
+`vln` / `vln-console` run the VLN agent (`../src/semantic_nav/vln_policy/`)
+against the camera and nav2 already running on the robot — `vln_robot.launch.py`
+starts neither. `vln-console` is the three-pane `./run_vln_robot.sh` tmux
+console; `vln` is the same launch headless. The model stays in the `vln/`
+image and is reached over HTTP (`VLN_SERVER_URL`).
+
+The image also carries `rviz2` for `rviz:=true`. The compose mounts the X
+socket and GDM's auth cookie (`/run/user/1000/gdm/Xauthority` by default —
+override with `XAUTHORITY=`), so only `DISPLAY` normally has to be passed.
+Rendering is software GL — there is no GPU passthrough here.

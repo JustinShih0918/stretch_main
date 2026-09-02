@@ -13,24 +13,33 @@ from .backends.base import (
 )
 
 
-def action_trajectory(pose: OdomPose, actions):
+def action_trajectory(
+    pose: OdomPose,
+    actions,
+    forward_m: float = FORWARD_M,
+    turn_rad: float = TURN_RAD,
+):
     """Points (x, y) visited while executing `actions` from `pose`, plus the
-    final heading. Turns rotate in place; FORWARD adds a point."""
+    final heading. Turns rotate in place; FORWARD adds a point.
+
+    Pass the same forward_m/turn_rad the executor runs with, or the previewed
+    path will not be where the robot actually goes.
+    """
     x, y, yaw = pose.x, pose.y, pose.yaw
     points = [(x, y)]
     for action in actions:
         if action == FORWARD:
-            x += FORWARD_M * math.cos(yaw)
-            y += FORWARD_M * math.sin(yaw)
+            x += forward_m * math.cos(yaw)
+            y += forward_m * math.sin(yaw)
             points.append((x, y))
         elif action == BACKWARD:
-            x -= FORWARD_M * math.cos(yaw)
-            y -= FORWARD_M * math.sin(yaw)
+            x -= forward_m * math.cos(yaw)
+            y -= forward_m * math.sin(yaw)
             points.append((x, y))
         elif action == TURN_LEFT:
-            yaw += TURN_RAD
+            yaw += turn_rad
         elif action == TURN_RIGHT:
-            yaw -= TURN_RAD
+            yaw -= turn_rad
     return points, yaw
 
 

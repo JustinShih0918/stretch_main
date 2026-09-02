@@ -69,9 +69,13 @@ camera-derived polygon of a class flagged `traversable`.
 - **`vln_agent_node`**: instruction-driven VLN agent with swappable model
   backends (StreamVLN via HTTP to `docker/vln/`, scripted `dummy`, `navila`
   adapter slot) and selectable executors (`cmd_vel` velocity bursts or
-  relative waypoints to nav2 `navigate_to_pose`). Standalone demo:
-  `./run_vln_demo.sh` (repo root). See [vln_policy/README.md](vln_policy/README.md)
-  and the normative HTTP contract in [vln_policy/DESIGN.md](vln_policy/DESIGN.md).
+  relative waypoints to nav2 `navigate_to_pose`). Two entry points, same
+  nodes: `./run_vln_demo.sh` (Isaac Sim, brings up nav2 itself) and
+  `./run_vln_robot.sh` (real robot, attaches to the camera + nav2 already
+  running there — topic names in the `ROBOT_*` block of
+  `vln_policy/launch/vln_robot.launch.py`). See
+  [vln_policy/README.md](vln_policy/README.md) and the normative HTTP
+  contract in [vln_policy/DESIGN.md](vln_policy/DESIGN.md).
 
 ### Interfaces
 Added to the vendored `src/common/btcpp_ros2_interfaces/`:
@@ -131,13 +135,20 @@ reusable core. To bring this up on the real robot:
    do **not** edit the vendored file in place). The on-robot stack localizes in
    `map` (AMCL) rather than sim's ground-truth `world`; set `target_frame`
    accordingly (`map` or `odom`).
-3. **Perception**: run either VLM node against the robot's
+3. **Camera QoS**: the perception nodes subscribe to the RGB topic with
+   `BEST_EFFORT / KEEP_LAST / depth=1`. This is required on the real robot —
+   `realsense2_camera` publishes BEST_EFFORT, and a RELIABLE subscriber
+   receives *nothing* from it (DDS reports only an incompatible-QoS warning at
+   discovery). It stays compatible with Isaac Sim, whose ROS 2 bridge publishes
+   RELIABLE. Keep `depth=1`: the VLM needs ~1.5 s/frame, so a deeper queue only
+   buys stale frames.
+4. **Perception**: run either VLM node against the robot's
    RealSense D435i (already in the Stretch URDF) — likely **off-board** given
    on-robot GPU limits — or consume detections from
    [`hello-robot/stretch_ai`](https://github.com/hello-robot/stretch_ai) and adapt
    them into `SemanticDetection2D` (same topic contract, so the projection node
    and costmap layer are unchanged).
-4. **Frames/calibration**: verify the camera optical-frame convention and the
+5. **Frames/calibration**: verify the camera optical-frame convention and the
    `map → odom → base_link → camera_*` TF chain; set `camera_optical_frame` on the
    projection node if the depth image's `header.frame_id` is not the optical frame.
 ```

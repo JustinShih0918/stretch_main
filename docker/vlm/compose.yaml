@@ -1,0 +1,205 @@
+name: stretch-main-vlm
+
+# On-Thor VLM perception for action-aware semantic navigation.
+#
+# Target: NVIDIA Jetson AGX Thor (JetPack 7 / L4T r39, aarch64, CUDA 13,
+# sm_110). See the base-image note at the top of Dockerfile for why this is
+# jammy + ROS Humble + cu130 torch wheels rather than an NGC PyTorch base.
+#
+# This container runs the GPU half of src/semantic_nav/ only:
+#
+#   perception  /rgb                        -> /semantic_detection
+#   projection  /depth + /camera_info + TF  -> /semantic_regions
+#   viz         /rgb + /semantic_detection  -> /semantic_detection_viz
+#
+# nav2 (which loads SemanticTraversabilityLayer and consumes
+# /semantic_regions), the BT engine and the Stretch driver run on the robot in
+# docker/deploy. Everything talks over DDS on the host network, so the robot
+# and this Thor must share a subnet, a ROS_DOMAIN_ID and an RMW implementation
+# (docker/deploy defaults to CycloneDDS, matched below).
+#
+# Usage (run from the repo root, on the Thor):
+#   docker compose -f docker/vlm/compose.yaml build
+#   docker compose -f docker/vlm/compose.yaml run --rm build      # colcon, once
+#   docker compose -f docker/vlm/compose.yaml up -d               # the 3 nodes
+#   docker compose -f docker/vlm/compose.yaml logs -f perception
+
+#
+# All pipeline settings — topic names, target frame, region memory, model
+# options — live in ONE params file: config/vlm_pipeline.yaml. Edit it and
+# `restart`; no rebuild (the workspace is --symlink-install and the file is read
+# from the bind-mounted repo). Its defaults are the Stretch RealSense topics,
+# NOT the Isaac Sim ones (/rgb, /depth, /camera_info).
+#
+# Keep several setups side by side by copying the file and selecting it:
+#   VLM_CONFIG=/home/user/stretch_main/docker/vlm/config/isaac.yaml \
+#     docker compose -f docker/vlm/compose.yaml up -d
+#
+# The LocateAnything checkpoint (~7 GB) is downloaded during `compose build`
+# and baked into the image — you do not need to fetch it yourself. That costs
+# image size (~28 GB total); build with LOCATE_ANYTHING_MODEL: "NO" and
+# uncomment the /opt/locate_anything volume to keep a host copy instead.
+#
+# The LocateAnything worker code (locateanything_worker.py, from NVIDIA's Eagle
+# repo) is NOT vendored in this repo: clone it to src/models/Eagle/Embodied in
+# the workspace, which is bind-mounted here, or point VLM_WORKER_PATH elsewhere.
+#
+# colcon writes to build_vlm/ install_vlm/ log_vlm/, NOT the default build/
+# install/ log/. The workspace is bind-mounted and the other images build into
+# it too — docker/deploy and docker/ci run as root, this one as uid 1000 — so a
+# shared install tree means permission errors and artifacts from mixed ROS
+# environments. Keep these in sync with .bashrc.
+
+x-vlm-image: &vlm-image
+  build:
+    context: .
+    dockerfile: Dockerfile
+    args:
+      ROS_DISTRO: humble
+      USER_UID: "${USER_UID:-1000}"
+      # LocateAnything is the semantic-perception backend on Thor (Grounding
+      # DINO needs a source-built CUDA extension; see Dockerfile).
+      LOCATE_ANYTHING: "YES"
+      # Bake the ~7 GB checkpoint into the image so no manual download is
+      # needed. "NO" skips it (then uncomment the volume mount below).
+      LOCATE_ANYTHING_MODEL: "YES"
+      # CUDA 13 wheels — the only aarch64 torch build with sm_110 kernels.
+      # Orin (sm_87, JetPack 6): https://download.pytorch.org/whl/cu126
+      TORCH_INDEX_URL: "https://download.pytorch.org/whl/cu130"
+  image: stretch-main-vlm:jetson
+  working_dir: /home/user/stretch_main
+  network_mode: host
+  # Jetson has a single unified-memory GPU, so there is nothing to select:
+  # expose it all through the nvidia runtime (same approach as
+  # docker/vln/compose.jetson.yaml).
+  runtime: nvidia
+  environment:
+    - ROS_DISTRO=humble
+    - ROS2_WS=/home/user/stretch_main
+    - RCUTILS_COLORIZED_OUTPUT=1
+    # Must match docker/deploy (CycloneDDS) — an RMW mismatch means the robot
+    # and the Thor simply never see each other's topics.
+    - RMW_IMPLEMENTATION=${RMW_IMPLEMENTATION:-rmw_cyclonedds_cpp}
+    # DDS pinned to the wired robot<->Thor link: raw camera images do not fit
+    # over Wi-Fi. Bind-mounted below at the SAME absolute path docker/deploy
+    # uses, so one exported CYCLONEDDS_URI works in both images (the workspace
+    # itself mounts at different paths in each — see the volume comment).
+    # Fall back to the baked-in autodetermine config with:
+    #   CYCLONEDDS_URI=/home/user/cyclonedds.xml docker compose ... up -d
+    - CYCLONEDDS_URI=${CYCLONEDDS_URI:-/etc/cyclonedds-eth.xml}
+    # Wired NIC name, if it is not this Thor's enP2p1s0 (`ip -brief addr`).
+    - CYCLONEDDS_IFACE=${CYCLONEDDS_IFACE:-enP2p1s0}
+    - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0}
+    - ROS_LOCALHOST_ONLY=0
+    - NVIDIA_VISIBLE_DEVICES=all
+    - NVIDIA_DRIVER_CAPABILITIES=all
+    # Model weights + HF cache.
+    - HF_HOME=/home/user/.cache/huggingface
+    # The single pipeline params file (path inside the container).
+    - VLM_CONFIG=${VLM_CONFIG:-/home/user/stretch_main/docker/vlm/config/vlm_pipeline.yaml}
+    # X11 for rqt_image_view / rviz2 when debugging from a desktop session.
+    - DISPLAY=${DISPLAY:-}
+  volumes:
+    - /etc/timezone:/etc/timezone:ro
+    - /etc/localtime:/etc/localtime:ro
+    # Shared memory for DDS.
+    - /dev/shm:/dev/shm
+    - /tmp/.X11-unix:/tmp/.X11-unix
+    # Wired-link DDS config at a fixed path shared with docker/deploy. The
+    # workspace mounts at /home/user/stretch_main here but /ws there, so a
+    # CYCLONEDDS_URI pointing into the workspace only works in one of them.
+    - ../cyclonedds-eth.xml:/etc/cyclonedds-eth.xml:ro
+    # NOTE: no checkpoint mount here on purpose — the weights are baked into
+    # the image at build time (LOCATE_ANYTHING_MODEL below), so there is
+    # nothing for you to download by hand. If you build with
+    # LOCATE_ANYTHING_MODEL: "NO" to keep the image small, uncomment this line
+    # and put the weights in $LOCATE_ANYTHING_DIR/LocateAnything-3B instead:
+    #   hf download nvidia/LocateAnything-3B \
+    #       --local-dir ~/models/locate_anything/LocateAnything-3B
+    # - ${LOCATE_ANYTHING_DIR:-~/models/locate_anything}:/opt/locate_anything:ro
+    - hf-cache:/home/user/.cache/huggingface
+    # The colcon workspace (also supplies the Eagle worker at
+    # src/models/Eagle/Embodied).
+    - ../../:/home/user/stretch_main
+  # The NGC-style GPU stack wants a real /dev/shm and unlimited locked memory.
+  ipc: host
+  ulimits:
+    memlock: -1
+    stack: 67108864
+
+services:
+  # One-shot colcon build of the perception subset. Run once after `build`,
+  # and again whenever src/semantic_nav or the interfaces change.
+  build:
+    <<: *vlm-image
+    container_name: stretch-main-vlm-build
+    profiles: ["tools"]
+    command:
+      - bash
+      - -lc
+      - >-
+        source /opt/ros/humble/setup.bash &&
+        colcon --log-base log_vlm build --symlink-install
+        --build-base build_vlm --install-base install_vlm
+        --packages-up-to semantic_perception semantic_traversability
+
+  # LocateAnything-3B: RGB -> SemanticDetection2D. This is the GPU consumer.
+  perception:
+    <<: *vlm-image
+    container_name: stretch-main-vlm-perception
+    restart: unless-stopped
+    command:
+      - bash
+      - -lc
+      - >-
+        source /opt/ros/humble/setup.bash &&
+        source install_vlm/setup.bash &&
+        exec ros2 run semantic_perception locate_anything_node --ros-args
+        --params-file $$VLM_CONFIG
+        -r '~/instruction:=/semantic_instruction'
+
+  # Detection + depth -> ground-plane polygons for the costmap layer.
+  # Topics / target_frame / region memory: config/vlm_pipeline.yaml.
+  # The node name below must match the key in that file.
+  projection:
+    <<: *vlm-image
+    container_name: stretch-main-vlm-projection
+    restart: unless-stopped
+    command:
+      - bash
+      - -lc
+      - >-
+        source /opt/ros/humble/setup.bash &&
+        source install_vlm/setup.bash &&
+        exec ros2 run semantic_traversability projection_node --ros-args
+        -r __node:=semantic_projection_node
+        --params-file $$VLM_CONFIG
+        -r '~/detection:=/semantic_detection'
+
+  # Annotated RGB on /semantic_detection_viz (cheap; leave it running).
+  viz:
+    <<: *vlm-image
+    container_name: stretch-main-vlm-viz
+    restart: unless-stopped
+    command:
+      - bash
+      - -lc
+      - >-
+        source /opt/ros/humble/setup.bash &&
+        source install_vlm/setup.bash &&
+        exec ros2 run semantic_perception detection_viz_node --ros-args
+        --params-file $$VLM_CONFIG
+
+  # Interactive shell (workspace built on first launch by .bashrc).
+  dev:
+    <<: *vlm-image
+    container_name: stretch-main-vlm-dev
+    profiles: ["tools"]
+    command: /bin/bash
+    tty: true
+    stdin_open: true
+
+volumes:
+  # Tokenizer/config downloads, so a restart does not re-fetch them.
+  hf-cache:
+    name: stretch-main-vlm-hf-cache

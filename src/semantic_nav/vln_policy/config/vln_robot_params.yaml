@@ -1,0 +1,52 @@
+# Real-robot tuning for vln_agent_node (loaded by vln_robot.launch.py).
+#
+# Topic / action / frame names are NOT here — they live in one edit block at
+# the top of launch/vln_robot.launch.py, which passes them to both the agent
+# and the viz node and would override anything set here.
+#
+# Values are deliberately more conservative than the sim defaults in
+# vln_agent_params.yaml: the robot shares space with people.
+vln_agent_node:
+  ros__parameters:
+    backend: streamvln          # streamvln | dummy | navila
+    execution_mode: cmd_vel     # cmd_vel | nav2
+    server_url: http://localhost:18080
+    timeout_s: 30.0             # HTTP timeout per request
+    jpeg_quality: 85            # re-encode quality for the model request
+    max_steps: 150              # hard episode cap (discrete actions)
+    # Geometry of one action token, scaled up from the VLN-CE reference
+    # (0.25 m / 15 deg) to smooth out nav2 mode: a batch folds into ONE
+    # waypoint, so doubling the step doubles the leg nav2 drives and halves
+    # the number of accelerate/stop cycles for the same intended path.
+    #
+    # The trade-off is real — the policy still believes each token is
+    # 0.25 m / 15 deg, so the robot overshoots what it asked for and corrects
+    # on the next frame. Back both down to 0.25 / 15.0 to restore exact
+    # VLN-CE behaviour if trajectories start looking coarse.
+    forward_step_m: 0.5         # m   per FORWARD/BACKWARD (reference: 0.25)
+    turn_step_deg: 30.0         # deg per TURN_LEFT/RIGHT  (reference: 15.0)
+    v_lin: 0.15                 # m/s   during FORWARD bursts (sim: 0.25)
+    v_ang: 0.4                  # rad/s during TURN bursts   (sim: 0.5)
+    # One step now takes twice as long at the same speed: 0.5 m at 0.15 m/s is
+    # ~3.3 s, 30 deg at 0.4 rad/s is ~1.3 s. Keep headroom above both or
+    # cmd_vel mode reports spurious action timeouts.
+    action_timeout_s: 8.0       # per discrete action, slower speeds need more
+    nav2_goal_timeout_s: 60.0   # per waypoint batch (nav2 mode)
+    # Arrival tolerances for nav2_goal_interface:=topic, where nav2 sends no
+    # result back and the batch completes on odometry proximity instead. Keep
+    # these >= nav2's own xy_goal_tolerance/yaw_goal_tolerance, or the batch
+    # times out just short of the goal.
+    nav2_arrival_xy_tol: 0.3    # m
+    nav2_arrival_yaw_tol: 0.5   # rad (~29 deg)
+    nav2_arrival_settle_s: 0.7  # s standing still before a goal counts as reached
+    dummy_actions: ""           # CSV override for backend=dummy
+    tick_rate_hz: 20.0
+
+# The HUD/marker preview integrates the same action batch to draw where the
+# robot is about to go, so it needs the same step geometry as the agent above.
+# Out of sync, the green ribbon simply lies. (vln_robot.launch.py hands this
+# file to both nodes; topic names still come from its ROBOT_* block.)
+vln_viz_node:
+  ros__parameters:
+    forward_step_m: 0.5
+    turn_step_deg: 30.0

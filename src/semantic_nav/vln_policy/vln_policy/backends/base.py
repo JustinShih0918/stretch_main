@@ -23,6 +23,15 @@ TURN_RIGHT = "TURN_RIGHT"
 ACTIONS = (STOP, FORWARD, TURN_LEFT, TURN_RIGHT)
 MOTION_ACTIONS = (FORWARD, BACKWARD, TURN_LEFT, TURN_RIGHT)
 
+# The VLN-CE reference geometry the pretrained policies were trained with:
+# one FORWARD is 0.25 m, one TURN is 15 deg. These stay the DEFAULT everywhere,
+# but they are no longer baked in — executors, the viz preview and the
+# reverse-command parser all take forward_m/turn_rad arguments, fed by the
+# agent node's forward_step_m / turn_step_deg parameters.
+#
+# Scaling them up makes nav2 mode smoother (one longer goal instead of a
+# string of short ones), at the cost of executing more motion per action token
+# than the policy asked for. See vln_policy/README.md.
 FORWARD_M = 0.25
 TURN_RAD = math.radians(15.0)
 

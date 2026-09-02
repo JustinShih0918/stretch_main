@@ -6,14 +6,33 @@ vln_agent_node:
     timeout_s: 30.0             # HTTP timeout per request
     jpeg_quality: 85
     rgb_topic: /rgb
+    rgb_transport: raw          # raw | compressed (<rgb_topic>/compressed)
     rgb_rotation: clockwise_90  # none | clockwise_90 | counterclockwise_90 | 180
     odom_topic: /odom
     cmd_vel_topic: /cmd_vel
+    nav2_action_name: navigate_to_pose   # nav2 action server (nav2 mode)
+    nav2_goal_interface: action # action | topic (topic = publish /goal_pose)
+    nav2_goal_topic: /goal_pose # used when nav2_goal_interface is topic
+    nav2_arrival_xy_tol: 0.3    # m   — topic mode completes on odom proximity
+    nav2_arrival_yaw_tol: 0.5   # rad
+    nav2_arrival_settle_s: 0.7  # s standing still before a goal counts as reached
     goal_frame: odom            # frame for nav2-mode waypoints
     max_steps: 150              # hard episode cap (discrete actions)
+    # Geometry of one action token. Left at the VLN-CE reference here so the
+    # sim reproduces the policy exactly; vln_robot_params.yaml scales both up
+    # to smooth nav2 mode on the real robot.
+    forward_step_m: 0.25        # m   per FORWARD/BACKWARD
+    turn_step_deg: 15.0         # deg per TURN_LEFT/RIGHT
     v_lin: 0.25                 # m/s   during FORWARD bursts
     v_ang: 0.5                  # rad/s during TURN bursts
     action_timeout_s: 6.0       # per discrete action (cmd_vel mode)
     nav2_goal_timeout_s: 60.0   # per waypoint batch (nav2 mode)
     dummy_actions: ""           # CSV override for backend=dummy
     tick_rate_hz: 20.0
+
+# Keep in sync with the agent's step geometry above — the preview ribbon is
+# drawn by integrating the action batch with these numbers.
+vln_viz_node:
+  ros__parameters:
+    forward_step_m: 0.25
+    turn_step_deg: 15.0

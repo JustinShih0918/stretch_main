@@ -5,3 +5,12 @@ install/
 .DS_Store
 __pycache__/
 *.pyc
+# docker/vlm builds into dedicated colcon bases (uid 1000, separate ROS env)
+build_vlm/
+install_vlm/
+log_vlm/
+
+# Third-party model code fetched locally (sparse clone of NVlabs/Eagle for
+# Embodied/locateanything_worker.py). Nested git repo; update with
+#   git -C src/models/Eagle pull
+src/models/
