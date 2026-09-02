@@ -1,7 +1,7 @@
 ref/
-build/
-log/
-install/
+build**/
+log**/
+install**/
 .DS_Store
 __pycache__/
 *.pyc
