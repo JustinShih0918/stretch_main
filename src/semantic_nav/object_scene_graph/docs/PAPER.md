@@ -1,0 +1,791 @@
+# MD-SG — Multi-floor Open-vocabulary Online 3D Scene Graph with Dynamic Handling Navigation
+
+*The ICRA 2027 submission, transcribed in full. Sections I–V and the references are the
+paper as submitted; nothing there is edited, corrected or updated. The three appendices are
+**not** part of the paper — they map its symbols onto the modules that implement them, trace
+each reported number back to the run that produced it, and record where the paper and this
+repository disagree.*
+
+*The system is called **MD-SG** in the paper and **OSG** everywhere in the code. See
+Appendix C.*
+
+---
+
+## Abstract
+
+Object-goal navigation in changing indoor environments requires robots to recover targets
+relocated within or across floors. Previously observed object locations can become outdated,
+requiring agents to revise their scene memory during search. We introduce MD-SG, an online,
+open-vocabulary 3D scene graph navigation pipeline built around two complementary mechanisms:
+(1) Presence-Belief Revision, which uses visibility-gated visual-geometric evidence to
+reassess remembered object locations, and (2) Belief-Guided Search and Unified Selection,
+which combines scene-graph priors with inspection evidence to balance candidate inspection
+and frontier exploration. Integrated within a floor-aware scene graph, these mechanisms allow
+the agent to reject outdated locations and redirect search within or across floors. On
+single-floor cross-anchor relocation tasks in HM3D, MD-SG achieves a success rate of 52.8%,
+compared with 30.2% for DualMap re-evaluated under the same protocol. We further introduce a
+cross-floor relocation benchmark comprising 25 episodes across five scenes, on which MD-SG
+achieves a success rate of 40.0%. A real-world demonstration additionally illustrates
+recovery after object relocation. These results highlight the value of revisable scene
+memory.
+
+---
+
+## I. Introduction
+
+Object-goal navigation (ObjectNav) requires an embodied agent to navigate an unknown indoor
+environment and locate an object specified by its semantic category or natural-language
+description. However, most ObjectNav systems assume that objects remain stationary, whereas
+humans and robots frequently relocate objects within or across floors in real environments.
+For example, a cup previously observed in an upstairs bedroom may later be moved to a
+downstairs kitchen. Humans can handle such changes by remembering the scene structure and
+revising their knowledge of object locations. Three-dimensional scene graphs (3DSGs) provide
+objects and their attributes as nodes and their relationships as edges. However, most
+3DSG-based ObjectNav systems cannot revise outdated object locations, particularly when
+objects move across floors. An effective agent must recognize that its prior knowledge is no
+longer valid, search for the relocated object, and update its scene representation
+accordingly.
+
+Existing ObjectNav methods generally rely on semantic maps or 3DSGs. Semantic-map methods
+such as VLFM [1] estimate the semantic relevance of exploration frontiers and project these
+scores onto a 2D value map to guide navigation. ASCENT [2] extends this approach with
+floor-level abstractions and staircase transitions, enabling online operation across floors.
+While effective for exploration, semantic maps provide limited support for representing and
+reasoning about relationships among individual objects. In contrast, 3DSGs explicitly capture
+object-level semantics and spatial structure. Hydra [3] enables real-time scene graph
+construction, but its closed-set semantics restrict navigation toward arbitrary targets.
+HOV-SG [4] supports open-vocabulary, hierarchical representations of multi-story
+environments, while ConceptGraphs [5] introduces open-vocabulary object graphs for perception
+and planning. Nevertheless, these methods primarily model static object configurations and
+are not designed to revise outdated object locations during navigation. Existing approaches
+therefore address open-vocabulary mapping, online navigation, and dynamic handling
+separately, and do not jointly support these capabilities.
+
+Dynamic multi-floor ObjectNav requires the agent to reason about both outdated object
+locations and possible floor transitions. When a target is absent from its expected location,
+the agent must invalidate that location, maintain alternative hypotheses, and determine
+whether to continue searching locally or move to another floor, as illustrated in Fig. 1.
+DualMap [6] takes an important step toward this problem by combining open-vocabulary
+perception, online semantic mapping, and object-level updates. It maintains a global
+anchor-based abstract map for candidate selection and constructs a local concrete map during
+navigation. However, its representation is designed around single-floor environments and does
+not model floor connectivity. It therefore cannot maintain and compare relocation hypotheses
+across floors or determine when invalidating local candidates should trigger a floor
+transition. This limitation highlights a broader gap in dynamic ObjectNav rather than an
+issue specific to DualMap [6].
+
+To address this gap, we introduce MD-SG, an online, open-vocabulary 3DSG-based navigation
+pipeline for dynamic, multi-floor environments. Our central insight is that a map in a
+dynamic environment must not only preserve prior knowledge but also recognize when that
+knowledge has become incorrect. MD-SG therefore represents object locations as revisable
+beliefs within a floor-aware 3DSG rather than as fixed entries. Visibility-gated observations
+update these beliefs and invalidate outdated locations, while the floor-aware graph allows
+target hypotheses to be maintained and compared across floors. When candidates on the current
+floor are invalidated, MD-SG can redirect navigation toward another floor. By jointly
+supporting belief revision and cross-floor reasoning, MD-SG allows robots to preserve useful
+knowledge from prior exploration while adapting to environmental changes, an essential
+capability for persistent operation in homes, offices, and other shared spaces. The full
+pipeline is at Fig. 2.
+
+Our contributions are summarized as follows:
+
+- We identify and formulate dynamic multi-floor ObjectNav, an overlooked setting in which
+  objects may be relocated within or across floors and previously mapped locations can no
+  longer be treated as fixed.
+- We introduce MD-SG, an online, open-vocabulary 3DSG navigation pipeline that revises
+  object-location beliefs and reasons over target hypotheses across floors.
+- We establish, to our knowledge, the first ObjectNav benchmark specifically designed for
+  dynamic multi-floor environments, featuring controlled same-floor and cross-floor object
+  relocation. Experiments demonstrate improved target reacquisition over DualMap [6].
+
+> **Fig. 1** — Dynamic cross-floor object search with MD-SG. Given the query "Find the cup,"
+> the robot (1) revisits the remembered upstairs location, (2) verifies that the target is
+> absent, (3) switches floors, and (4) recovers the cup in the downstairs kitchen. The
+> floor-aware 3DSG revises the outdated object-location belief using new observations to guide
+> subsequent search. The overlaid route and cup positions are schematic.
+
+---
+
+## II. Related Work
+
+### A. Semantic Mapping and Multi-floor Exploration
+
+Semantic mapping augments geometric maps with semantic cues that guide goal-directed
+exploration within and across floors. VLFM [1] projects image–language similarity onto a
+two-dimensional value map to rank exploration frontiers, and ASCENT [2] extends this frontier
+reasoning to multi-floor buildings with hierarchical spatial abstraction and multi-floor
+topology modeling. Both systems target the exploration of unfamiliar space. Recovering an
+object from an outdated map poses a different challenge: previously observed locations can
+mislead navigation, and the robot must reassess its memory as new evidence arrives. MD-SG
+couples memory revision with multi-floor search, and evidence on one floor redirects
+exploration across floors.
+
+### B. Online and Dynamic 3D Scene Graphs
+
+3D scene graphs organize spatial entities and their relationships into structured environment
+memory, and recent work builds them online and maintains them under scene changes. Hydra [3]
+demonstrates real-time hierarchical scene graph construction with closed-set semantics, while
+ConceptGraphs [5] and HOV-SG [4] bring open-vocabulary semantics to object graphs and to
+floor–room–object hierarchies for multi-story buildings. Clio [7] constructs open-set scene
+graphs in real time and retains objects according to task relevance. These systems establish
+the value of structured semantic memory. Target recovery from outdated object locations,
+however, remains outside their scope. An early feature-based approach [8] models the
+persistence of mapped landmarks in semi-static environments. Khronos [9] unifies short-term
+motion and long-term scene changes within a spatio-temporal metric-semantic SLAM framework,
+with a focus on temporally consistent reconstruction rather than goal-directed recovery.
+DualMap [6] connects online open-vocabulary mapping with navigation through a global abstract
+map and a local concrete map, and supports candidate reselection when the target is absent.
+Its planar abstraction nevertheless does not represent floor transitions or coordinate
+relocation hypotheses across floors. MD-SG combines the two lines through an online,
+open-vocabulary 3D scene graph that performs evidence-driven belief revision and floor-aware
+candidate selection. These mechanisms allow the robot to reconsider both where to search and
+which floor to visit.
+
+---
+
+## III. Methodology
+
+### A. Overview and Problem Formulation
+
+We consider object search in a multi-floor environment whose object configuration may change
+after initial exploration. Given a target query and a scene graph constructed during previous
+operation, the robot must locate the target while revising object locations that are no
+longer supported by current observations. At time $t$, the system receives an RGB image
+$I_t$, a depth image $D_t$, and a camera pose $T_t$, and maintains a persistent scene graph
+$G_t = (V_t, E_t)$. Its objective is to recover the target through observation-driven search
+within and across floors.
+
+MD-SG integrates Presence-Belief Revision with Belief-Guided Search and Unified Selection
+within a floor-aware 3D scene graph. The graph stores object geometry, support relations, and
+floor connectivity. Presence-Belief Revision reassesses remembered object locations using
+current observations. When direct target candidates are rejected, Belief-Guided Search and
+Unified Selection prioritizes support-surface inspections and frontier exploration using
+scene priors, inspection evidence, and travel cost. A multi-floor policy uses the remaining
+support for candidate locations to coordinate floor transitions. Observations gathered during
+navigation update the same scene memory, closing the loop between belief revision and
+subsequent search.
+
+> **Fig. 2** — Overview of our mapping and navigation pipeline. The upper branch integrates
+> object mapping, spatial mapping, and presence revision into a persistent 3D scene graph with
+> building, storey, room, container, and object levels. Stair edges connect storey nodes. The
+> lower branch uses the target query and updated graph to select a search goal and guide
+> multi-floor navigation. Arrival and transition evidence feeds back into the mapping process.
+> The graph overlaid on the rendered floor plans is schematic.
+
+### B. Hierarchical 3D Scene Graph
+
+The scene graph records object geometry, support relations, and floor connectivity. We use
+RTAB-Map [10] as the geometric mapping backend in both simulation and real-world experiments.
+
+#### 1) Perception Frontend
+
+Pose-selected keyframes are processed by an open-vocabulary detection channel and a
+class-agnostic proposal channel. We use YOLOE [11] to segment prompted indoor categories and
+the target, and FastSAM [12] with MobileCLIP [13] to provide additional query-relevant
+regions. The fused masks are back-projected using depth to form object observations. Tracks
+enter the graph after repeated supporting observations, with channel-specific admission
+criteria accounting for differences between detector confidence and image–language
+similarity.
+
+#### 2) Object Representation
+
+Following VOOM [14], each object track $i$ is represented by a dual-quadric ellipsoid $Q_i$,
+initialized from one observation and refined across views. Its projected ellipse,
+parameterized by $(\mu_i, \Sigma_i)$, supports Wasserstein-based association and the
+visibility assessment in Section III-C.
+
+We adapt this representation to target-driven navigation with two constraints. Associations
+require category agreement to preserve the semantics used for target retrieval. In addition,
+navigation may provide a narrow range of viewing angles, which leaves geometric refinement
+poorly constrained. We reject refinements that displace the ellipsoid center by more than
+$\alpha_{\max} = 0.5\ \mathrm{m}$ from its preceding estimate.
+
+#### 3) Scene Hierarchy
+
+Containment relations organize the graph into four levels: floor, room, container, and
+object. Object nodes reference their underlying tracks, sharing geometry and presence state.
+Floors are identified primarily from the agent's standing height. Peaks in the ground-height
+representation may additionally identify visible but unvisited floors. Within each floor,
+doorway-scale morphological erosion separates connected free space into room regions.
+
+Container nodes represent support surfaces that may hold a target. Support-surface
+eligibility for a mapped object $o$ is defined as follows:
+
+$$
+o \in \mathcal{S} \iff \ell_o \in \mathcal{L}_{\mathrm{sup}}
+\ \wedge\ h_{\min} \le h_o \le h_{\max}
+\ \wedge\ A_o \ge A_{\min},
+\tag{1}
+$$
+
+where $\mathcal{S}$ is the set of eligible support surfaces, $\ell_o$ the object category,
+$\mathcal{L}_{\mathrm{sup}}$ the support-category set, $h_o$ the top height bounded by
+$h_{\min}$ and $h_{\max}$, and $A_o$ the ground-plane footprint area bounded below by
+$A_{\min}$. Joint semantic and geometric filtering reduces spurious search locations.
+Same-category surface fragments are merged using footprint overlap relative to their spatial
+extent. The graph, track beliefs, and floor connectivity are retained across missions.
+
+#### 4) Cross-floor Connectivity
+
+Stair connections augment the containment hierarchy with floor-level edges. Each confirmed
+connection is stored as follows:
+
+$$
+e_{\mathrm{stair}} = (\varphi_{\mathrm{from}},\ \varphi_{\mathrm{to}},\
+x_{\mathrm{entry}},\ x_{\mathrm{exit}}),
+\tag{2}
+$$
+
+where $e_{\mathrm{stair}}$ denotes a stair edge, $\varphi_{\mathrm{from}}$ and
+$\varphi_{\mathrm{to}}$ the source and destination floors, and $x_{\mathrm{entry}}$ and
+$x_{\mathrm{exit}}$ the entry and exit positions. An edge is added only after a completed
+traversal, which distinguishes confirmed connectivity from candidate transitions.
+
+Before traversal, the height representation provides two complementary cues: stair masks
+capture steppable height changes, while stair flights group connected intermediate-height
+cells to estimate candidate endpoints, including flat tread regions. Detected staircase
+tracks provide additional supporting evidence. Geometric portals indicate potentially visible
+floors but do not establish traversability. Fig. 3 illustrates these cues.
+
+> **Fig. 3** — Height cues on one staircase. Colored dots mark the *stair flight*, the set of
+> connected intermediate-height cells recovered from the height representation. The two circles
+> denote its lowest and highest cells, the candidate endpoints. **(a)** The lowest cell serves
+> as the entry position $x_{\mathrm{entry}}$, the *stair mask* marks the steppable height change
+> at each riser, and the flat tread interiors are supplied by the flight. **(b)** During
+> descent, the same flight reduces to a sliver of tread at the edge of the frame. The entry
+> position therefore lies at the flight's highest cell. A stair edge (Eq. 2) is added only after
+> the traversal completes and certifies traversability.
+
+### C. Presence-Belief Revision
+
+Presence-Belief Revision estimates whether an object remains at its mapped location. A missed
+detection alone cannot establish absence, since the object may be occluded or outside a
+reliable viewing region. We therefore gate negative evidence by observation eligibility,
+allowing informative misses to reduce belief while leaving uninformative observations
+unchanged.
+
+#### 1) Visibility-gated Evidence
+
+Let $L_i$ denote the bounded log-odds score of track $i$, with presence score
+$p_i = \sigma(L_i)$ and $\sigma$ the sigmoid function. Let $Z_i = 1$ indicate a detection
+assigned to the track's projected extent. Each detection contributes to at most one track.
+The eligibility indicator $E_i = 1$ denotes an observation from which the object could have
+been detected at its mapped location. Given recall $r_i$ and false-alarm rate $q$, evidence
+is accumulated as follows:
+
+$$
+\Delta L_i =
+\begin{cases}
+\log(r_i / q), & Z_i = 1,\\[2pt]
+\log\!\big((1 - r_i)/(1 - q)\big), & Z_i = 0,\ E_i = 1,\\[2pt]
+0, & Z_i = 0,\ E_i = 0,
+\end{cases}
+\tag{3}
+$$
+
+where $\Delta L_i$ denotes the evidence increment for track $i$, $Z_i$ the detection
+indicator, $E_i$ the eligibility indicator, $r_i$ the view-dependent recall, and $q$ the
+false-alarm rate. Detections thus support presence, whereas misses reduce belief only when
+the observation is informative. Recall depends on apparent object size, range, and viewing
+angle.
+
+Eligibility requires a sufficiently large, readable projection within a reliable detection
+range. Depth further distinguishes occlusion from an exposed location. Along the central
+viewing ray, the near boundary is $z_{\mathrm{near}} = z_c - e_i - \delta$, where $z_c$ is
+center depth, $e_i$ is the extent toward the camera, and $\delta$ is a tolerance. If a
+sufficient fraction of valid projected depths lies closer than this boundary, the expected
+object is occluded and $E_i = 0$. Background depths beyond the expected object do not exclude
+the observation, which allows a miss at an exposed location to reduce belief. Fig. 4(a–c)
+illustrates these cases.
+
+#### 2) Bounded Updates and Arrival Verification
+
+The accumulated evidence is clipped asymmetrically as follows:
+
+$$
+L_i \leftarrow \operatorname{clip}(L_i + \Delta L_i,\ L_{\min},\ L_{\max}),
+\tag{4}
+$$
+
+where $L_i$ is the log-odds score of track $i$, $\Delta L_i$ the evidence increment, and
+$L_{\min}$ and $L_{\max}$ the lower and upper bounds, with $L_{\min} < 0 < L_{\max}$ and
+$|L_{\min}| > L_{\max}$. The positive ceiling limits confidence accumulated from historical
+sightings, which allows subsequent misses to revise an outdated location. The lower bound
+suppresses rejected locations while permitting recovery through renewed detections. We use
+$p_i$ as a bounded decision score, without assuming a calibrated posterior.
+
+Arrival verification uses the same update with observer-specific reliability parameters. A
+readable view that confirms target absence supplies negative evidence through a
+vision-language observer or an eligible detector scan. An unreadable view supplies no absence
+evidence. A failed VLM call is not treated as a negative observation. An eligible detector
+scan may instead provide the arrival reading. These alternative arrival observers complement
+keyframe evidence, as illustrated in Fig. 4(d–e).
+
+> **Fig. 4** — Presence belief update with MD-SG. Visibility and multi-sensor presence
+> revision. (a–c) Nearer depth blocks a miss, exposed background renders it informative, and a
+> matched sighting raises belief. (d) Keyframe detector misses and one arrival observer feed the
+> same bounded update. (e) An illustrative trajectory uses configured sensor reliabilities. The
+> VLM and detector fallback are alternatives.
+
+### D. Belief-Guided Search and Unified Selection
+
+Search proceeds in two stages. The robot first considers mapped target tracks whose presence
+scores exceed a threshold. Eligible tracks are ranked by presence, with accumulated track
+evidence breaking ties when scores reach their bounds. A separate rejection count handles
+repeated arrivals at physically present but query-incompatible objects. When no eligible
+direct target candidate remains, the robot considers mapped support surfaces and reachable
+frontiers. Surface candidates encode plausible target locations, while frontiers provide
+opportunities to discover unmapped locations. A shared utility balances their search value
+against geodesic travel cost.
+
+#### 1) Search Candidates
+
+Let $\mathcal{F}$ denote reachable frontiers on the current floor and $\mathcal{S}$ its
+eligible support surfaces. Frontier relevance $P_j$ combines an exploration prior,
+information gain, and heading continuity. In the evaluated configuration, these terms are
+geometric and independent of the target category. The support-surface score $b(x)$ is defined
+as follows:
+
+$$
+b(x) = a(x)\,\kappa(\ell^\star, \ell_x)^{\gamma}
+\exp\!\left(-\frac{\lVert c_x - c_{\mathrm{last}} \rVert}{L}\right),
+\tag{5}
+$$
+
+where $a(x)$ indicates geometric compatibility with the target, $\kappa$ measures affinity
+between target category $\ell^\star$ and surface category $\ell_x$, and $\gamma < 1$ softens
+that affinity. The distance term favors proximity of the surface location $c_x$ to the
+target's last mapped position $c_{\mathrm{last}}$, with scale $L$. Robot travel is accounted
+for separately. The score $b(x)$ expresses prior search preference rather than a calibrated
+probability. We obtain $\tilde{b}(x)$ by peak normalization at a fixed reference scale and
+then apply inspection discounts. Keeping this scale fixed preserves the reduction in search
+priority caused by unsuccessful inspections.
+
+#### 2) Unified Utility and Inspection Memory
+
+Let $c(g)$ be the geodesic travel cost to candidate $g$, $d(x)$ the estimated probability of
+detecting a target present on surface $x$ during inspection, and $\rho(x)$ a persistent
+inspection discount. Candidate utility is defined as follows:
+
+$$
+U(g) =
+\begin{cases}
+\beta\,P_j \,/\, c(f_j), & g = f_j \in \mathcal{F},\\[3pt]
+\tilde{b}(x)\,\rho(x)\,d(x) \,/\, c(x), & g = x \in \mathcal{S},
+\end{cases}
+\tag{6}
+$$
+
+where $U(g)$ denotes the utility of candidate $g$, $c(g)$ the geodesic travel cost, $P_j$ the
+relevance of frontier $f_j \in \mathcal{F}$, $\beta$ the coefficient that balances frontier
+exploration against surface inspection, and $\tilde{b}(x)$, $\rho(x)$, and $d(x)$ the
+normalized surface score, the inspection discount, and the detection probability of surface
+$x \in \mathcal{S}$. The preferred candidate is selected as
+$g^\star = \arg\max_{g \in \mathcal{F} \cup \mathcal{S}} U(g)$. Candidates are shortlisted by
+relevance before geodesic costs are evaluated.
+
+After an unsuccessful inspection, the surface discount is updated as follows:
+
+$$
+\rho(x) \leftarrow \rho(x)\,\big(1 - d(x)\big),
+\tag{7}
+$$
+
+where $\rho(x)$ denotes the persistent inspection discount of surface $x$ and $d(x)$ its
+detection probability during inspection. The discount records negative inspection evidence
+across search attempts. An unsuccessful inspection with low detection probability only weakly
+reduces the surface's priority, whereas a reliable negative inspection produces a larger
+reduction. As inspected surfaces lose priority, frontier exploration receives higher priority
+relative to surface inspection under the same utility.
+
+### E. Multi-Floor Navigation Policy
+
+The multi-floor navigation policy converts the per-surface beliefs maintained by the
+preceding modules into a decision about which floor to search. Stable floor identifiers
+associate support surfaces with floor-specific candidate sets $\mathcal{S}_\varphi$, and the
+score of each nonempty set is defined as follows:
+
+$$
+M_\varphi = \frac{1}{|\mathcal{S}_\varphi|}
+\sum_{x \in \mathcal{S}_\varphi} \tilde{b}(x)\,\rho(x)\,d(x),
+\tag{8}
+$$
+
+where $\mathcal{S}_\varphi$ denotes the candidate surfaces on floor $\varphi$, and
+$\tilde{b}(x)$, $\rho(x)$, and $d(x)$ are the normalized surface score, the inspection
+discount, and the detection probability from Section III-D. The preferred floor is selected
+as $\varphi^\star = \arg\max_{\varphi : |\mathcal{S}_\varphi| > 0} M_\varphi$, and the mean
+prevents floors with more support surfaces from being favored on that basis alone.
+
+A floor switch requires the leading floor to exceed the current one by a score margin.
+Switching is deferred while a credible, untested target track remains on the current floor
+under the presence criterion of Section III-D. Each unsuccessful inspection weakens these
+local candidates, and the switch is granted once another floor leads by the required margin.
+Timing constraints additionally suppress repeated or late transitions. Route selection for an
+accepted switch rests on a single principle: a floor transition is only as reliable as the
+evidence that certifies it. The policy therefore prefers height-derived stair flights, whose
+entry points and tread geometry are recovered directly from the height representation, over
+detected staircase tracks, which contribute semantic evidence, and over geometric portals,
+which reveal a visible floor rather than a traversable path. The scene graph records a stair
+edge (Eq. 2) only for transitions that the robot has completed. Local inspection evidence
+thus redirects the search across floors while unverified connections remain excluded.
+
+---
+
+## IV. Experimental Results
+
+### A. Experimental Settings
+
+**Datasets.** We evaluate MD-SG on the dynamic HM3D dataset [15]. For single-floor dynamic
+navigation, we utilize the environments constructed by DualMap [6], which employs custom
+tools built upon the Habitat Simulator [16]. Object changes are categorized into two types:
+in-anchor relocation, where an object is moved within the same anchor (e.g., shifting a cup
+on a table), and cross-anchor relocation, where an object is transferred to a different
+anchor (e.g., from a table to a shelf). We specifically focus on cross-anchor relocations, as
+the spatial displacement of in-anchor relocations is too minor to rigorously validate our
+dynamic handling pipeline. For multi-floor dynamic navigation, we construct novel
+environments using the same toolkit employed by DualMap [6]. The resulting benchmark
+comprises 25 cross-floor relocation episodes across five scenes, and each episode is
+evaluated as an independent ObjectNav episode for the compared methods. Fig. 5 visualizes one
+episode of each relocation mode together with the generation protocol.
+
+**Metrics.** To evaluate the performance of object navigation tasks, we report Success Rate
+(SR). Following the evaluation criteria of DualMap [6], an episode is considered successful
+if the agent terminates within 1.0 meter of the target object. In dynamic scenes, success
+additionally requires locating the target within three attempts. The multi-floor benchmark
+additionally reports Success weighted by Path Length (SPL), which scales success by the ratio
+of the shortest-path length to the actual path length. Single-floor episodes use a 500-step
+budget, and multi-floor episodes use 1,000 steps to account for the longer paths that
+cross-floor search requires.
+
+**Compared Methods.** For our baseline comparisons, we include ConceptGraphs [5] and HOV-SG
+[4]. Since our experimental setup strictly aligns with DualMap [6], we directly report the
+performance metrics for these two methods as evaluated in their work. As noted in DualMap
+[6], both baselines were explicitly extended in the Habitat Simulator to support navigation
+using identical planning algorithms, ensuring a fair and consistent comparison. For DualMap
+[6], we utilize its official open-source implementation. The re-evaluation over three seeds
+follows the exact success criteria defined in their paper. It reproduces the published
+in-anchor result exactly (64.8%) and the static result within 3.4 points (67.1% vs. 70.5%),
+while the cross-anchor result falls to 30.2% against the published 60.3%. Table I accordingly
+reports both the originally published metrics and the re-evaluated results under the unified
+experimental setup.
+
+**Implementation Details.** Our experiments are conducted in the Habitat simulator [16],
+running on a workstation equipped with an NVIDIA RTX 4090 GPU and an AMD Ryzen 9 7950X3D CPU.
+We adopt ASCENT [2] as our base navigation pipeline. Following their configuration, we
+utilize D-FINE [17] and Grounding-DINO [18] for object detection, and Mobile-SAM [19] for
+object segmentation. For comprehensive scene understanding and frontier reasoning, we employ
+Places365 [20] for scene classification, RAM [21] for object tagging, BLIP-2 [22] for
+semantic similarity, and Qwen2.5-7B-Instruct [23] for handling language queries. Furthermore,
+to construct and maintain our dynamic 3D scene graph, we specifically employ YOLOE-11L-seg
+[11] and FastSAM-s [12] paired with MobileCLIP-S2 [13] for open-vocabulary object detection
+and segmentation.
+
+> **Fig. 5** — Relocation modes in the evaluation benchmarks. Each panel contrasts the prior
+> layout (blue circle: mapped target pose) with the relocated layout (green circle: target after
+> the change): (a) in-anchor relocation moves the target within the same anchor on the same
+> floor, (b) cross-anchor relocation transfers it to a different anchor on the same floor, and
+> (c) cross-floor relocation moves it to an anchor on a different floor. Episodes follow a
+> three-step protocol in which the agent first explores and maps each scene, selected YCB objects
+> are then relocated, and the agent searches with the prior map.
+
+**TABLE I** — Success Rate Comparison Across Different Scene Types and Methods on HM3D
+
+| Scene Type | Method | 00829 | 00848 | 00880 | Trials | Avg. SR |
+|---|---|---|---|---|---|---|
+| Static | ConceptGraphs | 69.2% | 53.8% | 61.5% | 78 | 61.5% |
+| Static | HOV-SG | 53.8% | 46.2% | 57.7% | 78 | 52.6% |
+| Static | DualMap | 73.1% | 69.2% | 69.2% | 78 | 70.5% |
+| Static | DualMap&nbsp;† | 80.8% | 63.0% | 57.7% | 78 | 67.1% |
+| Static | **Ours** | 65.4% | 74.1% | 53.8% | 78 | **64.6%** |
+| Dynamic (In-anchor) | DualMap | 66.7% | 66.7% | 61.1% | 54 | 64.8% |
+| Dynamic (In-anchor) | DualMap&nbsp;† | 77.8% | 55.6% | 61.1% | 54 | 64.8% |
+| Dynamic (In-anchor) | **Ours** | 88.9% | 33.3% | 66.7% | 54 | **63.0%** |
+| Dynamic (Cross-anchor) | DualMap | 55.6% | 61.1% | 64.7% | 53 | 60.3% |
+| Dynamic (Cross-anchor) | DualMap&nbsp;† | 33.3% | 33.3% | 23.5% | 53 | 30.2% |
+| Dynamic (Cross-anchor) | **Ours** | 66.7% | 27.8% | 64.7% | 53 | **52.8%** |
+
+† Indicates rerun results.
+
+**TABLE II** — Success Rate Comparison Across Different Multi-floor Scene Cross-anchor Changes
+
+| Scene Type | Method | Trials | Avg. SR | Avg. SPL |
+|---|---|---|---|---|
+| Multi-floor Cross-anchor | ASCENT | 25 | 0% | 0 |
+| Multi-floor Cross-anchor | **Ours** | 25 | **40.0%** | **0.162** |
+
+Evaluation on HM3D v0.2 with custom objects placed with multi-floor changes on the anchors.
+The used scenes are 00800, 00821, 00862, 00873, 00878. With step limit set to 1000 for
+dynamic handling.
+
+### B. Simulation Experiment Results
+
+Table I compares MD-SG with the semantic-map and scene-graph baselines across static,
+in-anchor, and cross-anchor conditions, and MD-SG's relative standing improves as the
+condition demands more relocation handling. In the static setting, which exercises mapping
+quality alone, MD-SG outperforms ConceptGraphs [5] and HOV-SG [4] and performs on par with
+re-evaluated DualMap [6] (64.6% vs. 67.1%). In-anchor displacements leave remembered
+locations approximately valid, and MD-SG remains comparable to DualMap (63.0% vs. 64.8%).
+Cross-anchor relocation invalidates the remembered location entirely, the condition where
+presence revision and belief-guided reselection matter most, and MD-SG reaches 52.8% against
+30.2% for DualMap re-evaluated under the same protocol, the largest margin.
+
+Table II extends the evaluation to cross-floor relocation, where MD-SG recovers relocated
+targets that the base pipeline cannot. Here, a switch requires the leading floor to exceed
+the current one by a 15% margin on mean surface score, and is permitted only once per 50
+steps, between steps 50 and 700 of the 1000-step budget. Recovery in this setting demands
+exactly the two capabilities our pipeline introduces: revising the presence belief of a
+remembered location and comparing the remaining hypotheses across floors before redirecting
+the search. MD-SG reaches a success rate of 40.0% with an SPL of 0.162. ASCENT, the base
+pipeline without these mechanisms, retains no prior-layout memory to revise, and fails to
+recover any relocated target within the same budget.
+
+### C. Ablation Study
+
+The ablation targets the three components that MD-SG introduces for dynamic handling:
+presence-belief revision, belief-guided surface scoring, and VLM-based absence verification.
+Each is removed in turn, and the resulting pipeline is evaluated in the cross-anchor
+condition, where these mechanisms are exercised most. Table III locates the gain in the
+reject-and-redirect loop that the two belief mechanisms form, rather than in any single
+component. Without presence-belief revision, the agent continues to act on stale locations.
+All seven lost episodes commit to a prior-map track and the stale belief never decays, the
+success rate falls from 52.8% to 41.5%. Without belief-guided surface scoring, the stale
+hypothesis is correctly rejected but rejection frees the search without directing it, and the
+agent falls back to frontier exploration. The success rate falls further to 35.8%, the
+largest individual drop.
+
+**TABLE III** — Contribution of Individual Mechanisms on the single-floor cross-anchor dataset
+
+| Options | SR |
+|---|---|
+| w/o Presence-Belief Revision | 41.5% |
+| w/o Belief-Guided Surface Scoring | 35.8% |
+| w/o VLM-Based Absence Verification | 52.8% |
+| **Full System** | **52.8%** |
+
+The two contributions are not strictly additive, as belief-guided surface scoring becomes
+most useful after an outdated hypothesis has been rejected. Moreover, belief-guided surface
+scoring primarily improves candidate ordering rather than explicitly directing the robot
+toward the highest-scored surfaces. In contrast, disabling VLM-based absence verification
+leaves the success rate unchanged. Both configurations reach 52.8%. Further inspection shows
+that the verification module is invoked only five times across 53 episodes, which indicates
+that it is rarely activated under the current pipeline rather than inherently ineffective.
+Even the weakest ablated variant remains above re-evaluated DualMap in the same condition
+(35.8% vs. 30.2%), which separates two layers of gain: the floor-aware pipeline itself
+already improves over the planar baseline, and the belief mechanisms contribute the rest.
+These results identify presence-belief revision and belief-guided surface scoring as the
+primary mechanisms behind MD-SG's improvement under dynamic object relocation.
+
+### D. Real-World Deployment
+
+To validate that our pipeline can handle dynamic environments and efficiently locate
+relocated targets, we deployed MD-SG on a wheeled robot equipped with an RGB-D camera and
+NVIDIA AGX Thor for model inference. As illustrated in Fig. 6, during the initial exploration
+phase, the robot observed a blue bottle on Table A and an empty Table B. Subsequently, upon
+receiving the language query target 'blue bottle,' the robot first navigated to Table A to
+verify the target's presence. Upon detecting its absence, the MD-SG pipeline inferred a high
+probability that the bottle had been moved to Table B. Consequently, the robot navigated to
+Table B and successfully located the bottle.
+
+> **Fig. 6** — Real-world navigation in dynamic environments with MD-SG. During initial
+> exploration, the robot (1) observes a blue bottle on table A and (2) maps an empty table B. The
+> robot (3) then receives the target query "blue bottle" after (4) the bottle has been
+> transferred from table A to table B. The robot (5) revisits table A, detects that the bottle is
+> absent, and shifts its presence belief toward table B. The robot (6) navigates to table B and
+> retrieves the relocated target.
+
+---
+
+## V. Conclusion
+
+We presented MD-SG, an online, open-vocabulary 3D scene graph navigation pipeline for dynamic
+multi-floor ObjectNav, and showed that representing remembered object locations as revisable
+beliefs, rather than fixed map entries, enables an agent to recover relocated targets within
+and across floors. By combining presence belief updates, belief-guided candidate selection,
+and floor-aware navigation, MD-SG connects the rejection of outdated locations with the
+search that follows. The experimental results demonstrated improved single-floor cross-anchor
+recovery over re-evaluated DualMap, and the cross-floor benchmark and real-world
+demonstration extended the evaluation to multi-floor relocation and physical deployment. The
+results position revisable, floor-aware scene memory as a first-class design axis for object
+navigation in changing multi-floor environments. The proposed benchmark provides a direct way
+to measure this capability and opens a concrete avenue for future research on dynamic
+multi-floor object navigation.
+
+---
+
+## References
+
+1. N. Yokoyama, S. Ha, D. Batra, J. Wang, and B. Bucher, "VLFM: Vision-language frontier maps
+   for zero-shot semantic navigation," in *International Conference on Robotics and Automation
+   (ICRA)*, 2024.
+2. Z. Gong, R. Li, T. Hu, R. Qiu, L. Kong, L. Zhang, G. Zhao, Y. Ding, and J. Liang, "Stairway
+   to success: An online floor-aware zero-shot object-goal navigation framework via LLM-driven
+   coarse-to-fine exploration," *IEEE Robotics and Automation Letters*, 2026.
+3. N. Hughes, Y. Chang, and L. Carlone, "Hydra: A real-time spatial perception system for 3D
+   scene graph construction and optimization," in *Proceedings of Robotics: Science and
+   Systems*, New York City, NY, USA, June 2022.
+4. A. Werby, C. Huang, M. Büchner, A. Valada, and W. Burgard, "Hierarchical open-vocabulary 3D
+   scene graphs for language-grounded robot navigation," in *Proceedings of Robotics: Science
+   and Systems*, Delft, Netherlands, July 2024.
+5. Q. Gu, A. Kuwajerwala, S. Morin, K. M. Jatavallabhula, B. Sen, A. Agarwal, C. Rivera,
+   W. Paul, K. Ellis, R. Chellappa, et al., "ConceptGraphs: Open-vocabulary 3D scene graphs for
+   perception and planning," in *2024 IEEE International Conference on Robotics and Automation
+   (ICRA)*. IEEE, 2024, pp. 5021–5028.
+6. J. Jiang, Y. Zhu, Z. Wu, and J. Song, "DualMap: Online open-vocabulary semantic mapping for
+   natural language navigation in dynamic changing scenes," *IEEE Robotics and Automation
+   Letters*, vol. 10, no. 12, pp. 12612–12619, 2025.
+7. D. Maggio, Y. Chang, N. Hughes, M. Trang, D. Griffith, C. Dougherty, E. Cristofalo,
+   L. Schmid, and L. Carlone, "Clio: Real-time task-driven open-set 3D scene graphs," *IEEE
+   Robotics and Automation Letters*, 2024.
+8. D. M. Rosen, J. Mason, and J. J. Leonard, "Towards lifelong feature-based mapping in
+   semi-static environments," in *2016 IEEE International Conference on Robotics and Automation
+   (ICRA)*, 2016, pp. 1063–1070.
+9. L. Schmid, M. Abate, Y. Chang, and L. Carlone, "Khronos: A unified approach for
+   spatio-temporal metric-semantic SLAM in dynamic environments," in *Proc. of Robotics: Science
+   and Systems (RSS)*, Delft, Netherlands, July 2024.
+10. M. Labbé and F. Michaud, "RTAB-Map as an open-source lidar and visual simultaneous
+    localization and mapping library for large-scale and long-term online operation," *Journal
+    of Field Robotics*, vol. 36, no. 2, pp. 416–446, 2019.
+11. A. Wang, L. Liu, H. Chen, Z. Lin, J. Han, and G. Ding, "YOLOE: Real-time seeing anything,"
+    2025. <https://arxiv.org/abs/2503.07465>
+12. X. Zhao, W. Ding, Y. An, Y. Du, T. Yu, M. Li, M. Tang, and J. Wang, "Fast segment
+    anything," 2023.
+13. P. K. A. Vasu, H. Pouransari, F. Faghri, R. Vemulapalli, and O. Tuzel, "MobileCLIP: Fast
+    image-text models through multi-modal reinforced training," in *Proceedings of the IEEE/CVF
+    Conference on Computer Vision and Pattern Recognition (CVPR)*, June 2024.
+14. Y. Wang, C. Jiang, and X. Chen, "VOOM: Robust visual object odometry and mapping using
+    hierarchical landmarks," in *Proc. of the IEEE Intl. Conf. on Robotics & Automation (ICRA)*,
+    2024.
+15. S. K. Ramakrishnan, A. Gokaslan, E. Wijmans, O. Maksymets, A. Clegg, J. M. Turner,
+    E. Undersander, W. Galuba, A. Westbury, A. X. Chang, et al., "Habitat-Matterport 3D dataset
+    (HM3D): 1000 large-scale 3D environments for embodied AI," in *Thirty-fifth Conference on
+    Neural Information Processing Systems Datasets and Benchmarks Track (Round 2)*, 2021.
+16. M. Savva, A. Kadian, O. Maksymets, Y. Zhao, E. Wijmans, B. Jain, J. Straub, J. Liu,
+    V. Koltun, J. Malik, D. Parikh, and D. Batra, "Habitat: A platform for embodied AI
+    research," in *Proceedings of the IEEE/CVF International Conference on Computer Vision
+    (ICCV)*, 2019.
+17. Y. Peng, H. Li, P. Wu, Y. Zhang, X. Sun, and F. Wu, "D-FINE: Redefine regression task in
+    DETRs as fine-grained distribution refinement," 2024.
+18. S. Liu, Z. Zeng, T. Ren, F. Li, H. Zhang, J. Yang, C. Li, J. Yang, H. Su, J. Zhu, et al.,
+    "Grounding DINO: Marrying DINO with grounded pre-training for open-set object detection,"
+    *arXiv preprint arXiv:2303.05499*, 2023.
+19. C. Zhang, D. Han, Y. Qiao, J. U. Kim, S.-H. Bae, S. Lee, and C. S. Hong, "Faster segment
+    anything: Towards lightweight SAM for mobile applications," *arXiv preprint
+    arXiv:2306.14289*, 2023.
+20. B. Zhou, A. Lapedriza, A. Khosla, A. Oliva, and A. Torralba, "Places: A 10 million image
+    database for scene recognition," *IEEE Transactions on Pattern Analysis and Machine
+    Intelligence*, 2017.
+21. Y. Zhang, X. Huang, J. Ma, Z. Li, Z. Luo, Y. Xie, Y. Qin, T. Luo, Y. Li, S. Liu, Y. Guo,
+    and L. Zhang, "Recognize anything: A strong image tagging model," 2023.
+    <https://arxiv.org/abs/2306.03514>
+22. J. Li, D. Li, S. Savarese, and S. Hoi, "BLIP-2: Bootstrapping language-image pre-training
+    with frozen image encoders and large language models," 2023.
+    <https://arxiv.org/abs/2301.12597>
+23. A. Yang, B. Yang, B. Zhang, B. Hui, B. Zheng, B. Yu, C. Li, D. Liu, F. Huang, H. Wei,
+    et al., "Qwen2.5 technical report," *arXiv preprint arXiv:2412.15115*, 2024.
+
+---
+---
+
+# Appendices
+
+*Not part of the submission. Written 2026-09-17 so the paper and the repository can be read
+against each other.*
+
+## Appendix A — paper → code
+
+| paper | implementation |
+|---|---|
+| §III-B.1 perception front end (YOLOE + FastSAM/MobileCLIP) | `perception/detector.py`, `perception/region_proposer.py`, `perception/feature_encoder.py` |
+| §III-B.2 dual-quadric ellipsoid; Wasserstein association | `objects/ellipsoid.py`, `objects/optimization.py`, `objects/association.py` |
+| §III-B.2 category agreement on association | `objects/object_layer.py:52` (`assoc_category_gate`) |
+| §III-B.2 $\alpha_{\max} = 0.5\ \mathrm{m}$ refinement reject | `scene_graph.refine_max_center_move_m` = 0.5 |
+| **Eq. 1** support-surface eligibility | `graph/priors.py:229` `affords()` over the per-category `AFFORDANCE` table (`:138`); applied in `graph/containers.py` with `min_area_m2` |
+| **Eq. 2** stair edge $(\varphi_{\mathrm{from}}, \varphi_{\mathrm{to}}, x_{\mathrm{entry}}, x_{\mathrm{exit}})$ | `mapping/stairs.py`; persisted across missions by `graph/map_store.py` |
+| §III-B.3 floor / room / container / object | `graph/scene_graph.py`; `mapping/floors.py` (standing height), `mapping/floor_stack.py` (per-storey grids), `mapping/room_seg.py` (doorway-scale erosion) |
+| §III-B.4 stair masks, flights, portals | `mapping/stairs.py` `apply_stair_mask` / `find_flights` / `mouth_xy`; `mapping/portals.py` |
+| **Eq. 3** visibility-gated evidence ($Z_i$, $E_i$, $r_i$, $q$) | `objects/presence.py:190` `expectation()` decides $E_i$; `:318` `update()` applies the three channels |
+| §III-C.1 $z_{\mathrm{near}} = z_c - e_i - \delta$, near-side-only gate | `objects/presence.py:245–257` |
+| §III-C.1 recall from size, range, incidence | `objects/presence.py:66` `RecallModel` |
+| **Eq. 4** asymmetric clip, $\lvert L_{\min}\rvert > L_{\max}$ | `objects/presence.py:360`; `l_clamp` = 6.0, `l_clamp_pos` = 3.0 |
+| §III-C.2 per-observer $(r, q)$ at arrival | `objects/presence.py:380` `apply_reading()`; `verification/absence.py` |
+| §III-D direct-target stage, rejection count | `agent/candidate.py` |
+| **Eq. 5** $b(x)$ | `exploration/search_belief.py:96` `container_prior()`; $\kappa$ and $\gamma$ are `AFFINITY_POWER` / `CONTAINER_AFFINITY` in `graph/priors.py` |
+| **Eq. 6** unified utility $U(g)$ | `exploration/search_belief.py:157` `select_candidate()`, driven from `exploration/strategy.py` |
+| **Eq. 7** $\rho(x) \leftarrow \rho(x)(1 - d(x))$ | `exploration/search_belief.py:72` `InspectionLog.searched()` |
+| **Eq. 8** $M_\varphi$, mean over the floor's surfaces | `exploration/strategy.py:597–670` (`_select_surface`); `exploration.floor_mass_rule` (base `"sum"`, **set to `"mean"` by the arm**) |
+| §III-E switch margin, cadence, window | `exploration.floor_mass_margin` (base 0.0, **set to 1.15 by the arm**); `floor.switch_min_interval` = 50; `floor.no_switch_before` = 50 and `floor.no_switch_after_frac` = 0.7 (× `agent.max_steps` 1000 = 700), applied in `mapping/portals.py:155` `may_switch()` |
+| §III-E flights > detected tracks > portals | `agent/floor_policy.py:474` `_rank_flights()`; `floor.climb_targets` |
+| §III-E deferral while a credible track remains | `agent/floor_policy.py:632` `try_switch()`; `agent.protect_floor_switch` |
+
+## Appendix B — number → run provenance
+
+The arm is `+experiment=dualmap_osg_unified` for the single-floor tables and
+`+experiment=mf5_osg_on_ascent_map` for the multi-floor one. SR is the mean of the `success`
+field over `episodes.jsonl` (`eval/metrics.py:13` `aggregate`), which is DualMap's released
+rule — a stop within 1.0 m of the object, within three attempts — not Habitat's 0.18 m
+viewpoint rule.
+
+| paper row | expected | run directory | status |
+|---|---|---|---|
+| Table I, Ours, in-anchor 63.0% | 34 / 54 | `outputs/osg_v4_fuse_cls_full` | the artifact holds it. Re-runs: **35/54** on the original prior maps (`outputs/RERUN_UPLOADMAP`, 2026-09-27), 30/54 on rebuilt maps (`outputs/RERUN/dualmap186`, 09-20) |
+| Table I, Ours, cross-anchor 52.8% | 28 / 53 | `outputs/osg_v4_fuse_cls_full` | the artifact holds it. Re-runs: **25/53** on the original maps, 20/53 on rebuilt maps; the 28→25 residue is the container image (`CROSS_ANCHOR_REPRODUCTION.md`) |
+| Table II, ASCENT 0% / 0 | 0 / 25 | `outputs/ascent_crossanchor` | **reproduces** |
+| Table I, Ours, static 64.6% | 51 / 79 | `outputs/RERUN/dualmap186` | **51/79 on rebuilt maps** (09-20); 42/79 on the original maps (09-27). The locked run held only the 107 dynamic trials, so no static run from the paper's image exists |
+| Table II, Ours 40.0% / 0.162 | 10 / 25 | `outputs/RERUN/mf5` | **reproduces, one episode above**: 11/25 = 44.0%, SPL 0.196. The earlier `outputs/mf5_pass2_final` holds 9/25 = 36.0%, SPL 0.138 |
+| Table III, w/o presence revision 41.5% | 22 / 53 | — | **not on this machine**: no 53-episode run exists |
+| Table III, w/o surface scoring 35.8% | 19 / 53 | — | **not on this machine** |
+| Table III, w/o VLM verification 52.8% | 28 / 53 | — | **not on this machine** as a separate run |
+
+> **The single-floor dynamic rows no longer re-derive from rebuilt maps.** (With the original prior maps recovered on 2026-09-27: in-anchor 35/54 = 64.8%, cross-anchor 25/53 = 47.2%, static 42/79 = 53.2% — `docs/CROSS_ANCHOR_REPRODUCTION.md`.) Re-run 2026-09-20: static
+> 51/79 = 64.6%, in-anchor 30/54 = 55.6%, cross-anchor 20/53 = 37.7%. The cause is
+> not the code — the tree that produced 62/107 (`74e0eab`) agrees with HEAD on 18 of
+> 18 trials when given the same prior map — but the prior map, which rebuilds
+> deterministically at 534 tracks against the 682 the locked run loaded.
+> [`CROSS_ANCHOR_REPRODUCTION.md`](CROSS_ANCHOR_REPRODUCTION.md) has the full audit.
+> Table II reproduces: 11/25 = 44.0%, SPL 0.196.
+
+The three ablations are re-runnable as one override each on the full arm:
+
+```bash
+python scripts/run_eval.py +experiment=dualmap_osg_unified \
+    scene_graph.presence.enabled=false          # w/o Presence-Belief Revision
+python scripts/run_eval.py +experiment=dualmap_osg_unified \
+    exploration.search_posterior=false          # w/o Belief-Guided Surface Scoring
+python scripts/run_eval.py +experiment=dualmap_osg_unified \
+    verification=off                            # w/o VLM-Based Absence Verification
+```
+
+Two smaller disagreements, recorded rather than resolved:
+
+- Table I gives the static condition **78** trials (26 per scene, which is what the
+  per-scene percentages divide into). `docs/DUALMAP_OFFICIAL_RERUN.md` gives **79**.
+- *Resolved:* `configs/experiment/mf5_osg_unified.yaml` used to list scene **00808** and
+  **26** relocations; it now names the paper's five scenes (00800, 00821, **00862**, 00873,
+  00878) and 25 episodes, matching `mf5_ascent_crossanchor.yaml`.
+
+## Appendix C — naming, and one note on Eq. 8
+
+**MD-SG is OSG.** The paper's system name does not appear in the code, which says `osg`
+throughout — the package, the config namespace, and every preset. Renaming would rotate all
+87 preset fingerprints and 505 pinned configuration keys in
+`tests/unit/golden/` for no measured gain, so the code keeps its name and this file records
+the mapping.
+
+| paper | code |
+|---|---|
+| MD-SG | the `osg` package; the `nav_agent` policy on the `dualmap_osg_unified` / `mf5_osg_on_ascent_map` arms |
+| Presence-Belief Revision | `objects/presence.py`, wired by `pipeline/beliefs.py` |
+| Belief-Guided Search and Unified Selection | `exploration/search_belief.py` + `exploration/strategy.py` |
+| Multi-Floor Navigation Policy | `agent/floor_policy.py` + `mapping/portals.py` |
+| ASCENT, the base pipeline | `src/navigation/`, a line-by-line transcription (see its README for the F1–F14 fidelity notes) |
+
+**Why Eq. 8 takes the mean.** The code comment beside it records the measurement that chose
+it. On 00808's prior map, over five targets, floor 0 held 78 surfaces summing to 52.5 and
+floor 1 held 33 summing to 22.3 — means of 0.673 and 0.676, agreeing to within half a
+percent. The container priors carry essentially no information about *which storey*. A sum
+turns that tie into a 2.4× preference for the larger floor, so an agent upstairs asks to go
+down every round whatever it is looking for. The mean makes the score scale-free and the 15%
+margin then requires another storey to be decisively better, which together let the posterior
+return "no opinion" — on this evidence the honest answer — and leave the storey choice to the
+mechanisms that do carry floor information.

@@ -1,0 +1,5 @@
+[submodule "src/semantic_nav/object_scene_graph/relative_work/ascent"]
+	path = src/semantic_nav/object_scene_graph/relative_work/ascent
+	url = https://github.com/Zeying-Gong/ascent.git
+	branch = main
+	ignore = dirty

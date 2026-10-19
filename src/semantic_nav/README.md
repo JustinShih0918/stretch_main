@@ -84,6 +84,15 @@ camera-derived polygon of a class flagged `traversable`.
   `./run_vln_demo.sh` (repo root). See [vln_policy/README.md](vln_policy/README.md)
   and the normative HTTP contract in [vln_policy/DESIGN.md](vln_policy/DESIGN.md).
 
+### `object_scene_graph/` (plain Python, vendored, not a colcon package)
+A vendored copy of [Object_scene_graph](https://github.com/JustinShih0918/Object_scene_graph)
+(OSG / MD-SG), an object-search agent. It builds a `floor → room → container → object` scene
+graph while exploring and sends goals to Nav2's `navigate_to_pose`. We edit it here, not
+upstream, and log every change in [object_scene_graph/VENDORED.md](object_scene_graph/VENDORED.md).
+It runs in the sim container's conda envs and reaches ROS only through its own `osg_bridge`,
+over a TCP socket. Setup: [scripts/scene_graph_demo/README.md](../../scripts/scene_graph_demo/README.md);
+demo videos: [scripts/scene_graph_demo/RECORDING.md](../../scripts/scene_graph_demo/RECORDING.md).
+
 ### Interfaces
 Added to the vendored `src/common/btcpp_ros2_interfaces/`:
 `SemanticDetection2D`, `SemanticRegion`, `SemanticRegionArray`, `VlnStatus`.

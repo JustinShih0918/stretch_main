@@ -1,0 +1,34 @@
+defaults:
+  - base_on
+
+# VLM candidate verifier ON, using the NVIDIA NIM hosted vision model
+# (meta/llama-3.2-11b-vision-instruct). It reuses the llm=nim endpoint/key
+# (see runner.build_verifier), so pair this with `llm=nim`. On the public NIM
+# endpoint this 11B model returns in ~0.7s and scored 0.850 acc / recall 1.000
+# on tests/fixtures/verify_bench (vs 0.750 for local qwen2.5vl:7b); the 90B
+# sibling times out there. Vision models mangle response_format=json_object,
+# so llm=nim already sets send_response_format:false and the JSON is parsed
+# from the plain-text reply.
+enabled: true
+vlm_model: meta/llama-3.2-11b-vision-instruct
+# Explicit, so the verifier keeps working when the TEXT model moves elsewhere:
+# NIM's text endpoints return 410 Gone as of 2026-09 while this vision one still
+# answers (193 calls, 0 errors on the same runs), so `llm=qwen_local` moves the
+# frontier ranker to ASCENT's own Qwen2.5-7B without taking the verifier with it.
+base_url: https://integrate.api.nvidia.com/v1
+# The VLM's OWN key, falling back to the shared one. NIM issues keys per model
+# family, so the vision model and the text model are not always reachable with
+# the same credential -- and the alternative, passing the key as a CLI
+# override, writes it verbatim into every run's `.hydra/overrides.yaml`.
+api_key: ${oc.env:NVIDIA_VLM_API_KEY,${oc.env:NVIDIA_API_KEY,missing}}
+
+# Candidate-admission gates DELIBERATELY held at the same loosened values as
+# verification=off (the matched-run baseline), so this run isolates a single
+# variable: the VLM gate before STOP. Reverting to the stricter base_on gates
+# (bbox_px=3000, obs=3, evidence=1.0) would change candidate recall at the same
+# time and confound the A/B. The VLM -- not the gates -- is now the precision
+# filter; measure its effect against matched_old with everything else fixed.
+min_bbox_px: 1200
+min_obs: 2
+min_evidence: 0.5
+min_score: 0.70

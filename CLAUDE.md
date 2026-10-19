@@ -20,7 +20,8 @@ stretch_main/
 │   ├── semantic_nav/              # action-aware semantic traversability (arXiv:2310.08873)
 │   │   ├── semantic_traversability/  # C++ nav2 costmap Layer plugin + projection node (env-agnostic)
 │   │   ├── semantic_perception/      # Python Grounding DINO node + static region test publisher
-│   │   └── vln_policy/               # VLN agent: swappable backends (StreamVLN HTTP) + cmd_vel/nav2 executors
+│   │   ├── vln_policy/               # VLN agent: swappable backends (StreamVLN HTTP) + cmd_vel/nav2 executors
+│   │   └── object_scene_graph/       # VENDORED Object_scene_graph (OSG, plain Python, COLCON_IGNORE'd)
 │   └── deploy/                    # vendored from hello-robot/stretch_ros2 (Apache-2.0)
 │       └── stretch_nav2/           # on-robot nav2 + slam_toolbox + AMCL
 ├── docker/
@@ -45,7 +46,8 @@ stretch_main/
 5. **`ref/` is reference-only.** Older, larger `bt_engine.cpp` using a `dock_robot` action + project logic. **Not built** (no `package.xml`). Pattern reference only — don't compile it.
 6. **Three Docker environments under `docker/`** (see "Docker environments" below). The `docker/sim/Dockerfile` `COPY`s install scripts from `docker/sim/modules/` — in upstream ros2-essentials those are hard-links to a repo-level `docker_modules/`; here they are **vendored copies** (materialized, not symlinks). If you add/update a sim install step, edit the copy under `docker/sim/modules/`.
 7. CI / deploy Dockerfiles do **not** install `behaviortree_ros2` from apt (vendored), nor `libfmt-dev`/`libboost-dev` explicitly — they come transitively via `ros-humble-behaviortree-cpp` and `ros-humble-navigation2`. If those are removed, add the libs back.
-8. **VLN model inference never runs in a ROS image.** `docker/vln/` and `docker/dualvln/` are separate ROS-free StreamVLN and DualVLN containers. The ROS side (`src/semantic_nav/vln_policy/`) is a shared HTTP client plus trajectory follower. The v2 wire contract is normative in `src/semantic_nav/vln_policy/DESIGN.md` — never add model deps to ROS packages. Demo: `./run_vln_demo.sh backend:=streamvln|dualvln` + Isaac playing `isaacsim/assets/stretch3_og_hospital.usda`.
+8. **`src/semantic_nav/object_scene_graph` is a vendored snapshot of JustinShih0918/Object_scene_graph (`feat/ros2`) that we edit locally**, unlike `stretch_nav2`. Log every local change in its `VENDORED.md`. It is plain Python with its own `CLAUDE.md`; `COLCON_IGNORE` keeps colcon out of it. `relative_work/ascent` is a git submodule. It runs in the sim container's conda envs (`scripts/scene_graph_demo/install_osg_envs.sh`) and talks to ROS only through its `osg_bridge` socket. See [scripts/scene_graph_demo/README.md](scripts/scene_graph_demo/README.md).
+9. **VLN model inference never runs in a ROS image.** `docker/vln/` and `docker/dualvln/` are separate ROS-free StreamVLN and DualVLN containers. The ROS side (`src/semantic_nav/vln_policy/`) is a shared HTTP client plus trajectory follower. The v2 wire contract is normative in `src/semantic_nav/vln_policy/DESIGN.md` — never add model deps to ROS packages. Demo: `./run_vln_demo.sh backend:=streamvln|dualvln` + Isaac playing `isaacsim/assets/stretch3_og_hospital.usda`.
 
 ## Architecture
 
@@ -109,6 +111,8 @@ Three independent images under `docker/`, run from the repo root. Each builds a 
 | Tune sim nav2/SLAM | `src/sim/stretch3_navigation/config/` + `launch/` |
 | Semantic traversability (costmap layer / VLM perception) | `src/semantic_nav/` (see [src/semantic_nav/README.md](src/semantic_nav/README.md)); layer wired into `src/sim/stretch3_navigation/config/nav2_params.yaml` |
 | Re-sync vendored deploy nav/slam | see [src/deploy/README.md](src/deploy/README.md) |
+| Scene-graph (Object_scene_graph) demo in Isaac | OSG code: `src/semantic_nav/object_scene_graph/` (log changes in its `VENDORED.md`); Isaac setup: `scripts/scene_graph_demo/README.md` |
+| Record scene-graph demo videos | `scripts/scene_graph_demo/run_sg_demo.sh`; guide in `scripts/scene_graph_demo/RECORDING.md` (output `videos/`, gitignored) |
 | Change colcon args | `.github/workflows/ci.yml` "colcon build" step |
 
 ## Things to avoid

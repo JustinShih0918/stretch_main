@@ -1,0 +1,36 @@
+# The Stretch 3 in Isaac Sim 5.1, playing stretch_main's
+# isaacsim/assets/stretch3_og_hospital.usda (Nav2 from stretch_main's
+# src/sim/stretch3_navigation navigation.launch.py).
+#
+# What differs from the real robot (stretch3.yaml), measured on the sim graph
+# 2026-09-23:
+#   * topics are Isaac's own names: /rgb (rgb8), /depth (32FC1 metres, so
+#     depth_scale is unused), /camera_info, 1280x720;
+#   * the sim head camera is rolled 90 degrees like the real one: at 0 the
+#     floor is on the image's right and optical +x points straight down in
+#     `world`. -90 (clockwise) is upright, the same sign as the robot;
+#   * there is no `map`: Isaac publishes ground-truth world -> odom -> base_link
+#     and the sim Nav2 plans in `world`;
+#   * the image header says `camera_link` (x forward), which is not an optical
+#     frame. Launch a static TF camera_link -> camera_color_optical_frame with
+#     quaternion xyzw (-0.5, 0.5, -0.5, 0.5); computed from the USD, the
+#     rendering camera (RSD455/Camera_Pseudo_Depth) sits at camera_link's
+#     origin;
+#   * the base listens on /cmd_vel;
+#   * there is no head trajectory server in the sim.
+#
+# Everything must be on CycloneDDS (Isaac included:
+# RMW_IMPLEMENTATION=rmw_cyclonedds_cpp before isaac-sim.sh), see docs/ROS2.md.
+defaults:
+  - base_stretch3
+
+rgb_topic: /rgb
+depth_topic: /depth
+camera_info_topic: /camera_info
+map_frame: world
+goal_frame: world
+camera_frame: camera_color_optical_frame
+rotate_deg: -90.0
+cmd_vel_topic: /cmd_vel
+map_tag: isaac_hospital
+target: wheelchair

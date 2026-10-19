@@ -1,0 +1,23 @@
+# @package _global_
+#
+# The Stretch 3 preset, pointed at Isaac Sim's hospital scene instead of the
+# robot. Same pipeline as stretch3_map; only the robot group and what the
+# camera looks like change.
+#
+#   bash scripts/ros2/bridge.sh +experiment=isaac_hospital_map
+#   python scripts/run_robot.py +experiment=isaac_hospital_map
+defaults:
+  - stretch3_map
+  - override /ros2: isaac_hospital
+  - _self_
+
+agent:
+  camera_height: 1.3          # world -> camera_link z, measured in the sim
+
+eval:
+  # The sim D455 after ros2.rotate_deg=-90: 1280x720 published becomes
+  # 720x1280 consumed. fx = 634.09 on /camera_info, so the horizontal FOV
+  # after rotation is the published vertical one: 2*atan(360/634.09) = 59.2.
+  rgb_width: 720
+  rgb_height: 1280
+  hfov_deg: 59.2
