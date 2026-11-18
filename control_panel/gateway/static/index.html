@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="theme-color" content="#14171c">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>Stretch 控制面板</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header id="top">
+  <div class="status">
+    <span id="conn" class="dot" title="連線"></span>
+    <span class="badge" id="b-mode">mode —</span>
+    <span class="badge" id="b-batt">— V</span>
+    <span class="badge" id="b-homed">未歸零</span>
+    <span class="badge" id="b-runstop">—</span>
+  </div>
+  <button id="estop" class="estop" aria-label="緊急停止">急停 STOP</button>
+</header>
+
+<main>
+  <!-- ============================== 系統 -->
+  <section id="tab-system" class="tab active">
+    <div class="card">
+      <h2>機器人 Robot</h2>
+      <div class="row wrap">
+        <button data-driver="home" class="btn">歸零 Home</button>
+        <button data-driver="stow" class="btn">收納 Stow</button>
+        <button data-driver="stop" class="btn">停止動作 Stop</button>
+        <button id="runstop-off" class="btn warn">解除急停 Release</button>
+      </div>
+      <div class="label">驅動模式 Driver mode</div>
+      <div class="seg" id="mode-seg">
+        <button data-mode="navigation">導航 cmd_vel</button>
+        <button data-mode="gamepad">手把 Gamepad</button>
+        <button data-mode="position">位置 Position</button>
+      </div>
+      <p class="hint">面板駕駛與 Nav2 需要「導航」模式；Hello 手把需要「手把」模式。</p>
+    </div>
+
+    <div class="card">
+      <h2>一鍵流程 Flows</h2>
+      <div class="row wrap">
+        <button id="flow-map" class="btn primary">開始建圖</button>
+        <button id="flow-nav" class="btn primary">載入地圖並導航</button>
+        <select id="flow-map-select"></select>
+        <button id="stop-all" class="btn danger">全部關閉</button>
+      </div>
+      <p class="hint" id="flow-status"></p>
+    </div>
+
+    <div class="card">
+      <h2>功能模組 Units <span id="sup-host" class="muted"></span></h2>
+      <div id="units"></div>
+    </div>
+  </section>
+
+  <!-- ============================== 地圖 -->
+  <section id="tab-map" class="tab">
+    <div id="map-wrap">
+      <canvas id="map"></canvas>
+      <div id="map-tools">
+        <div class="seg small" id="tool-seg">
+          <button data-tool="pan" class="on">瀏覽</button>
+          <button data-tool="goal">導航目標</button>
+          <button data-tool="pose">設定位置</button>
+        </div>
+        <button id="center" class="btn small">置中</button>
+        <button id="nav-cancel" class="btn small danger">取消導航</button>
+      </div>
+      <div id="map-info"></div>
+      <div id="map-empty" class="empty">還沒有地圖：在「系統」開始建圖或定位</div>
+    </div>
+    <div class="card compact">
+      <div class="row">
+        <input id="map-name" placeholder="地圖名稱 e.g. lab_1F" autocomplete="off">
+        <button id="save-map" class="btn primary">儲存地圖</button>
+      </div>
+      <p class="hint">導航目標／設定位置：在地圖上按下選點，拖曳決定方向，放開送出。</p>
+    </div>
+  </section>
+
+  <!-- ============================== 駕駛 -->
+  <section id="tab-drive" class="tab">
+    <div id="cam-wrap">
+      <canvas id="cam"></canvas>
+      <div id="cam-empty" class="empty">相機沒有畫面（啟動「相機 RealSense」）</div>
+      <button id="cam-rot" class="btn small">旋轉</button>
+    </div>
+    <div id="drive-warn" class="warnbar"></div>
+    <div id="pad-wrap">
+      <div id="pad"><div id="knob"></div></div>
+    </div>
+    <div class="row center">
+      <label class="label">速度 <span id="speed-val">50%</span></label>
+      <input type="range" id="speed" min="10" max="100" value="50">
+    </div>
+    <p class="hint center">按住搖桿移動，放開即停（鍵盤 W A S D）</p>
+  </section>
+
+  <!-- ============================== 場景圖 -->
+  <section id="tab-sg" class="tab">
+    <div class="card"><h2>場景圖 Scene graph</h2>
+      <p class="hint">下一階段：在地圖上顯示 OSG 的物件與房間，並從這裡下達搜尋任務。</p></div>
+  </section>
+</main>
+
+<nav id="tabs">
+  <button data-tab="system" class="on">系統</button>
+  <button data-tab="map">地圖</button>
+  <button data-tab="drive">駕駛</button>
+  <button data-tab="sg">場景圖</button>
+</nav>
+<div id="toast"></div>
+<script src="app.js"></script>
+</body>
+</html>

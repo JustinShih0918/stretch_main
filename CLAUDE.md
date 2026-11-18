@@ -27,9 +27,12 @@ stretch_main/
 ├── docker/
 │   ├── ci/      Dockerfile.ci + docker-compose.yaml   # minimal build/test image
 │   ├── sim/     Dockerfile + compose.yaml + modules/  # Isaac Sim 5.1 image (GPU/X11)
-│   ├── deploy/  Dockerfile + docker-compose.yaml      # on-robot nav/slam image
+│   ├── deploy/  Dockerfile + docker-compose.yaml      # on-robot nav/slam image (+ panel supervisor)
+│   ├── thor/    Dockerfile.thor/.bridge + compose.yaml # Jetson Thor: OSG, its bridge, the panel
+│   ├── cyclonedds-eth.xml                             # wired robot<->Thor DDS, mounted by both
 │   ├── vln/     Dockerfile + compose.yaml + server/   # StreamVLN inference server (no ROS)
 │   └── dualvln/ Dockerfile + compose.yaml + server/   # DualVLN inference server (no ROS)
+├── control_panel/                # operator web panel: supervisor (robot) + gateway (Thor); not a colcon pkg
 ├── isaacsim/assets/              # Stretch USD assets for Isaac Sim
 ├── src/common/bt_engine/bt/main_tree.xml   # default BT XML
 ├── ref/                          # old reference code, NOT a package, NOT built
@@ -115,6 +118,8 @@ Three independent images under `docker/`, run from the repo root. Each builds a 
 | Record scene-graph demo videos | `scripts/scene_graph_demo/run_sg_demo.sh`; guide in `scripts/scene_graph_demo/RECORDING.md` (output `videos/`, gitignored) |
 | Fire-extinguisher inspection demo (scene-graph search + VLM condition check) | `scripts/extinguisher_demo/README.md`; the VLM step is OSG's `src/osg/inspection/` + preset `isaac_extinguisher_inspect`; extinguisher asset `isaacsim/assets/fire_extinguisher_inspect.usda` (fetch and build with `isaacsim/assets/fetch_fire_extinguisher.sh`; its `condition` variants include the damage-gallery defects run by `inspect_gallery.py`); needs `NVIDIA_API_KEY` (keep it out of the repo) |
 | Several extinguishers told apart ("#1", "#2"; a moved one keeps its index) | OSG `src/osg/objects/instances.py`, on via `scene_graph.instance_labels`; mission `TARGET="fire extinguisher #1"`; two-extinguisher stage `isaacsim/assets/stretch3_og_hospital_two_extinguishers.usda` (`TWO=1 start_stack.sh`), move one live with `scripts/extinguisher_demo/move_extinguisher.sh`; see that README's "Two extinguishers" |
+| Operator control panel (phone/tablet: start driver/lidar/camera/SLAM/Nav2, drive, map, save map, relocalise, Nav2 goals) | `control_panel/` (README there): `supervisor/` runs on the Stretch and starts/stops units from `supervisor/units.yaml`; `gateway/` runs on the Thor (`docker/thor` service `panel`) and talks ROS 2 over DDS. Test without a robot: `bash control_panel/tests/e2e_fake.sh` |
+| Thor deployment (OSG + bridge + panel on the Jetson) | `docker/thor/` (restored from upstream OSG, see OSG `VENDORED.md`); robot side `docker/deploy/`; both mount `docker/cyclonedds-eth.xml` |
 | Change colcon args | `.github/workflows/ci.yml` "colcon build" step |
 
 ## Things to avoid

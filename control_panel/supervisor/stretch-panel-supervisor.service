@@ -1,0 +1,41 @@
+# The panel's supervisor as a systemd USER service on the Stretch, so it is up
+# whenever the robot is, without a terminal. On the robot, as hello-robot:
+#
+#   mkdir -p ~/.config/systemd/user
+#   cp control_panel/supervisor/stretch-panel-supervisor.service ~/.config/systemd/user/
+#   # edit STRETCH_MAIN / CYCLONEDDS_IFACE below if they differ
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now stretch-panel-supervisor
+#   sudo loginctl enable-linger hello-robot      # start at boot, not at login
+#   journalctl --user -u stretch-panel-supervisor -f
+#
+# It runs hello-robot's own install natively (stretch_core, the camera and
+# lidar launches, stretch_body), which is why this, rather than a container,
+# is the first way to try on the robot.
+
+[Unit]
+Description=Stretch control panel supervisor (starts/stops driver, lidar, camera, SLAM, Nav2)
+After=network-online.target
+
+[Service]
+Type=simple
+Environment=STRETCH_MAIN=%h/stretch_main
+# Must match the Thor (docker/thor/.env): same domain, same RMW, same DDS file.
+Environment=ROS_DOMAIN_ID=0
+Environment=RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+Environment=ROS_LOCALHOST_ONLY=0
+Environment=CYCLONEDDS_URI=%h/stretch_main/docker/cyclonedds-eth.xml
+# THIS robot's wired NIC to the Thor (`ip -brief addr`), not the Thor's.
+Environment=CYCLONEDDS_IFACE=enp0s31f6
+Environment=PANEL_MAPS_DIR=%h/stretch_maps
+# Units to bring up with the supervisor, e.g. driver,lidar (empty: none)
+Environment=PANEL_AUTOSTART=
+ExecStart=/bin/bash -lc 'source /opt/ros/humble/setup.bash && exec python3 "$STRETCH_MAIN/control_panel/supervisor/supervisor.py" --ws "$STRETCH_MAIN"'
+# SIGINT: the supervisor stops every unit (Nav2 first, the driver last) before exiting.
+KillSignal=SIGINT
+TimeoutStopSec=60
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target

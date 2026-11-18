@@ -1,0 +1,83 @@
+# What the panel can switch on and off on the Stretch, one unit per switch.
+#
+# hello-robot's own launch files each bring up the driver AND the lidar AND
+# SLAM or Nav2 together (stretch_nav2 navigation.launch.py, offline_mapping,
+# online_mapping), so going from mapping to navigation meant killing the
+# driver. Here the driver is started once and everything else comes and goes
+# around it; the driver's modes (navigation / gamepad / position), homing and
+# stowing are service calls the panel makes, not relaunches.
+#
+# {ws} is this stretch_main checkout on the robot, {maps_dir} where maps are
+# kept, {slam_params} the slam_toolbox parameters; a unit's `args` are filled
+# in from the panel's request ({map} for localization).
+#
+# Every command runs as `bash -c "<setup>; exec <cmd>"` in its own process
+# group, so stopping a unit is exactly Ctrl-C in its terminal.
+
+setup: |
+  source /opt/ros/humble/setup.bash
+  # hello-robot's install: stretch_core, stretch_nav2, the RealSense and lidar
+  # drivers, the calibrated URDF. ~/ament_ws is where its installer puts it.
+  if [ -f "${HELLO_WS:-$HOME/ament_ws}/install/setup.bash" ]; then source "${HELLO_WS:-$HOME/ament_ws}/install/setup.bash"; fi
+  # This repo's colcon tree, when built (docker/deploy `build`).
+  if [ -f "{ws}/install/setup.bash" ]; then source "{ws}/install/setup.bash"; fi
+
+maps_dir: ${PANEL_MAPS_DIR:-$HOME/stretch_maps}
+slam_params: "{ws}/src/deploy/stretch_nav2/config/mapper_params_online_async.yaml"
+
+# Stopped in this order on "stop all" and when the supervisor exits: the
+# things that move the base first, the driver last.
+stop_order: [navigation, mapping, localization, joystick, camera, lidar, driver]
+
+units:
+  driver:
+    label: 底盤驅動 Driver
+    help: stretch_driver in navigation mode (cmd_vel), odom TF; home / stow / modes are buttons
+    cmd: ros2 launch stretch_core stretch_driver.launch.py mode:=navigation broadcast_odom_tf:=True
+
+  lidar:
+    label: 光達 Lidar
+    help: RPLidar, /scan and the mast-filtered /scan_filtered SLAM and Nav2 read
+    cmd: ros2 launch stretch_core rplidar.launch.py
+
+  camera:
+    label: 相機 RealSense
+    help: D435i head camera, 1280x720 colour + aligned depth (+ compressed topics for the Thor)
+    cmd: ros2 launch stretch_core d435i_high_resolution.launch.py
+
+  joystick:
+    label: USB 搖桿 Joystick
+    help: a USB/Bluetooth joystick on /dev/input/js0 -> /stretch/cmd_vel (hold LB). The Hello gamepad dongle needs no unit -- switch the driver to gamepad mode
+    requires: [driver]
+    cmd: ros2 launch stretch_nav2 teleop_twist.launch.py teleop_type:=joystick
+
+  mapping:
+    label: 建圖 Mapping
+    help: slam_toolbox, mapping mode. Drive around, then Save map
+    requires: [driver, lidar]
+    conflicts: [localization]
+    cmd: >-
+      ros2 run slam_toolbox async_slam_toolbox_node --ros-args
+      -r __node:=slam_toolbox --params-file {slam_params}
+      -p mode:=mapping -p use_sim_time:=false
+
+  localization:
+    label: 定位 Localization
+    help: slam_toolbox on a saved map; set the robot's pose on the map if it starts lost
+    requires: [driver, lidar]
+    conflicts: [mapping]
+    args: [map]
+    cmd: >-
+      ros2 run slam_toolbox localization_slam_toolbox_node --ros-args
+      -r __node:=slam_toolbox --params-file {slam_params}
+      -p mode:=localization -p map_file_name:={maps_dir}/{map}
+      -p map_start_at_dock:=true -p use_sim_time:=false
+
+  navigation:
+    label: 導航 Nav2
+    help: Nav2 planners, controller and bt_navigator (no localiser of its own -- mapping or localization provides map -> odom)
+    requires: [driver, lidar, mapping|localization]
+    cmd: >-
+      ros2 launch stretch_nav2 navigation_launch.py
+      params_file:={ws}/docker/deploy/nav2_params_slam.yaml
+      use_sim_time:=false autostart:=true

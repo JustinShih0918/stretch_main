@@ -1,0 +1,437 @@
+// Stretch control panel: one page, one WebSocket to the gateway (gateway/__main__.py).
+"use strict";
+
+const $ = (s) => document.querySelector(s);
+const $$ = (s) => Array.from(document.querySelectorAll(s));
+let S = null;            // the last `state` from the gateway
+let lastStateAt = 0;
+
+// ------------------------------------------------------------- connection
+let ws = null, nextId = 1;
+const pending = new Map();
+
+function connect() {
+  ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws");
+  ws.onmessage = (ev) => {
+    const m = JSON.parse(ev.data);
+    if (m.type === "state") {
+      if (m.scan === null && S) m.scan = S.scan;   // the scan rides on every other state
+      S = m; lastStateAt = Date.now(); render();
+    }
+    else if (m.type === "reply") {
+      const p = pending.get(m.id);
+      if (p) { pending.delete(m.id); p(m); }
+    }
+  };
+  ws.onclose = () => { ws = null; setTimeout(connect, 1000); };
+  ws.onerror = () => { try { ws.close(); } catch (e) {} };
+}
+function send(obj) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj)); }
+function call(op, params = {}, quiet = false) {
+  return new Promise((resolve) => {
+    if (!ws || ws.readyState !== 1) { toast("沒有連線到面板伺服器", true); resolve({ ok: false }); return; }
+    const id = nextId++;
+    pending.set(id, (m) => { if (!quiet || !m.ok) toast(m.message, !m.ok); resolve(m); });
+    send(Object.assign({ type: "call", id, op }, params));
+  });
+}
+async function busy(btn, fn) {
+  btn.classList.add("busy");
+  try { return await fn(); } finally { btn.classList.remove("busy"); }
+}
+let toastTimer = null;
+function toast(text, bad = false) {
+  if (!text) return;
+  const t = $("#toast"); t.textContent = text; t.className = "show" + (bad ? " bad" : "");
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => (t.className = ""), bad ? 5000 : 2500);
+}
+
+// ------------------------------------------------------------------- tabs
+let activeTab = "system";
+$$("#tabs button").forEach((b) => b.addEventListener("click", () => {
+  activeTab = b.dataset.tab;
+  $$("#tabs button").forEach((x) => x.classList.toggle("on", x === b));
+  $$(".tab").forEach((t) => t.classList.toggle("active", t.id === "tab-" + activeTab));
+  if (activeTab === "map") { resizeMap(); mapDirty = true; }
+  if (activeTab !== "drive") stopDrive();
+}));
+
+// ---------------------------------------------------------------- top bar
+$("#estop").addEventListener("click", () => { stopDrive(); call("estop"); });
+$("#runstop-off").addEventListener("click", (e) => busy(e.target, () => call("runstop", { on: false })));
+$$("[data-driver]").forEach((b) => b.addEventListener("click", () => {
+  const a = b.dataset.driver;
+  if (a === "home" && !confirm("歸零會移動手臂、升降與頭部，確定周圍淨空？")) return;
+  if (a === "stow" && !confirm("收納會移動手臂與升降，確定？")) return;
+  busy(b, () => call("driver", { action: a }));
+}));
+$$("#mode-seg button").forEach((b) => b.addEventListener("click",
+  () => busy(b, () => call("driver", { action: "mode_" + b.dataset.mode }))));
+
+function setBadge(el, text, cls) { el.textContent = text; el.className = "badge" + (cls ? " " + cls : ""); }
+
+// ------------------------------------------------------------------ units
+const unitRows = new Map();
+function unitRow(name, u) {
+  const row = document.createElement("div"); row.className = "unit";
+  row.innerHTML = `<div><span class="name"></span><span class="pill"></span></div>
+    <div class="ctl"></div><div class="help"></div>`;
+  row.querySelector(".name").textContent = u.label || name;
+  row.querySelector(".help").textContent = u.help || "";
+  const ctl = row.querySelector(".ctl");
+  if ((u.needs || []).includes("map")) {
+    const sel = document.createElement("select"); sel.className = "map-select"; ctl.appendChild(sel);
+  }
+  const start = document.createElement("button"); start.className = "btn"; start.textContent = "啟動";
+  const stop = document.createElement("button"); stop.className = "btn danger"; stop.textContent = "關閉";
+  start.onclick = () => busy(start, () => {
+    const args = {}; const sel = ctl.querySelector("select");
+    if (sel) { if (!sel.value) { toast("先選一張地圖", true); return; } args.map = sel.value; }
+    return call("unit", { action: "start", unit: name, args });
+  });
+  stop.onclick = () => busy(stop, () => call("unit", { action: "stop", unit: name }));
+  ctl.append(start, stop);
+  const log = document.createElement("div"); log.className = "log"; log.hidden = true; row.appendChild(log);
+  return { row, start, stop, log, pill: row.querySelector(".pill") };
+}
+const DETECT_KEY = { mapping: "slam", localization: "slam" };
+const STATE_TXT = { running: "執行中", starting: "啟動中", stopping: "關閉中", stopped: "未啟動", failed: "失敗" };
+
+function renderUnits() {
+  const box = $("#units");
+  const sup = S.supervisor;
+  const supAge = S.age ? S.age.supervisor : undefined;
+  if (!sup || supAge === undefined || supAge > 5) {
+    box.innerHTML = `<p class="hint">機器人上的 supervisor 沒有回應${supAge ? `（${Math.round(supAge)} 秒前）` : ""}。
+      在 Stretch 上啟動 <code>control_panel/supervisor</code>（見 README）。下面是從 ROS 偵測到的狀態：</p>` +
+      Object.entries(S.detected || {}).map(([k, v]) => `<div>${k}: ${v ? "✅ 有在跑" : "—"}</div>`).join("");
+    unitRows.clear(); $("#sup-host").textContent = ""; return;
+  }
+  $("#sup-host").textContent = "@ " + sup.host;
+  if (box.querySelector("p")) box.innerHTML = "";
+  for (const [name, u] of Object.entries(sup.units)) {
+    let r = unitRows.get(name);
+    if (!r) { r = unitRow(name, u); unitRows.set(name, r); box.appendChild(r.row); }
+    const slamUp = ["mapping", "localization"].some((n) => ["running", "starting"].includes((sup.units[n] || {}).state));
+    const ext = u.state === "stopped" && S.detected && S.detected[DETECT_KEY[name] || name] &&
+                !(DETECT_KEY[name] === "slam" && slamUp);
+    r.pill.className = "pill " + (ext ? "external" : u.state);
+    r.pill.textContent = ext ? "外部已在跑" : (STATE_TXT[u.state] || u.state) +
+      (u.args && u.args.map ? ` · ${u.args.map}` : "");
+    const up = u.state === "running" || u.state === "starting";
+    r.start.disabled = up || u.state === "stopping";
+    r.stop.disabled = !up;
+    r.log.hidden = !(u.state === "failed" && u.log && u.log.length);
+    if (!r.log.hidden) r.log.textContent = u.log.join("\n");
+  }
+  fillMapSelects(sup.maps || []);
+}
+function fillMapSelects(maps) {
+  const key = maps.map((m) => m.name).join(",");
+  $$("select.map-select, #flow-map-select").forEach((sel) => {
+    if (sel.dataset.key === key) return;
+    const keep = sel.value;
+    sel.innerHTML = maps.length ? maps.map((m) => `<option value="${m.name}">${m.name}</option>`).join("")
+                                : `<option value="">（沒有地圖）</option>`;
+    if (maps.some((m) => m.name === keep)) sel.value = keep;
+    sel.dataset.key = key;
+  });
+}
+
+// ------------------------------------------------------------------ flows
+function unitState(name) { return S && S.supervisor && S.supervisor.units[name] ? S.supervisor.units[name].state : null; }
+function waitUnit(name, timeoutMs = 20000) {
+  return new Promise((resolve) => {
+    const t0 = Date.now();
+    const iv = setInterval(() => {
+      const st = unitState(name);
+      if (st === "running" || st === "failed" || Date.now() - t0 > timeoutMs) { clearInterval(iv); resolve(st); }
+    }, 250);
+  });
+}
+async function ensureUnit(name, args = {}) {
+  const st = unitState(name);
+  if (st === "running") return true;
+  $("#flow-status").textContent = `啟動 ${name}…`;
+  const r = await call("unit", { action: "start", unit: name, args }, true);
+  if (!r.ok) { $("#flow-status").textContent = r.message; return false; }
+  const end = await waitUnit(name);
+  if (end !== "running") { $("#flow-status").textContent = `${name} 沒有起來（${end}），看模組的紀錄`; return false; }
+  return true;
+}
+async function runFlow(btn, steps) {
+  await busy(btn, async () => {
+    for (const [name, args] of steps) if (!(await ensureUnit(name, args))) return;
+    $("#flow-status").textContent = "完成 ✔";
+  });
+}
+$("#flow-map").addEventListener("click", (e) => {
+  if (unitState("localization") === "running") { toast("先關閉「定位」再建圖", true); return; }
+  runFlow(e.target, [["driver"], ["lidar"], ["mapping"], ["navigation"]]);
+});
+$("#flow-nav").addEventListener("click", (e) => {
+  const map = $("#flow-map-select").value;
+  if (!map) { toast("先選一張地圖", true); return; }
+  if (unitState("mapping") === "running") { toast("先關閉「建圖」再定位", true); return; }
+  runFlow(e.target, [["driver"], ["lidar"], ["localization", { map }], ["navigation"]]);
+});
+$("#stop-all").addEventListener("click", (e) => {
+  if (confirm("關閉機器人上所有模組（含底盤驅動）？")) busy(e.target, () => call("stop_all"));
+});
+
+// -------------------------------------------------------------------- map
+const canvas = $("#map"), ctx = canvas.getContext("2d");
+const mapImg = new Image(); let mapVersion = -1, mapInfo = null, mapDirty = true;
+const view = { s: 4, x: 0, y: 0, fitted: false };  // canvas px per map px, and map-px offset
+let tool = "pan", drag = null;
+mapImg.onload = () => { mapDirty = true; if (!view.fitted) fitMap(); };
+
+function resizeMap() {
+  const r = canvas.getBoundingClientRect(), d = window.devicePixelRatio || 1;
+  canvas.width = Math.max(1, r.width * d); canvas.height = Math.max(1, r.height * d);
+  if (!view.fitted) fitMap();
+  mapDirty = true;
+}
+window.addEventListener("resize", resizeMap);
+function fitMap() {
+  if (!mapInfo || !mapImg.naturalWidth || canvas.width < 2 || activeTab !== "map") return;
+  view.s = Math.min(canvas.width / mapInfo.width, canvas.height / mapInfo.height) * 0.95;
+  view.x = (canvas.width / view.s - mapInfo.width) / 2; view.y = (canvas.height / view.s - mapInfo.height) / 2;
+  view.fitted = true; mapDirty = true;
+}
+// world (m) <-> map image px <-> canvas px
+function w2p(x, y) { const i = mapInfo; return [(x - i.origin[0]) / i.resolution, i.height - (y - i.origin[1]) / i.resolution]; }
+function p2w(px, py) { const i = mapInfo; return [px * i.resolution + i.origin[0], (i.height - py) * i.resolution + i.origin[1]]; }
+function p2c(px, py) { return [(px + view.x) * view.s, (py + view.y) * view.s]; }
+function c2p(cx, cy) { return [cx / view.s - view.x, cy / view.s - view.y]; }
+function evC(e) { const r = canvas.getBoundingClientRect(), d = window.devicePixelRatio || 1; return [(e.clientX - r.left) * d, (e.clientY - r.top) * d]; }
+
+function drawArrow(cx, cy, yaw, len, color, fill = true) {
+  ctx.save(); ctx.translate(cx, cy); ctx.rotate(-yaw);
+  ctx.beginPath(); ctx.moveTo(len, 0); ctx.lineTo(-len * 0.6, len * 0.55); ctx.lineTo(-len * 0.3, 0);
+  ctx.lineTo(-len * 0.6, -len * 0.55); ctx.closePath();
+  if (fill) { ctx.fillStyle = color; ctx.fill(); } ctx.strokeStyle = "#000a"; ctx.lineWidth = 2; ctx.stroke();
+  ctx.restore();
+}
+function drawMap() {
+  if (activeTab !== "map") return;
+  mapDirty = false;
+  ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.clearRect(0, 0, canvas.width, canvas.height);
+  $("#map-empty").hidden = !!(mapInfo && mapImg.complete && mapImg.naturalWidth);
+  if (!mapInfo || !mapImg.naturalWidth) return;
+  const d = window.devicePixelRatio || 1;
+  ctx.imageSmoothingEnabled = false;
+  const [ox, oy] = p2c(0, 0);
+  ctx.drawImage(mapImg, ox, oy, mapInfo.width * view.s, mapInfo.height * view.s);
+  if (S && S.plan && S.plan.length > 1) {
+    ctx.beginPath(); S.plan.forEach(([x, y], k) => { const [cx, cy] = p2c(...w2p(x, y)); k ? ctx.lineTo(cx, cy) : ctx.moveTo(cx, cy); });
+    ctx.strokeStyle = "#3d8bfd"; ctx.lineWidth = 3 * d; ctx.stroke();
+  }
+  if (S && S.scan) {
+    ctx.fillStyle = "#ff4d5a";
+    for (const [x, y] of S.scan) { const [cx, cy] = p2c(...w2p(x, y)); ctx.fillRect(cx - 1.5 * d, cy - 1.5 * d, 3 * d, 3 * d); }
+  }
+  if (S && S.nav && S.nav.goal && (S.nav.active || S.nav.status === "arrived")) {
+    const [gx, gy, gyaw] = S.nav.goal; const [cx, cy] = p2c(...w2p(gx, gy));
+    drawArrow(cx, cy, gyaw, 12 * d, "#2fbf71");
+  }
+  if (S && S.pose && S.pose.frame === (mapInfo.frame || "map")) {
+    const [cx, cy] = p2c(...w2p(S.pose.x, S.pose.y));
+    const rpx = Math.max(10 * d, (0.17 / mapInfo.resolution) * view.s);
+    ctx.beginPath(); ctx.arc(cx, cy, rpx, 0, 2 * Math.PI); ctx.fillStyle = "#3d8bfd44"; ctx.fill();
+    drawArrow(cx, cy, S.pose.yaw, Math.max(12 * d, rpx), "#3d8bfd");
+  }
+  if (drag && drag.kind !== "pan") {
+    const [cx, cy] = p2c(...drag.p0);
+    const yaw = drag.yaw || 0;
+    ctx.beginPath(); ctx.arc(cx, cy, 6 * d, 0, 2 * Math.PI); ctx.fillStyle = drag.kind === "goal" ? "#2fbf71" : "#f0a92e"; ctx.fill();
+    drawArrow(cx, cy, yaw, 22 * d, drag.kind === "goal" ? "#2fbf71" : "#f0a92e");
+  }
+}
+function loop() { if (mapDirty) drawMap(); requestAnimationFrame(loop); }
+requestAnimationFrame(loop);
+
+// pan / zoom / pick
+const pointers = new Map(); let pinch = null;
+canvas.addEventListener("pointerdown", (e) => {
+  canvas.setPointerCapture(e.pointerId); pointers.set(e.pointerId, evC(e));
+  if (pointers.size === 2) {
+    const [a, b] = [...pointers.values()];
+    pinch = { d: Math.hypot(a[0] - b[0], a[1] - b[1]), s: view.s, mid: c2p((a[0] + b[0]) / 2, (a[1] + b[1]) / 2) };
+    drag = null; return;
+  }
+  if (!mapInfo) return;
+  const c = evC(e);
+  drag = tool === "pan" ? { kind: "pan", last: c } : { kind: tool, p0: c2p(...c), yaw: 0 };
+  mapDirty = true;
+});
+canvas.addEventListener("pointermove", (e) => {
+  if (!pointers.has(e.pointerId)) return;
+  pointers.set(e.pointerId, evC(e));
+  if (pinch && pointers.size === 2) {
+    const [a, b] = [...pointers.values()];
+    const dist = Math.hypot(a[0] - b[0], a[1] - b[1]);
+    const mid = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+    view.s = Math.min(60, Math.max(0.2, pinch.s * dist / pinch.d));
+    view.x = mid[0] / view.s - pinch.mid[0]; view.y = mid[1] / view.s - pinch.mid[1];
+    mapDirty = true; return;
+  }
+  if (!drag) return;
+  const c = evC(e);
+  if (drag.kind === "pan") { view.x += (c[0] - drag.last[0]) / view.s; view.y += (c[1] - drag.last[1]) / view.s; drag.last = c; }
+  else { const p = c2p(...c); const dx = p[0] - drag.p0[0], dy = p[1] - drag.p0[1];
+         if (Math.hypot(dx, dy) * view.s > 8) drag.yaw = Math.atan2(-dy, dx); }
+  mapDirty = true;
+});
+function endPointer(e) {
+  pointers.delete(e.pointerId);
+  if (pointers.size < 2) pinch = null;
+  if (!drag) return;
+  const d = drag; drag = null; mapDirty = true;
+  if (d.kind === "pan" || e.type === "pointercancel") return;
+  const [x, y] = p2w(...d.p0);
+  const deg = Math.round(d.yaw * 180 / Math.PI);
+  if (d.kind === "goal") call("nav_goal", { x, y, yaw: d.yaw });
+  else if (confirm(`把機器人位置設為 (${x.toFixed(2)}, ${y.toFixed(2)})，朝向 ${deg}°？`)) call("set_pose", { x, y, yaw: d.yaw });
+}
+canvas.addEventListener("pointerup", endPointer);
+canvas.addEventListener("pointercancel", endPointer);
+canvas.addEventListener("wheel", (e) => {
+  e.preventDefault(); const c = evC(e); const p = c2p(...c);
+  view.s = Math.min(60, Math.max(0.2, view.s * (e.deltaY < 0 ? 1.15 : 1 / 1.15)));
+  view.x = c[0] / view.s - p[0]; view.y = c[1] / view.s - p[1]; mapDirty = true;
+}, { passive: false });
+$$("#tool-seg button").forEach((b) => b.addEventListener("click", () => {
+  tool = b.dataset.tool; $$("#tool-seg button").forEach((x) => x.classList.toggle("on", x === b));
+}));
+$("#center").addEventListener("click", () => {
+  if (!mapInfo) return;
+  if (S && S.pose && S.pose.frame === (mapInfo.frame || "map")) {
+    const [px, py] = w2p(S.pose.x, S.pose.y);
+    view.x = canvas.width / view.s / 2 - px; view.y = canvas.height / view.s / 2 - py; mapDirty = true;
+  } else fitMap();
+});
+$("#nav-cancel").addEventListener("click", () => call("nav_cancel"));
+$("#save-map").addEventListener("click", (e) => {
+  const name = $("#map-name").value.trim();
+  if (!name) { toast("先輸入地圖名稱", true); return; }
+  busy(e.target, () => call("save_map", { name }));
+});
+
+function renderMap() {
+  if (S.map && S.map.version !== mapVersion) {
+    mapVersion = S.map.version; mapInfo = S.map;
+    mapImg.src = "/api/map.png?v=" + mapVersion + "&t=" + Date.now();
+  }
+  if (!S.map) { mapInfo = null; }
+  const p = S.pose, n = S.nav || {};
+  const NAV = { driving: "導航中", arrived: "已到達", failed: "失敗", canceled: "已取消", canceling: "取消中", rejected: "被拒絕", sent: "送出中", accepted: "已接受" };
+  let info = p ? `位置 (${p.x.toFixed(2)}, ${p.y.toFixed(2)}) ${Math.round(p.yaw * 180 / Math.PI)}° [${p.frame}]` : "沒有 TF：機器人位置未知";
+  if (n.status) info += ` · 導航：${NAV[n.status] || n.status}` + (n.active && n.distance != null ? ` 剩 ${n.distance} m` : "");
+  $("#map-info").textContent = info;
+  $("#nav-cancel").disabled = !n.active;
+  $("#save-map").disabled = unitState("mapping") !== "running";
+  mapDirty = true;
+}
+
+// ------------------------------------------------------------------ drive
+const pad = $("#pad"), knob = $("#knob");
+let stick = null, driveTimer = null;
+function speedFrac() { return $("#speed").value / 100; }
+$("#speed").addEventListener("input", () => ($("#speed-val").textContent = $("#speed").value + "%"));
+function sendStick() {
+  if (!stick || !S) return;
+  const t = S.teleop || { max_linear: 0.3, max_angular: 1.0 };
+  send({ type: "teleop", vx: -stick[1] * t.max_linear * speedFrac(), wz: -stick[0] * t.max_angular * speedFrac() });
+}
+function startDrive() { if (!driveTimer) driveTimer = setInterval(sendStick, 100); pad.classList.add("live"); }
+function stopDrive() {
+  stick = null; clearInterval(driveTimer); driveTimer = null; pad.classList.remove("live");
+  knob.style.transform = ""; send({ type: "teleop_stop" });
+}
+function padMove(e) {
+  const r = pad.getBoundingClientRect(), R = r.width / 2;
+  let dx = (e.clientX - r.left - R) / R, dy = (e.clientY - r.top - R) / R;
+  const m = Math.hypot(dx, dy); if (m > 1) { dx /= m; dy /= m; }
+  const dead = (v) => (Math.abs(v) < 0.08 ? 0 : v);
+  stick = [dead(dx), dead(dy)];
+  knob.style.transform = `translate(${dx * R * 0.66}px, ${dy * R * 0.66}px)`;
+}
+pad.addEventListener("pointerdown", (e) => { pad.setPointerCapture(e.pointerId); padMove(e); sendStick(); startDrive(); });
+pad.addEventListener("pointermove", (e) => { if (driveTimer) padMove(e); });
+pad.addEventListener("pointerup", stopDrive);
+pad.addEventListener("pointercancel", stopDrive);
+document.addEventListener("visibilitychange", () => { if (document.hidden) stopDrive(); });
+window.addEventListener("blur", stopDrive);
+const keys = new Set();
+function keyStick() {
+  const x = (keys.has("d") ? 1 : 0) - (keys.has("a") ? 1 : 0), y = (keys.has("s") ? 1 : 0) - (keys.has("w") ? 1 : 0);
+  if (!x && !y) { stopDrive(); return; } stick = [x, y]; startDrive(); sendStick();
+}
+document.addEventListener("keydown", (e) => {
+  if (activeTab !== "drive" || !"wasd".includes(e.key) || e.repeat || e.target.tagName === "INPUT") return;
+  keys.add(e.key); keyStick();
+});
+document.addEventListener("keyup", (e) => { if (keys.delete(e.key)) keyStick(); });
+
+// The D435i is mounted sideways in the Stretch's head: one clockwise quarter
+// turn makes it upright (OSG's ros2.rotate_deg -90 is the same turn, measured
+// on the robot). The button cycles 90 / -90 / 0 in case a head differs.
+let camRot = 90;
+$("#cam-rot").addEventListener("click", () => { camRot = camRot === 90 ? -90 : camRot === -90 ? 0 : 90; drawCam(); });
+window.addEventListener("resize", () => { if (activeTab === "drive") drawCam(); });
+const camCanvas = $("#cam"), camCtx = camCanvas.getContext("2d");
+let camFrame = null, camBusy = false;
+function drawCam() {
+  const r = camCanvas.getBoundingClientRect(), d = window.devicePixelRatio || 1;
+  camCanvas.width = Math.max(1, r.width * d); camCanvas.height = Math.max(1, r.height * d);
+  camCtx.clearRect(0, 0, camCanvas.width, camCanvas.height);
+  if (!camFrame) return;
+  const side = camRot !== 0;
+  const w = side ? camFrame.height : camFrame.width, h = side ? camFrame.width : camFrame.height;
+  const s = Math.min(camCanvas.width / w, camCanvas.height / h);
+  camCtx.save();
+  camCtx.translate(camCanvas.width / 2, camCanvas.height / 2);
+  camCtx.rotate(camRot * Math.PI / 180);
+  camCtx.drawImage(camFrame, -camFrame.width * s / 2, -camFrame.height * s / 2, camFrame.width * s, camFrame.height * s);
+  camCtx.restore();
+}
+setInterval(() => {
+  if (activeTab !== "drive" || camBusy) return;
+  camBusy = true;
+  const img = new Image();
+  img.onload = () => { camFrame = img; drawCam(); $("#cam-empty").hidden = true; camBusy = false; };
+  img.onerror = () => { $("#cam-empty").hidden = false; camBusy = false; };
+  img.src = "/api/camera.jpg?t=" + Date.now();
+}, 250);
+
+function renderDrive() {
+  const mode = S.robot && S.robot.mode;
+  const warn = $("#drive-warn");
+  let text = "";
+  if (!S.detected || !S.detected.driver) text = "底盤驅動沒有在跑：到「系統」啟動 Driver";
+  else if (S.robot.runstopped) text = "機器人在急停狀態：按「解除急停」";
+  else if (mode && mode !== "navigation") text = `驅動模式是「${mode}」：面板駕駛需要「導航」模式`;
+  warn.textContent = text; warn.classList.toggle("show", !!text);
+}
+
+// ----------------------------------------------------------------- render
+function render() {
+  const r = S.robot || {}, age = S.age || {};
+  const fresh = (k, s = 3) => age[k] !== undefined && age[k] < s;
+  setBadge($("#b-mode"), r.mode && fresh("mode") ? r.mode : "mode —", r.mode === "navigation" ? "ok" : (r.mode ? "warn" : ""));
+  setBadge($("#b-batt"), r.battery_v && fresh("battery_v", 10) ? r.battery_v.toFixed(1) + " V" : "— V",
+           r.battery_v ? (r.battery_v < 10.5 ? "bad" : r.battery_v < 11.2 ? "warn" : "ok") : "");
+  setBadge($("#b-homed"), r.homed ? "已歸零" : "未歸零", r.homed ? "ok" : (r.homed === false ? "warn" : ""));
+  setBadge($("#b-runstop"), r.runstopped ? "急停中" : (r.runstopped === false ? "可移動" : "—"),
+           r.runstopped ? "bad" : (r.runstopped === false ? "ok" : ""));
+  $$("#mode-seg button").forEach((b) => b.classList.toggle("on", b.dataset.mode === r.mode));
+  renderUnits(); renderMap(); renderDrive();
+}
+setInterval(() => {
+  const c = $("#conn");
+  c.className = "dot" + (!ws || ws.readyState !== 1 ? "" : Date.now() - lastStateAt < 2000 ? " ok" : " stale");
+}, 500);
+
+resizeMap();
+connect();

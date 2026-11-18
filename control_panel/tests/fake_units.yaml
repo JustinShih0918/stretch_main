@@ -1,0 +1,52 @@
+# The supervisor's units with the robot swapped out for tools/fake_stretch.py:
+# same unit names, same ROS names, no hardware. Used by tests/e2e_fake.sh and
+# for trying the panel on a laptop:
+#
+#   ROS_DOMAIN_ID=77 python3 control_panel/supervisor/supervisor.py \
+#       --units control_panel/tests/fake_units.yaml
+#
+# Saving a map still runs the real `ros2 service call` + nav2 map_saver_cli.
+
+setup: |
+  source /opt/ros/humble/setup.bash
+
+maps_dir: ${PANEL_MAPS_DIR:-/tmp/panel_fake_maps}
+slam_params: ""
+stop_order: [navigation, mapping, localization, joystick, camera, lidar, driver]
+
+units:
+  driver:
+    label: 底盤驅動 Driver
+    help: (fake) stretch_driver
+    cmd: python3 {ws}/control_panel/tools/fake_stretch.py driver
+  lidar:
+    label: 光達 Lidar
+    help: (fake) RPLidar
+    cmd: python3 {ws}/control_panel/tools/fake_stretch.py lidar
+  camera:
+    label: 相機 RealSense
+    help: (fake) D435i
+    cmd: python3 {ws}/control_panel/tools/fake_stretch.py camera
+  joystick:
+    label: USB 搖桿 Joystick
+    help: (fake) nothing runs
+    requires: [driver]
+    cmd: sleep infinity
+  mapping:
+    label: 建圖 Mapping
+    help: (fake) slam_toolbox, mapping
+    requires: [driver, lidar]
+    conflicts: [localization]
+    cmd: python3 {ws}/control_panel/tools/fake_stretch.py slam mapping
+  localization:
+    label: 定位 Localization
+    help: (fake) slam_toolbox, localization on a saved map
+    requires: [driver, lidar]
+    conflicts: [mapping]
+    args: [map]
+    cmd: python3 {ws}/control_panel/tools/fake_stretch.py slam localization {maps_dir}/{map}
+  navigation:
+    label: 導航 Nav2
+    help: (fake) bt_navigator
+    requires: [driver, lidar, mapping|localization]
+    cmd: python3 {ws}/control_panel/tools/fake_stretch.py nav
