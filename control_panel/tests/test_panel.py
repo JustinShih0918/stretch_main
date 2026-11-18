@@ -36,7 +36,7 @@ def _decode_png(data: bytes) -> np.ndarray:
         elif tag == b"IDAT":
             idat += body
         pos += 12 + n
-    ch = 4 if ctype == 6 else 1
+    ch = {6: 4, 2: 3}.get(ctype, 1)
     raw = np.frombuffer(zlib.decompress(idat), np.uint8).reshape(h, 1 + w * ch)
     assert (raw[:, 0] == 0).all()
     return raw[:, 1:].reshape(h, w, ch) if ch > 1 else raw[:, 1:]
@@ -45,6 +45,8 @@ def _decode_png(data: bytes) -> np.ndarray:
 def test_png_round_trips():
     img = (np.arange(6 * 5 * 4) % 256).astype(np.uint8).reshape(6, 5, 4)
     assert np.array_equal(_decode_png(encode_png(img)), img)
+    rgb = (np.arange(4 * 3 * 3) * 7 % 256).astype(np.uint8).reshape(4, 3, 3)
+    assert np.array_equal(_decode_png(encode_png(rgb)), rgb)
     gray = np.arange(12, dtype=np.uint8).reshape(3, 4)
     assert np.array_equal(_decode_png(encode_png(gray)), gray)
 
@@ -197,11 +199,12 @@ def test_save_map_needs_mapping_and_a_clean_name(tmp_path):
 
 def test_the_shipped_units_file_parses_and_its_commands_format(tmp_path):
     import yaml
-    for path in (ROOT / "supervisor" / "units.yaml", ROOT / "tests" / "fake_units.yaml"):
+    for path in (ROOT / "supervisor" / "units.yaml", ROOT / "tests" / "fake_units.yaml",
+                 ROOT / "osg_runner" / "osg_units.yaml", ROOT / "tests" / "fake_osg_units.yaml"):
         cfg = yaml.safe_load(path.read_text())
         s = sv.Supervisor(cfg, ws=tmp_path, log_dir=tmp_path / "logs")
         for name, u in s.units.items():
-            u.cmd.format(ws="W", maps_dir="M", slam_params="P", map="m")
+            u.cmd.format(ws="W", maps_dir="M", slam_params="P", **{k: "v" for k in u.arg_specs})
             for req in u.requires:
                 for alt in req.split("|"):
                     assert alt in s.units, f"{path.name}: {name} requires unknown {alt}"
@@ -220,3 +223,27 @@ def test_a_launch_that_exits_and_leaves_a_node_behind_is_cleaned_up(tmp_path):
     assert s.units["a"].exit_code == 4
     gone = lambda: not Path(f"/proc/{orphan}").exists() or Path(f"/proc/{orphan}/stat").read_text().split()[2] == "Z"
     assert _wait(gone, timeout=sum(sv.STOP_GRACE_S) + 3)
+
+
+def test_typed_arguments_are_checked_and_quoted_for_the_shell(tmp_path):
+    out = tmp_path / "argv.txt"
+    s = _sup(tmp_path, {"run": {
+        "cmd": f"python3 -c 'import sys; open(\"{out}\", \"w\").write(\"|\".join(sys.argv[1:]))' "
+               "+experiment={preset} ros2.target={target} agent.max_steps={max_steps} ros2.map_tag={tag}",
+        "args": {"preset": {"type": "choice", "choices": ["a", "b"], "default": "a"},
+                 "target": "text", "max_steps": {"type": "int", "min": 10, "max": 100, "default": 40},
+                 "tag": {"type": "name", "exists": True}}}})
+    s.maps_ext = ".json"
+    (s.maps_dir / "lab.json").write_text("{}")
+    bad = [{"target": "chair; rm -rf /", "tag": "lab"}, {"target": "x$(id)", "tag": "lab"},
+           {"target": "chair", "tag": "lab", "max_steps": "5"}, {"target": "chair", "tag": "lab", "preset": "c"},
+           {"target": "chair", "tag": "nope"}, {"target": "it's", "tag": "lab"}]
+    for args in bad:
+        ok, msg = s.start("run", args)
+        assert not ok, (args, msg)
+    ok, msg = s.start("run", {"target": "fire extinguisher #1", "tag": "lab"})
+    assert ok, msg
+    assert _wait(lambda: out.exists() and s.units["run"].state != "starting")
+    assert out.read_text().split("|") == ["+experiment=a", "ros2.target='fire extinguisher #1'",
+                                           "agent.max_steps=40", "ros2.map_tag=lab"]
+    assert s.snapshot()["units"]["run"]["args"]["max_steps"] == "40"

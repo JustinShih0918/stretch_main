@@ -3,8 +3,8 @@
 把控制面板（`control_panel/`）裝到真的機器人上的步驟，以及常見錯誤怎麼查。
 架構與設計原因見 [README.md](README.md)。
 
-> **狀態（2026-11-18）**：整套在假機器人（`tests/e2e_fake.sh`）上測過，**還沒上過真的
-> Stretch**，兩個 docker image 也還沒實際 build 過。第一次上機請兩個人：一人拿平板，
+> **狀態**：面板的機器人控制（步驟 1-4）已在實機測過。OSG 分頁（步驟 5）只在假機器人
+> 與假 OSG（`tests/e2e_fake.sh`）上測過，`thor` image 還沒在 Thor 上 build 過。第一次上機請兩個人：一人拿平板，
 > 一人站在機器人旁、手放在實體急停按鈕上。
 
 ```
@@ -167,12 +167,72 @@ docker exec stretch-panel bash -c "source /opt/ros/humble/setup.bash && ros2 top
 
 ---
 
+## 5. OSG（場景圖搜尋）：從面板操作
+
+控制面板的 **OSG** 分頁可以啟動模型、預檢、選目標、跑建圖趟／搜尋趟、跑滅火器 demo。
+說明見 [README.md](README.md)「OSG from the panel」。
+
+### Thor：第一次設定（一次就好）
+
+```bash
+cd ~/stretch_main
+git submodule update --init --recursive
+source ~/.nvidia_api.env          # 滅火器檢查（VLM）要用 NVIDIA_API_KEY；不放進 .env
+docker compose -f docker/thor/compose.yaml --env-file docker/thor/.env build thor bridge
+docker compose -f docker/thor/compose.yaml --env-file docker/thor/.env up -d ollama bridge thor panel
+```
+
+`thor` 很大、build 很久；卡在 BLIP-2 可在 `.env` 設 `WITH_BLIP2=0`（OSG `docs/THOR.md`）。
+`thor` 容器現在預設跑面板的 runner（`control_panel/osg_runner`），面板就能啟動 OSG。
+
+下載模型權重（一次）：
+
+```bash
+docker exec -it osg-thor bash
+python scripts/download_weights.py --profile large
+mkdir -p outputs/dualmap_comparison/vendor/DualMap/model && \
+  (cd outputs/dualmap_comparison/vendor/DualMap/model && python -c "from ultralytics import FastSAM; FastSAM('FastSAM-s.pt')")
+bash scripts/fetch_ascent_weights.sh
+exit
+docker exec osg-ollama ollama pull qwen2.5:7b
+```
+
+### 每次測試
+
+1. **系統**：driver、光達、**相機**、建圖（或定位）、導航都在執行中；driver「導航」模式、已歸零、沒有急停。
+2. **OSG → ① 啟動**：感知模型「啟動」，等約 90 秒。
+3. **OSG → ② 預檢**：全部 ✅（⚠️ 是建議項，不擋執行）。
+4. 選一個：
+   - **③ 任務**：選模式與目標（或自己打字）、地圖名稱 → 「建圖趟」；搬動物體 → 同一個地圖名稱「搜尋趟」。
+   - **④ Demo 流程**：依序按「執行」：預檢 → 建圖趟 → 搬 #1 後按「繼續」 → 搜尋 #1 並檢查。
+5. **進度**：看階段（搜尋中 → 確認中 → 檢查中 → 判定）、判定卡片與 OSG 輸出；地圖分頁有場景圖物體（橘色 = 目標）。
+
+注意：
+
+- **建圖趟和搜尋趟之間不要重開 SLAM**（場景圖存在當時的 `map` 座標系）。真的要重開：
+  先在地圖分頁「儲存地圖」，之後用「載入地圖並導航」在同一張地圖上定位。
+- OSG 跑的時候不要用面板搖桿：碰搖桿會取消 Nav2 目標。要停用「停止 OSG」或「急停」。
+- 每次的完整紀錄在 Thor 的 `src/semantic_nav/object_scene_graph/outputs/<時間>/`；面板顯示的輸出另存在 `outputs/panel_logs/`。
+
+### OSG 的可能錯誤
+
+| 現象 | 原因 | 怎麼辦 |
+|---|---|---|
+| ①「OSG 容器沒有回應」 | `osg-thor` 沒在跑，或是舊 image 沒有 runner | `up -d thor`；`docker logs osg-thor` 應有 `[osg_runner] http://127.0.0.1:18790` |
+| 感知模型「失敗」或預檢 13182/13185 ❌ | 權重沒下載、GPU 記憶體不足 | `docker exec osg-thor tmux attach -t osg_models` 看各視窗；先做「下載模型權重」 |
+| 預檢 ollama ❌ | 沒有 `qwen2.5:7b` | `docker exec osg-ollama ollama pull qwen2.5:7b` |
+| 預檢 VLM 金鑰 ❌（滅火器模式） | `up` 時環境沒有 `NVIDIA_API_KEY` | `source ~/.nvidia_api.env` 後 `up -d thor`（重建容器） |
+| 預檢相機 ❌ | 相機沒開，或機器人沒有 image_transport 壓縮 plugin | 系統分頁啟動相機；機器人上 `sudo apt install ros-humble-image-transport-plugins` |
+| 預檢 OSG bridge ❌ | `osg-bridge` 沒在跑或 DDS 不通 | `up -d bridge`；`docker logs osg-bridge` |
+| 「target may be letters, digits…」 | 目標含特殊字元 | 只能用字母、數字、中文、空白、`# . -` |
+| 「no saved map 'xxx'」 | 這個名字沒跑過建圖趟 | 先跑建圖趟（或從下拉選已存的地圖） |
+| 搜尋趟一開始就結束，輸出有 `FileNotFoundError` / Fast-DDS | 地圖不存在，或機器人用了 Fast-DDS | 看輸出最後幾行；RMW 見上面 DDS 表 |
+| 一直印 `POSE JUMP` | 定位跑掉 | 停下 OSG，重新「設定位置」；不要重開 SLAM |
+| 停在不是目標的東西前面 | 偵測誤判 | 會自動「不是目標，繼續找」（最多 3 次）；持續發生把該次 `outputs/` 給開發者 |
+| 判定「無法判定」或錯誤 | VLM 逾時、金鑰錯、畫面太暗 | 判定卡片有錯誤訊息；`outputs/<時間>/inspection.json` |
+
 ## 收工
 
 - 系統分頁「全部關閉」，或在機器人上對 supervisor 按 Ctrl-C（會依序關閉所有模組）。
-- Thor：`docker compose -f docker/thor/compose.yaml --env-file docker/thor/.env stop panel`
-
-## 下一步（尚未部署）
-
-OSG 本體在 Thor 上（`thor` + `bridge` 容器）見 `src/semantic_nav/object_scene_graph/docs/THOR.md`；
-控制面板的「場景圖」分頁是下一階段。
+- OSG 分頁「停止 OSG」、感知模型「關閉」。
+- Thor：`docker compose -f docker/thor/compose.yaml --env-file docker/thor/.env stop panel thor`

@@ -1,0 +1,43 @@
+# osg_runner's units with OSG swapped out for tools/fake_osg_run.py, and the
+# perception servers for two plain HTTP servers (on PANEL_PERCEPTION_PORTS'
+# test ports, not 13182/13185). Used by tests/e2e_fake.sh.
+
+setup: |
+  source /opt/ros/humble/setup.bash
+  cd {ws}
+
+maps_dir: "{ws}/outputs/robot_maps"
+maps_ext: .json
+stop_order: [search_run, map_run, perception]
+
+units:
+  perception:
+    label: 感知模型 Perception
+    help: (fake) two HTTP servers
+    cmd: >-
+      bash -c 'python3 -m http.server 23182 --bind 127.0.0.1 &
+      python3 -m http.server 23185 --bind 127.0.0.1 & wait'
+
+  map_run:
+    label: 建圖趟 Map pass
+    help: (fake) OSG map pass
+    requires: [perception]
+    conflicts: [search_run]
+    args:
+      preset: {type: choice, choices: [stretch3_map, stretch3_extinguisher], default: stretch3_map}
+      map_tag: name
+      target: text
+      max_steps: {type: int, min: 10, max: 3000, default: 40}
+    cmd: python3 $PANEL_DIR/tools/fake_osg_run.py map --tag {map_tag} --target {target} --steps {max_steps}
+
+  search_run:
+    label: 搜尋趟 Search pass
+    help: (fake) OSG search pass
+    requires: [perception]
+    conflicts: [map_run]
+    args:
+      preset: {type: choice, choices: [stretch3_map, stretch3_extinguisher], default: stretch3_map}
+      map_tag: {type: name, exists: true}
+      target: text
+      max_steps: {type: int, min: 10, max: 3000, default: 40}
+    cmd: python3 $PANEL_DIR/tools/fake_osg_run.py search --tag {map_tag} --target {target} --steps {max_steps}

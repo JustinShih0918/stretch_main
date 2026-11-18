@@ -34,6 +34,7 @@ class WS:
             head += self.s.recv(1)
         assert b" 101 " in head.split(b"\r\n")[0], head
         self.state, self.replies, self.buf, self.n = None, {}, b"", 0
+        self.last_checks = []
 
     def _read(self, n):
         while len(self.buf) < n:
@@ -57,6 +58,8 @@ class WS:
                 m = json.loads(self._read(n))
                 if m["type"] == "state":
                     self.state = m
+                elif m["type"] == "osg_check":
+                    self.last_checks = m["checks"]
                 elif m["type"] == "reply":
                     self.replies[m["id"]] = m
                 self.s.settimeout(0.01)
@@ -87,6 +90,11 @@ class WS:
             if self.state is not None and pred(self.state):
                 return self.state
         raise TimeoutError(what)
+
+
+def osg_unit(s, name):
+    st = ((s.get("osg") or {}).get("runner") or {}).get("state") or {}
+    return (st.get("units") or {}).get(name, {}).get("state")
 
 
 def unit(s, name):
@@ -178,6 +186,52 @@ def main():
     s = ws.until("relocalised", lambda s: s.get("pose") and s["pose"]["frame"] == "map"
                  and math.hypot(s["pose"]["x"] - 6.0, s["pose"]["y"] - 1.5) < 0.1, 10)
     check(abs(s["pose"]["yaw"] - 1.57) < 0.1, f"set pose -> robot at ({s['pose']['x']}, {s['pose']['y']}, {s['pose']['yaw']})")
+
+    # ---- OSG: start, check, map pass, search pass with inspection
+    r = ws.call("unit", action="start", unit="navigation")
+    ws.until("navigation back", lambda s: unit(s, "navigation") == "running", 20)
+    s = ws.until("osg runner", lambda s: (s.get("osg") or {}).get("runner", {}).get("alive"), 15)
+    check(True, "the OSG runner answers through the gateway")
+    r = ws.call("osg_check", preset="stretch3_extinguisher")
+    check(not r["ok"], f"pre-flight before the models: {r['message']}")
+    checks = ws.last_checks
+    check(any(c["key"].startswith("perception") and c["ok"] is False for c in checks), "  it names the perception servers")
+    r = ws.call("osg", action="start", unit="perception")
+    check(r["ok"], f"start perception: {r['message']}")
+    ws.until("perception running", lambda s: osg_unit(s, "perception") == "running", 20)
+    time.sleep(1.0)
+    r = ws.call("osg_check", preset="stretch3_map")
+    bad = [c["label"] + ": " + c["detail"] for c in ws.last_checks if c["ok"] is False and c["hard"]]
+    check(r["ok"], f"pre-flight passes: {r['message']} {bad}")
+    r = ws.call("osg", action="start", unit="map_run",
+                args={"preset": "stretch3_map", "map_tag": "demo", "target": "chair; rm -rf /", "max_steps": "20"})
+    check(not r["ok"], f"a target with shell syntax is refused: {r['message']}")
+    r = ws.call("osg", action="start", unit="search_run",
+                args={"preset": "stretch3_extinguisher", "map_tag": "nope", "target": "fire extinguisher #1"})
+    check(not r["ok"] and "no saved map" in r["message"], f"search on a map that does not exist: {r['message']}")
+    r = ws.call("osg", action="start", unit="map_run",
+                args={"preset": "stretch3_extinguisher", "map_tag": "demo", "target": "fire extinguisher", "max_steps": "20"})
+    check(r["ok"], f"map pass: {r['message']}")
+    s = ws.until("graph", lambda s: ((s["osg"].get("graph") or {}).get("objects") or []), 20)
+    check(True, f"scene graph on the page: {[o.get('name') or o['label'] for o in s['osg']['graph']['objects']]}")
+    s = ws.until("map pass done", lambda s: osg_unit(s, "map_run") == "stopped", 60)
+    u = s["osg"]["runner"]["state"]["units"]["map_run"]
+    check(u["exit_code"] == 0 and any(m["name"] == "demo" for m in s["osg"]["runner"]["state"]["maps"]),
+          f"map pass finished and saved 'demo' (log: {u['log'][-1]})")
+    r = ws.call("osg", action="start", unit="search_run",
+                args={"preset": "stretch3_extinguisher", "map_tag": "demo", "target": "fire extinguisher #1", "max_steps": "20"})
+    check(r["ok"], f"search pass for #1: {r['message']}")
+    s = ws.until("verdict", lambda s: ((s["osg"].get("mission") or {}).get("stage") == "verdict"), 60)
+    m = s["osg"]["mission"]
+    check(m["condition"] == "bad" and m["target"] == "fire extinguisher #1", f"verdict on the page: {m['condition']} {m['confidence']}")
+    stages = [e["stage"] for e in s["osg"]["events"]]
+    check(stages[:1] == ["searching"] and "inspecting" in stages, f"mission events: {stages}")
+    png = urllib.request.urlopen(f"http://127.0.0.1:{PORT}/api/osg_view.png").read()
+    check(png[:4] == b"\x89PNG", f"the inspected view is served ({len(png)} bytes)")
+    ws.until("search pass done", lambda s: osg_unit(s, "search_run") == "stopped", 30)
+    r = ws.call("osg", action="stop", unit="perception")
+    ws.until("perception stopped", lambda s: osg_unit(s, "perception") == "stopped", 30)
+    check(r["ok"], "perception stopped")
 
     # ---- E-stop
     r = ws.call("estop")

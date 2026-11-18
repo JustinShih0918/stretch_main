@@ -32,7 +32,7 @@ from rclpy.node import Node
 from rclpy.qos import (DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy,
                        qos_profile_sensor_data)
 from rclpy.time import Time
-from sensor_msgs.msg import BatteryState, CompressedImage, LaserScan
+from sensor_msgs.msg import BatteryState, CompressedImage, Image, LaserScan
 from std_msgs.msg import Bool, String
 from std_srvs.srv import SetBool, Trigger
 import tf2_ros
@@ -107,6 +107,16 @@ class RosIO(Node):
         self.create_subscription(String, "/panel/supervisor/state", self._on_supervisor, LATCHED)
         self.create_subscription(String, "/panel/supervisor/reply", self._on_reply, 20)
 
+        # ---- OSG, through its bridge (scripts/run_robot.py, eval/debug_stream.py)
+        self.osg_mission: Optional[dict] = None
+        self.osg_events: List[dict] = []
+        self.osg_graph: Optional[dict] = None
+        self.osg_view_png: Optional[bytes] = None
+        self.osg_view_version = 0
+        self.create_subscription(String, "/osg/mission", self._on_mission, 20)
+        self.create_subscription(String, "/osg/scene_graph_json", self._on_graph, 5)
+        self.create_subscription(Image, "/osg/inspection_view", self._on_view, 2)
+
         # ---- what we send
         self.cmd_vel = self.create_publisher(Twist, cfg.get("cmd_vel_topic", "/stretch/cmd_vel"), 10)
         self.initialpose = self.create_publisher(PoseWithCovarianceStamped, "/initialpose", 10)
@@ -180,6 +190,104 @@ class RosIO(Node):
         fut = self._pending.pop(str(data.get("id")), None)
         if fut is not None and not fut.done():
             fut.set_result((bool(data.get("ok")), str(data.get("message", ""))))
+
+    # --------------------------------------------------------------- OSG
+    def _on_mission(self, msg: String):
+        try:
+            data = json.loads(msg.data)
+        except ValueError:
+            return
+        data["t"] = time.time()
+        with self._lock:
+            if data.get("stage") == "searching":       # a new run: forget the last one
+                self.osg_events = []
+                self.osg_view_png = None
+            self.osg_mission = data
+            event = {k: data.get(k) for k in ("t", "stage", "target", "where", "reason", "rejected",
+                                              "condition", "confidence", "summary", "issues", "error")
+                     if data.get(k) is not None}
+            self.osg_events = (self.osg_events + [event])[-30:]
+
+    def _on_graph(self, msg: String):
+        try:
+            g = json.loads(msg.data)
+        except ValueError:
+            return
+        keep = {"target": g.get("target"), "step": g.get("step"), "state": g.get("state"),
+                "instances": g.get("instances"), "goal": g.get("goal"),
+                "rooms": g.get("rooms") or [],
+                "objects": [{k: o.get(k) for k in ("id", "label", "name", "xyz", "p", "target", "n_obs")}
+                            for o in (g.get("objects") or [])]}
+        with self._lock:
+            self.osg_graph = keep
+            self.stamps["osg_graph"] = time.time()
+
+    def _on_view(self, msg: Image):
+        if msg.encoding not in ("rgb8", "bgr8") or not msg.width or not msg.height:
+            return
+        img = np.frombuffer(bytes(msg.data), np.uint8).reshape(msg.height, msg.step)[:, : msg.width * 3]
+        img = img.reshape(msg.height, msg.width, 3)
+        if msg.encoding == "bgr8":
+            img = img[..., ::-1]
+        png = encode_png(img)
+        with self._lock:
+            self.osg_view_png = png
+            self.osg_view_version += 1
+
+    def osg_snapshot(self) -> dict:
+        with self._lock:
+            return {"mission": self.osg_mission, "events": list(self.osg_events),
+                    "graph": self.osg_graph, "view": self.osg_view_version if self.osg_view_png else 0,
+                    "graph_age": round(time.time() - self.stamps["osg_graph"], 1)
+                    if "osg_graph" in self.stamps else None}
+
+    # ------------------------------------------------------------ checks
+    def ros_checks(self, rgb_topic: str, depth_topic: str) -> List[dict]:
+        """What OSG needs from the robot, read off the ROS graph. Each item:
+        {key, label, ok (True / False / None = not applicable), detail, hard}."""
+        out = []
+
+        def add(key, label, ok, detail="", hard=True):
+            out.append({"key": key, "label": label, "ok": ok, "detail": detail, "hard": hard})
+
+        with self._lock:
+            robot, detected, stamps = dict(self.robot), dict(self.detected), dict(self.stamps)
+        fresh = time.time() - stamps.get("mode", 0) < 3
+        add("driver", "底盤驅動在跑", bool(detected.get("driver")) and fresh,
+            "" if fresh else "沒有收到 /mode：啟動 driver")
+        add("mode", "驅動在「導航」模式", robot.get("mode") == "navigation",
+            f"現在是 {robot.get('mode')}" if robot.get("mode") else "")
+        add("runstop", "沒有急停", robot.get("runstopped") is False,
+            "按「解除急停」" if robot.get("runstopped") else "")
+        add("homed", "已歸零", robot.get("homed") is True, "OSG 會轉頭部相機；建議先歸零", hard=False)
+        slam = [i.node_name for i in self.get_publishers_info_by_topic(self.cfg.get("map_topic", "/map"))]
+        add("slam", "/map 來自 slam_toolbox", any("slam_toolbox" in n for n in slam),
+            f"publishers: {slam}" if slam else "沒有人發 /map：啟動建圖或定位")
+        for key, topic in (("rgb", rgb_topic), ("depth", depth_topic)):
+            n = self.count_publishers(topic)
+            add(key, f"相機 {topic.split('/')[2] if topic.count('/') > 2 else topic}", n > 0,
+                topic if n else f"{topic} 沒有 publisher：啟動相機（需要 image_transport 壓縮 plugin）")
+        try:
+            self.tf_buffer.lookup_transform(self.map_frame, self.base_frame, Time())
+            add("tf", "TF map → base_link", True)
+        except tf2_ros.TransformException as e:
+            add("tf", "TF map → base_link", False, str(e)[:120])
+        # Servers only, node by node: the action list as a whole would also
+        # count this node's own navigate_to_pose CLIENT and pass falsely.
+        from rclpy.action.graph import get_action_server_names_and_types_by_node
+        servers = []
+        for name, ns in self.get_node_names_and_namespaces():
+            try:
+                servers += [a for a, _ in get_action_server_names_and_types_by_node(self, name, ns)]
+            except Exception:  # noqa: BLE001 -- a node that vanished meanwhile
+                continue
+        nav = self.cfg.get("nav_action", "navigate_to_pose")
+        add("nav2", "Nav2 navigate_to_pose", any(s.endswith(nav) for s in servers), "啟動導航")
+        head = "/stretch_controller/follow_joint_trajectory"
+        add("head", "頭部控制 action", head in servers, f"{head}（driver 提供）", hard=False)
+        add("bridge", "OSG bridge 在跑", bool(detected.get("osg_bridge")),
+            "Thor：docker compose ... up -d bridge")
+        return out
 
     def _graph_tick(self):
         names = {n for n, _ in self.get_node_names_and_namespaces()}

@@ -126,19 +126,52 @@ bash control_panel/tests/e2e_fake.sh                  # everything, against a fa
 ```
 
 `e2e_fake.sh` runs the supervisor (with `tests/fake_units.yaml`: the same units, played by
-`tools/fake_stretch.py` under the real node, topic, service and action names), the gateway,
-and a scripted session through the page's WebSocket: start each unit and the refusals,
+`tools/fake_stretch.py` under the real node, topic, service and action names), the OSG runner
+(with `tests/fake_osg_units.yaml`: `tools/fake_osg_run.py` publishes what a run publishes), the
+gateway, and a scripted session through the page's WebSocket: start each unit and the refusals,
 gamepad mode ignores the panel, teleop drives and stops on release, a Nav2 goal arrives, a
 stick touch cancels a goal, save a map (the real `ros2 service call` and `map_saver_cli`),
-localise on it, set the pose, E-stop, stop all. It uses ROS domain 77 with
+localise on it, set the pose; then OSG: pre-flight fails without the models and passes with
+them, a target with shell syntax and a missing map are refused, a map pass saves its map, a
+search pass for #1 ends in a verdict with its image; E-stop, stop all. It uses ROS domain 77 with
 `ROS_LOCALHOST_ONLY=1`, whatever the shell exports, because the fake publishes
 `/stretch/cmd_vel`. `KEEP=1` leaves it up at `http://localhost:18080`.
 
 Not tested yet: the real Stretch, and the two docker images (built from these files, but
 not built in the environment this was written in).
 
-## Next: the scene graph
+## OSG from the panel
 
-The 場景圖 tab is a placeholder. OSG already publishes its graph on `/osg/*` through the
-bridge (`debug_stream.py`); the gateway can subscribe to it, draw the objects and rooms on
-the same map, and start a search (`run_robot.py`) from the page.
+The **OSG** tab runs the scene-graph search on the Thor without a terminal:
+
+1. **啟動** starts the perception servers (`scripts/serve_perception.sh`, ~90 s to load).
+2. **預檢** checks everything a run needs and says what is missing: the OSG container, the
+   model servers, ollama and its model, the VLM key (for the extinguisher preset), and on
+   the robot's side the driver (navigation mode, no runstop, homed), `/map` from
+   slam_toolbox, OSG's two camera topics, TF `map -> base_link`, Nav2's `navigate_to_pose`,
+   the head action, and OSG's bridge.
+3. **任務**: the preset (一般搜尋 `stretch3_map`, 滅火器檢查 `stretch3_extinguisher`), a target
+   picked from `gateway/osg_presets.yaml` or typed (`fire extinguisher #1`, `椅子`), the OSG map
+   tag, and a step budget; then **建圖趟** (map pass) or **搜尋趟** (search pass).
+4. **Demo 流程**: the same as a stepper, from `osg_presets.yaml`'s `demo`: pre-flight → map pass
+   for the extinguishers → "move #1" (the operator presses 繼續) → search for #1 and inspect.
+5. **進度**: OSG's own mission stages (`/osg/mission`: searching, checking, inspecting,
+   verdict / not found), the verdict card with the image the VLM judged, and the run's
+   output. The scene graph's objects are listed, and drawn on the 地圖 tab (orange = target).
+
+How: the OSG container has no ROS by design, so `osg_runner/runner.py` runs **inside** it
+(`docker/thor` `thor` service's command) and starts `perception`, `map_run` and `search_run`
+from `osg_runner/osg_units.yaml` -- the robot supervisor's code, behind HTTP on
+`127.0.0.1:18790` instead of ROS topics; only the gateway (same host network) reaches it.
+Arguments are typed and quoted (`supervisor.py` `_arg`): a target is letters, digits,
+spaces, `# . -`, nothing a shell or Hydra would read as syntax. What OSG publishes through its
+bridge (`/osg/mission`, `/osg/scene_graph_json`, `/osg/inspection_view`) the gateway reads
+over ROS like everything else.
+
+`run_robot.py` by hand (`docker exec -it osg-thor bash`, OSG `docs/THOR.md`) still works; the
+panel then shows its progress but not its output.
+
+## Next
+
+Commanding the scene graph from the map: pick an object on the map and send the robot to it,
+or start a search for it.

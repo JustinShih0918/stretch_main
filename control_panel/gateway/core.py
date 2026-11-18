@@ -17,17 +17,17 @@ import numpy as np
 
 # ------------------------------------------------------------------ images
 def encode_png(img: np.ndarray) -> bytes:
-    """8-bit grayscale (H, W) or RGBA (H, W, 4) array -> PNG bytes. No PIL:
+    """8-bit grayscale (H, W), RGB (H, W, 3) or RGBA (H, W, 4) -> PNG bytes. No PIL:
     the bridge image the gateway runs in does not carry it."""
     img = np.ascontiguousarray(img, dtype=np.uint8)
     if img.ndim == 2:
         h, w = img.shape
         color_type, channels = 0, 1
-    elif img.ndim == 3 and img.shape[2] == 4:
-        h, w, _ = img.shape
-        color_type, channels = 6, 4
+    elif img.ndim == 3 and img.shape[2] in (3, 4):
+        h, w, channels = img.shape
+        color_type = 2 if channels == 3 else 6
     else:
-        raise ValueError(f"need (H, W) or (H, W, 4), got {img.shape}")
+        raise ValueError(f"need (H, W), (H, W, 3) or (H, W, 4), got {img.shape}")
     rows = img.reshape(h, w * channels)
     raw = np.hstack([np.zeros((h, 1), np.uint8), rows]).tobytes()  # filter 0 per row
 

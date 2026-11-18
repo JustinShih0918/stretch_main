@@ -19,6 +19,8 @@ the difference:
           /slam_toolbox/serialize_map (writes <file>.posegraph/.data);
           `slam localization <file>` refuses a posegraph that does not exist
   nav     node bt_navigator: navigate_to_pose, driving by /stretch/cmd_vel, /plan
+  bridge  node osg_bridge, idle: the OSG bridge the panel's pre-flight check looks for
+          (tools/fake_osg_run.py publishes what OSG would, itself)
 
 The robot's true pose is shared between roles on /fake/truth so the lidar
 sees what the driver did.
@@ -213,6 +215,8 @@ class Camera(Node):
     def __init__(self):
         super().__init__("camera")
         self.pub = self.create_publisher(CompressedImage, "/camera/color/image_raw/compressed", qos_profile_sensor_data)
+        self.depth = self.create_publisher(CompressedImage, "/camera/aligned_depth_to_color/image_raw/compressedDepth",
+                                           qos_profile_sensor_data)
         self.create_timer(0.5, self._frame)
 
     def _frame(self):
@@ -348,12 +352,13 @@ class Nav(Node):
 def main():
     role = sys.argv[1] if len(sys.argv) > 1 else "driver"
     rclpy.init()
-    node = {"driver": Driver, "lidar": Lidar, "camera": Camera, "nav": Nav}.get(role)
+    node = {"driver": Driver, "lidar": Lidar, "camera": Camera, "nav": Nav,
+            "bridge": lambda: Node("osg_bridge")}.get(role)
     if role == "slam":
         mode = sys.argv[2] if len(sys.argv) > 2 else "mapping"
         node = Slam(mode, sys.argv[3] if len(sys.argv) > 3 else "")
     elif node is None:
-        raise SystemExit(f"role? driver|lidar|camera|slam|nav, not {role}")
+        raise SystemExit(f"role? driver|lidar|camera|slam|nav|bridge, not {role}")
     else:
         node = node()
     ex = MultiThreadedExecutor(num_threads=4)

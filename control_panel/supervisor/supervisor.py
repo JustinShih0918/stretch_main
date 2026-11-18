@@ -27,6 +27,7 @@ import collections
 import json
 import os
 import re
+import shlex
 import signal
 import socket
 import subprocess
@@ -41,6 +42,10 @@ import yaml
 HERE = Path(__file__).resolve().parent
 WS_DEFAULT = HERE.parents[1]  # this stretch_main checkout
 NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+# Free text an operator types (a search target: "fire extinguisher #1", "椅子"):
+# word characters in any script, spaces, # . -  -- nothing a shell or Hydra
+# would read as syntax. It is still quoted for both when substituted.
+TEXT_RE = re.compile(r"^[\w #.\-]{1,60}$")
 RUNNING_AFTER_S = 2.0          # alive this long after start counts as running
 STOP_GRACE_S = (8.0, 4.0)      # SIGINT, then SIGTERM, then SIGKILL
 
@@ -63,6 +68,7 @@ class Unit:
     requires: List[str] = field(default_factory=list)
     conflicts: List[str] = field(default_factory=list)
     args: List[str] = field(default_factory=list)
+    arg_specs: Dict[str, dict] = field(default_factory=dict)
     # runtime
     proc: Optional[subprocess.Popen] = None
     state: str = "stopped"          # stopped | starting | running | stopping | failed
@@ -85,15 +91,66 @@ class Supervisor:
         self.slam_params = expand(str(config.get("slam_params", "")).replace("{ws}", str(self.ws)))
         self.log_dir = Path(log_dir or expand("${PANEL_LOG_DIR:-~/.ros/panel_logs}"))
         self.stop_order = list(config.get("stop_order", []))
+        # What counts as a saved map in maps_dir: slam_toolbox pose graphs on
+        # the robot, OSG scene-graph maps (*.json) on the Thor.
+        self.maps_ext = str(config.get("maps_ext", ".posegraph"))
         self.units: Dict[str, Unit] = {}
         for name, spec in (config.get("units") or {}).items():
+            specs = self._arg_specs(spec.get("args"))
             self.units[name] = Unit(name=name, cmd=str(spec["cmd"]), label=str(spec.get("label", name)),
                                     help=str(spec.get("help", "")), requires=list(spec.get("requires", [])),
-                                    conflicts=list(spec.get("conflicts", [])), args=list(spec.get("args", [])))
+                                    conflicts=list(spec.get("conflicts", [])), args=list(specs),
+                                    arg_specs=specs)
         self.on_change = on_change or (lambda: None)
         self._lock = threading.RLock()
         self.maps_dir.mkdir(parents=True, exist_ok=True)
         self.log_dir.mkdir(parents=True, exist_ok=True)
+
+    @staticmethod
+    def _arg_specs(raw) -> Dict[str, dict]:
+        """`args: [map]` (each a file-safe name) or `args: {target: text,
+        steps: {type: int, min: 1, max: 2000}, preset: {type: choice, choices: [..]},
+        map: {type: name, exists: true}}`. `map` as a plain name must exist."""
+        out: Dict[str, dict] = {}
+        if isinstance(raw, dict):
+            for key, spec in raw.items():
+                spec = {"type": spec} if isinstance(spec, str) else dict(spec or {})
+                spec.setdefault("type", "name")
+                out[str(key)] = spec
+        else:
+            for key in raw or []:
+                out[str(key)] = {"type": "name", "exists": key == "map"}
+        return out
+
+    def _arg(self, unit: Unit, key: str, value: str) -> (Optional[str], str):
+        """(the value as it goes into the command, or None) and why not."""
+        spec = unit.arg_specs[key]
+        kind = spec.get("type", "name")
+        if value == "" and "default" in spec:
+            value = str(spec["default"])
+        if kind == "name":
+            if not NAME_RE.match(value):
+                return None, f"{unit.name} needs a {key} (letters, digits, - and _)"
+            if spec.get("exists") and not (self.maps_dir / f"{value}{self.maps_ext}").exists():
+                return None, f"no saved map {value!r} in {self.maps_dir}"
+            return value, ""
+        if kind == "text":
+            if not TEXT_RE.match(value):
+                return None, f"{unit.name}: {key} may be letters, digits, spaces, # . - (up to 60)"
+            return shlex.quote(f"'{value}'"), ""   # a quoted Hydra string, quoted for bash
+        if kind == "int":
+            try:
+                n = int(value)
+            except ValueError:
+                return None, f"{unit.name}: {key} must be a whole number"
+            if not int(spec.get("min", -10**9)) <= n <= int(spec.get("max", 10**9)):
+                return None, f"{unit.name}: {key} must be {spec.get('min')}..{spec.get('max')}"
+            return str(n), ""
+        if kind == "choice":
+            if value not in [str(c) for c in spec.get("choices", [])]:
+                return None, f"{unit.name}: {key} must be one of {spec.get('choices')}"
+            return value, ""
+        return None, f"{unit.name}: unknown argument type {kind!r}"
 
     # ---------------------------------------------------------- queries
     def is_up(self, name: str) -> bool:
@@ -102,8 +159,8 @@ class Supervisor:
 
     def maps(self) -> List[dict]:
         out = []
-        for pg in sorted(self.maps_dir.glob("*.posegraph")):
-            name = pg.stem
+        for pg in sorted(self.maps_dir.glob(f"*{self.maps_ext}")):
+            name = pg.name[: -len(self.maps_ext)]
             out.append({"name": name, "mtime": pg.stat().st_mtime,
                         "image": (self.maps_dir / f"{name}.pgm").exists()})
         return sorted(out, key=lambda m: -m["mtime"])
@@ -115,6 +172,7 @@ class Supervisor:
                 units[name] = {"label": u.label, "help": u.help, "state": u.state, "since": u.since,
                                "pid": u.proc.pid if u.proc and u.state != "stopped" else None,
                                "exit_code": u.exit_code, "args": u.started_with, "needs": u.args,
+                               "arg_specs": u.arg_specs,
                                "requires": u.requires, "conflicts": u.conflicts,
                                "log": list(u.tail)[-8:]}
         return {"host": socket.gethostname(), "time": time.time(), "units": units,
@@ -137,13 +195,16 @@ class Supervisor:
             for other in unit.conflicts:
                 if self.is_up(other):
                     return False, f"stop {other} first"
-            args = {k: str(v) for k, v in (args or {}).items()}
+            args = {k: str(v).strip() for k, v in (args or {}).items() if k in unit.arg_specs}
+            subst = {}
             for key in unit.args:
-                if not NAME_RE.match(args.get(key, "")):
-                    return False, f"{name} needs a {key} (letters, digits, - and _)"
-            if "map" in unit.args and not (self.maps_dir / f"{args['map']}.posegraph").exists():
-                return False, f"no saved map {args['map']!r} in {self.maps_dir}"
-            fmt = dict(args, ws=str(self.ws), maps_dir=str(self.maps_dir), slam_params=self.slam_params)
+                value, why = self._arg(unit, key, args.get(key, ""))
+                if value is None:
+                    return False, why
+                subst[key] = value
+                if args.get(key, "") == "" and "default" in unit.arg_specs[key]:
+                    args[key] = str(unit.arg_specs[key]["default"])
+            fmt = dict(subst, ws=str(self.ws), maps_dir=str(self.maps_dir), slam_params=self.slam_params)
             try:
                 cmd = unit.cmd.format(**fmt)
             except KeyError as e:

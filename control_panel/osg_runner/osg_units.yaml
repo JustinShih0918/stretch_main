@@ -1,0 +1,52 @@
+# What the panel can start in the Thor's OSG container (osg-thor), the same way
+# supervisor/units.yaml does on the robot. Run by osg_runner/runner.py inside
+# that container, from the OSG directory (/workspace).
+#
+# {ws} is the OSG directory. Arguments come from the panel and are checked
+# and quoted by the supervisor core (supervisor/supervisor.py, `_arg`).
+
+setup: |
+  cd {ws}
+
+maps_dir: "{ws}/outputs/robot_maps"     # ros2.map_dir, relative to /workspace in every preset
+maps_ext: .json
+stop_order: [search_run, map_run, perception]
+
+units:
+  perception:
+    label: 感知模型 Perception
+    help: the model servers OSG calls (BLIP-2 :13182, RAM++ :13185, ...); ~90 s to load
+    # serve_perception.sh starts a tmux session and returns; this unit stays up
+    # with it and tears it down when stopped.
+    cmd: >-
+      bash -c 'bash scripts/serve_perception.sh;
+      trap "bash scripts/serve_perception.sh --stop; exit 0" INT TERM;
+      while true; do sleep 1; done'
+
+  map_run:
+    label: 建圖趟 Map pass
+    help: explore, build the scene graph, save it as the map tag
+    requires: [perception]
+    conflicts: [search_run]
+    args:
+      preset: {type: choice, choices: [stretch3_map, stretch3_extinguisher], default: stretch3_map}
+      map_tag: name
+      target: text
+      max_steps: {type: int, min: 10, max: 3000, default: 400}
+    cmd: >-
+      python scripts/run_robot.py +experiment={preset} ros2.map_mode=map
+      ros2.map_tag={map_tag} ros2.target={target} agent.max_steps={max_steps}
+
+  search_run:
+    label: 搜尋趟 Search pass
+    help: start from the saved scene graph and find the target (and inspect it, with the extinguisher preset)
+    requires: [perception]
+    conflicts: [map_run]
+    args:
+      preset: {type: choice, choices: [stretch3_map, stretch3_extinguisher], default: stretch3_map}
+      map_tag: {type: name, exists: true}
+      target: text
+      max_steps: {type: int, min: 10, max: 3000, default: 400}
+    cmd: >-
+      python scripts/run_robot.py +experiment={preset} ros2.map_mode=search
+      ros2.map_tag={map_tag} ros2.target={target} agent.max_steps={max_steps}

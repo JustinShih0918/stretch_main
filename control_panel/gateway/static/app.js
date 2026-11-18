@@ -18,6 +18,7 @@ function connect() {
       if (m.scan === null && S) m.scan = S.scan;   // the scan rides on every other state
       S = m; lastStateAt = Date.now(); render();
     }
+    else if (m.type === "osg_check") { renderChecks(m.checks); }
     else if (m.type === "reply") {
       const p = pending.get(m.id);
       if (p) { pending.delete(m.id); p(m); }
@@ -235,6 +236,19 @@ function drawMap() {
     const [gx, gy, gyaw] = S.nav.goal; const [cx, cy] = p2c(...w2p(gx, gy));
     drawArrow(cx, cy, gyaw, 12 * d, "#2fbf71");
   }
+  const g = S && S.osg && S.osg.graph;
+  if (g && g.objects) {
+    ctx.font = `${11 * d}px sans-serif`; ctx.textBaseline = "bottom";
+    for (const o of g.objects) {
+      const [cx, cy] = p2c(...w2p(o.xyz[0], o.xyz[1]));
+      ctx.beginPath(); ctx.arc(cx, cy, (o.target ? 6 : 4) * d, 0, 2 * Math.PI);
+      ctx.fillStyle = o.target ? "#ff9b2f" : "#b58cff"; ctx.fill();
+      if (o.target) { ctx.lineWidth = 2 * d; ctx.strokeStyle = "#fff"; ctx.stroke(); }
+      const text = o.name || o.label;
+      ctx.lineWidth = 3 * d; ctx.strokeStyle = "#000c"; ctx.strokeText(text, cx + 6 * d, cy - 3 * d);
+      ctx.fillStyle = o.target ? "#ffd9a8" : "#e6dcff"; ctx.fillText(text, cx + 6 * d, cy - 3 * d);
+    }
+  }
   if (S && S.pose && S.pose.frame === (mapInfo.frame || "map")) {
     const [cx, cy] = p2c(...w2p(S.pose.x, S.pose.y));
     const rpx = Math.max(10 * d, (0.17 / mapInfo.resolution) * view.s);
@@ -426,12 +440,195 @@ function render() {
   setBadge($("#b-runstop"), r.runstopped ? "急停中" : (r.runstopped === false ? "可移動" : "—"),
            r.runstopped ? "bad" : (r.runstopped === false ? "ok" : ""));
   $$("#mode-seg button").forEach((b) => b.classList.toggle("on", b.dataset.mode === r.mode));
-  renderUnits(); renderMap(); renderDrive();
+  renderUnits(); renderMap(); renderDrive(); renderOsg();
 }
 setInterval(() => {
   const c = $("#conn");
   c.className = "dot" + (!ws || ws.readyState !== 1 ? "" : Date.now() - lastStateAt < 2000 ? " ok" : " stale");
 }, 500);
+
+
+// -------------------------------------------------------------------- OSG
+let P = { presets: [], targets: [], defaults: {}, demo: null };
+let osgPreset = "stretch3_map";
+const RUNS = ["map_run", "search_run"];
+fetch("/api/osg_presets.json").then((r) => r.json()).then((p) => { P = Object.assign(P, p); setupOsg(); }).catch(() => {});
+
+function osgUnits() { return (S && S.osg && S.osg.runner && S.osg.runner.state && S.osg.runner.state.units) || {}; }
+function osgState(name) { return (osgUnits()[name] || {}).state || null; }
+function osgArgs() {
+  return { preset: osgPreset, map_tag: $("#osg-tag").value.trim(), target: $("#osg-target").value.trim(),
+           max_steps: $("#osg-steps").value || String(P.defaults.max_steps || 400) };
+}
+function setPreset(id) {
+  osgPreset = id;
+  $$("#osg-preset button").forEach((b) => b.classList.toggle("on", b.dataset.id === id));
+}
+function setupOsg() {
+  const seg = $("#osg-preset"); seg.innerHTML = "";
+  for (const pr of P.presets || []) {
+    const b = document.createElement("button"); b.dataset.id = pr.id; b.textContent = pr.label; b.title = pr.help || "";
+    b.onclick = () => setPreset(pr.id); seg.appendChild(b);
+  }
+  setPreset((P.presets && P.presets[0] && P.presets[0].id) || "stretch3_map");
+  const box = $("#osg-targets"); box.innerHTML = "";
+  for (const t of P.targets || []) {
+    const c = document.createElement("button"); c.className = "chip"; c.textContent = t.label;
+    c.onclick = () => {
+      $("#osg-target").value = t.target; if (t.preset) setPreset(t.preset);
+      $$("#osg-targets .chip").forEach((x) => x.classList.toggle("on", x === c));
+    };
+    box.appendChild(c);
+  }
+  $("#osg-tag").value = (P.defaults && P.defaults.map_tag) || "lab";
+  $("#osg-steps").value = (P.defaults && P.defaults.max_steps) || 400;
+  renderDemo();
+}
+$("#osg-tags").addEventListener("change", (e) => { if (e.target.value) $("#osg-tag").value = e.target.value; });
+
+async function osgRun(unit, args) {
+  if (!args.target) { toast("先選或輸入目標", true); return { ok: false }; }
+  if (!args.map_tag) { toast("先輸入地圖名稱", true); return { ok: false }; }
+  return call("osg", { action: "start", unit, args });
+}
+$("#osg-map").addEventListener("click", (e) => busy(e.target, () => osgRun("map_run", osgArgs())));
+$("#osg-search").addEventListener("click", (e) => busy(e.target, () => osgRun("search_run", osgArgs())));
+$("#osg-stop").addEventListener("click", (e) => busy(e.target, async () => {
+  for (const u of RUNS) if (["running", "starting"].includes(osgState(u))) await call("osg", { action: "stop", unit: u });
+}));
+$("#osg-check").addEventListener("click", (e) => busy(e.target, () => call("osg_check", { preset: osgPreset }, true)));
+
+function renderChecks(checks) {
+  const bad = checks.filter((c) => c.ok === false && c.hard).length;
+  $("#osg-check-sum").textContent = bad ? `${bad} 項未就緒` : "全部就緒 ✔";
+  $("#osg-checks").innerHTML = checks.map((c) => {
+    const icon = c.ok === true ? "✅" : c.ok === null ? "➖" : c.hard ? "❌" : "⚠️";
+    return `<div class="check"><span>${icon}</span><span>${esc(c.label)}</span>${c.detail ? `<span class="detail">${esc(c.detail)}</span>` : ""}</div>`;
+  }).join("");
+  lastCheck = { ok: !bad, at: Date.now() };
+}
+let lastCheck = null;
+function esc(t) { return String(t).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
+
+const STAGES = [["searching", "搜尋中"], ["checking", "確認中"], ["inspecting", "檢查中"], ["verdict", "判定"]];
+let osgViewVersion = 0;
+function renderOsg() {
+  const o = S.osg || {}, r = o.runner || {};
+  $("#osg-runner").textContent = r.alive ? "@ OSG 容器" : `OSG 容器沒有回應${r.error ? "：" + r.error : ""}`;
+  // perception unit
+  const pu = osgUnits().perception, pr = $("#osg-perception");
+  if (!pr.dataset.built) {
+    pr.innerHTML = `<div><span class="name">感知模型 Perception</span><span class="pill"></span></div>
+      <div class="ctl"><button class="btn">啟動</button><button class="btn danger">關閉</button></div>
+      <div class="help">BLIP-2 :13182、RAM++ :13185 等模型伺服器</div>`;
+    const [b1, b2] = pr.querySelectorAll("button");
+    b1.onclick = () => busy(b1, () => call("osg", { action: "start", unit: "perception" }));
+    b2.onclick = () => busy(b2, () => call("osg", { action: "stop", unit: "perception" }));
+    pr.dataset.built = "1";
+  }
+  const st = pu ? pu.state : null, pill = pr.querySelector(".pill");
+  pill.className = "pill " + (st || ""); pill.textContent = st ? (STATE_TXT[st] || st) : "—";
+  const [b1, b2] = pr.querySelectorAll("button");
+  b1.disabled = !r.alive || ["running", "starting"].includes(st); b2.disabled = !r.alive || !["running", "starting"].includes(st);
+  // saved OSG maps
+  const maps = (r.state && r.state.maps) || [], key = maps.map((m) => m.name).join(",");
+  const sel = $("#osg-tags");
+  if (sel.dataset.key !== key) {
+    sel.innerHTML = `<option value="">已存的地圖…</option>` + maps.map((m) => `<option>${esc(m.name)}</option>`).join("");
+    sel.dataset.key = key;
+  }
+  // which run, and its state
+  const run = RUNS.find((u) => ["running", "starting", "stopping"].includes(osgState(u))) ||
+              RUNS.slice().sort((a, b) => ((osgUnits()[b] || {}).since || 0) - ((osgUnits()[a] || {}).since || 0))[0];
+  const ru = osgUnits()[run] || {};
+  const rp = $("#osg-run-state");
+  rp.className = "pill " + (ru.state || "");
+  rp.textContent = ru.state ? `${run === "map_run" ? "建圖趟" : "搜尋趟"} · ${STATE_TXT[ru.state] || ru.state}` +
+                   (ru.state === "stopped" && ru.exit_code === 0 ? " ✔" : "") : "—";
+  const busyRun = RUNS.some((u) => ["running", "starting", "stopping"].includes(osgState(u)));
+  $("#osg-map").disabled = $("#osg-search").disabled = busyRun || !r.alive;
+  $("#osg-stop").disabled = !busyRun;
+  $("#osg-log").textContent = (ru.log || []).join("\n");
+  // mission stage and verdict
+  const m = o.mission;
+  const idx = m ? STAGES.findIndex(([k]) => k === m.stage) : -1;
+  $("#osg-stage").innerHTML = m && m.stage === "not_found"
+    ? `<span class="now" style="background:var(--bad)">沒找到 ${esc(m.target || "")}</span>`
+    : STAGES.map(([k, t], i) => `<span class="${i < idx ? "done" : i === idx ? "now" : ""}">${t}</span>`).join("");
+  const v = $("#osg-verdict");
+  if (m && m.stage === "verdict") {
+    const cond = (m.condition || "unknown").toLowerCase();
+    const label = { bad: "異常 BAD", good: "正常 GOOD", unknown: "無法判定" }[cond] || cond;
+    if (o.view !== osgViewVersion) { osgViewVersion = o.view; }
+    v.innerHTML = `<div class="verdict ${cond}">
+      ${o.view ? `<img src="/api/osg_view.png?v=${o.view}">` : "<div></div>"}
+      <div><div class="big">${label}${m.confidence != null ? ` · ${Math.round(m.confidence * 100)}%` : ""}</div>
+      <div>${esc(m.object || m.target || "")}${m.where ? ` @ (${m.where.map((x) => (+x).toFixed(1)).join(", ")})` : ""}</div>
+      ${(m.issues || []).map((i) => `<div>• ${esc(i)}</div>`).join("")}
+      ${m.summary ? `<div class="muted">${esc(m.summary)}</div>` : ""}
+      ${m.error ? `<div style="color:var(--bad)">${esc(m.error)}</div>` : ""}</div></div>`;
+  } else v.innerHTML = "";
+  const EV = { searching: "開始搜尋", checking: "停下確認", resumed: "不是目標，繼續找", inspecting: "開始檢查", verdict: "判定", not_found: "沒找到" };
+  $("#osg-events").innerHTML = (o.events || []).slice().reverse().map((e) =>
+    `<div>${new Date(e.t * 1000).toLocaleTimeString()} · ${EV[e.stage] || e.stage} ${esc(e.target || "")}` +
+    `${e.where ? ` @ (${e.where.map((x) => (+x).toFixed(1)).join(", ")})` : ""}${e.reason ? ` — ${esc(e.reason)}` : ""}</div>`).join("");
+  // scene graph
+  const g = o.graph;
+  $("#osg-graph-meta").textContent = g ? `step ${g.step} · ${g.state || ""} · ${g.objects.length} 物體` : "";
+  $("#osg-objects").innerHTML = g ? g.objects.map((x) => `<span class="${x.target ? "target" : ""}">${esc(x.name || x.label)}</span>`).join("")
+                                  : `<span class="muted">OSG 還沒有發佈場景圖（跑一趟就會出現）</span>`;
+  renderDemo();
+}
+
+// ---------------------------------------------------------------- demo flow
+let demoStep = 0, demoBusy = false;
+try { demoStep = +localStorage.getItem("demoStep") || 0; } catch (e) {}
+function setDemo(i) { demoStep = i; try { localStorage.setItem("demoStep", String(i)); } catch (e) {} renderDemo(); }
+$("#demo-reset").addEventListener("click", () => setDemo(0));
+function waitFor(pred, timeoutMs) {
+  return new Promise((resolve) => {
+    const t0 = Date.now();
+    const iv = setInterval(() => { const v = pred(); if (v || Date.now() - t0 > timeoutMs) { clearInterval(iv); resolve(v); } }, 500);
+  });
+}
+async function runDemoStep(i) {
+  const d = P.demo, st = d.steps[i];
+  const args = { preset: d.preset, map_tag: d.map_tag, target: st.target || "", max_steps: $("#osg-steps").value || "400" };
+  demoBusy = true; renderDemo();
+  try {
+    if (st.kind === "check") {
+      const r = await call("osg_check", { preset: d.preset }, true);
+      if (r.ok) setDemo(i + 1); else toast("預檢沒過，看 ② 的清單", true);
+    } else if (st.kind === "pause") {
+      setDemo(i + 1);
+    } else if (st.kind === "map" || st.kind === "search") {
+      const unit = st.kind === "map" ? "map_run" : "search_run";
+      const r = await osgRun(unit, args); if (!r.ok) return;
+      await waitFor(() => ["running", "starting"].includes(osgState(unit)), 15000);
+      const end = await waitFor(() => !["running", "starting", "stopping"].includes(osgState(unit)) && osgState(unit), 3600e3);
+      const u = osgUnits()[unit] || {};
+      if (end === "stopped" && u.exit_code === 0) setDemo(i + 1);
+      else toast(`${st.label} 沒有正常結束（${end}），看「進度」的輸出`, true);
+    }
+  } finally { demoBusy = false; renderDemo(); }
+}
+let demoKey = "";
+function renderDemo() {
+  const d = P.demo; if (!d) return;
+  const key = `${demoStep}|${demoBusy}`;
+  if (key === demoKey) return;          // called on every state: rebuild only on a change
+  demoKey = key;
+  $("#demo-title").textContent = d.title || "";
+  const box = $("#demo-steps");
+  box.innerHTML = d.steps.map((st, i) => {
+    const cls = i < demoStep ? "done" : i === demoStep ? "now" : "";
+    const btn = i === demoStep ? `<button class="btn small primary" data-demo="${i}" ${demoBusy ? "disabled" : ""}>${
+      st.kind === "pause" ? "繼續" : demoBusy ? "進行中…" : "執行"}</button>` : "";
+    return `<div class="demo-step ${cls}"><span class="n">${i < demoStep ? "✓" : i + 1}</span>
+      <div><div>${esc(st.label)}</div><div class="help">${esc(st.help || "")}</div></div>${btn}</div>`;
+  }).join("") + (demoStep >= d.steps.length ? `<p class="hint">Demo 完成，結果在「進度」。</p>` : "");
+  box.querySelectorAll("[data-demo]").forEach((b) => (b.onclick = () => runDemoStep(+b.dataset.demo)));
+}
 
 resizeMap();
 connect();

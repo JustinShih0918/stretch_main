@@ -1,0 +1,38 @@
+# What the panel's OSG tab offers. Edit freely: the page reads this at load
+# (GET /api/osg_presets.json), no rebuild.
+
+# The two OSG presets the runner may start (osg_runner/osg_units.yaml lists the
+# same names; a name not there is refused).
+presets:
+  - id: stretch3_map
+    label: 一般搜尋
+    help: 找一個物體（建圖 + 搜尋），不做狀態檢查
+  - id: stretch3_extinguisher
+    label: 滅火器檢查
+    help: 分辨 #1/#2，找到後用 VLM 判斷好壞（需要 NVIDIA_API_KEY）
+    inspection: true
+
+# Quick-pick targets. Anything else can be typed.
+targets:
+  - {label: 椅子, target: chair}
+  - {label: 杯子, target: cup}
+  - {label: 瓶子, target: bottle}
+  - {label: 背包, target: backpack}
+  - {label: 滅火器, target: fire extinguisher, preset: stretch3_extinguisher}
+  - {label: "滅火器 #1", target: "fire extinguisher #1", preset: stretch3_extinguisher}
+  - {label: "滅火器 #2", target: "fire extinguisher #2", preset: stretch3_extinguisher}
+
+defaults:
+  map_tag: lab
+  max_steps: 400
+
+# The guided demo: each step is one button the operator presses in order.
+demo:
+  title: 滅火器 demo
+  preset: stretch3_extinguisher
+  map_tag: extinguisher_demo
+  steps:
+    - {kind: check, label: 預檢, help: 機器人、相機、SLAM、Nav2、模型都就緒}
+    - {kind: map, label: 建圖趟, target: fire extinguisher, help: 機器人探索並記住兩支滅火器（#1、#2）}
+    - {kind: pause, label: 移動滅火器, help: "把 #1 搬到別處（#2 不動），完成後按「繼續」"}
+    - {kind: search, label: "搜尋 #1 並檢查", target: "fire extinguisher #1", help: "從記憶中的位置出發，找到被移走的 #1，不能和 #2 搞混，再用 VLM 判斷好壞"}

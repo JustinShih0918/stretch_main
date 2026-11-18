@@ -89,7 +89,13 @@ services:
     volumes:
       - ../../src/semantic_nav/object_scene_graph:/workspace
       - weights-cache:/workspace/data/weights
-    command: ["bash"]
+      - ../../control_panel:/panel:ro
+    # The control panel's runner (control_panel/osg_runner): starts the
+    # perception servers and the map / search passes when the panel asks, on
+    # 127.0.0.1:18790 only. `docker exec -it osg-thor bash` still gives a shell
+    # for running scripts/run_robot.py by hand (docs/THOR.md).
+    restart: unless-stopped
+    command: ["python3", "/panel/osg_runner/runner.py", "--ws", "/workspace"]
 
   bridge:
     container_name: osg-bridge

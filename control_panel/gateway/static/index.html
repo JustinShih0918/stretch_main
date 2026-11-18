@@ -101,10 +101,67 @@
     <p class="hint center">按住搖桿移動，放開即停（鍵盤 W A S D）</p>
   </section>
 
-  <!-- ============================== 場景圖 -->
-  <section id="tab-sg" class="tab">
-    <div class="card"><h2>場景圖 Scene graph</h2>
-      <p class="hint">下一階段：在地圖上顯示 OSG 的物件與房間，並從這裡下達搜尋任務。</p></div>
+  <!-- ============================== OSG -->
+  <section id="tab-osg" class="tab">
+    <div class="card">
+      <h2>① 啟動 Start <span id="osg-runner" class="muted"></span></h2>
+      <div id="osg-perception" class="unit"></div>
+      <p class="hint">感知模型在 Thor 上載入約 90 秒。OSG 容器、ollama、bridge 由 Thor 的 docker compose 常駐。</p>
+    </div>
+
+    <div class="card">
+      <h2>② 預檢 Check</h2>
+      <div class="row wrap">
+        <button id="osg-check" class="btn primary">執行預檢</button>
+        <span id="osg-check-sum" class="muted"></span>
+      </div>
+      <div id="osg-checks"></div>
+    </div>
+
+    <div class="card">
+      <h2>③ 任務 Task</h2>
+      <div class="label">模式</div>
+      <div class="seg" id="osg-preset"></div>
+      <div class="label">目標（點選或輸入）</div>
+      <div class="row wrap" id="osg-targets"></div>
+      <div class="row" style="margin-top:8px">
+        <input id="osg-target" placeholder="例如 chair、fire extinguisher #1" autocomplete="off">
+      </div>
+      <div class="label">場景圖地圖名稱（建圖趟會存成這個名字）</div>
+      <div class="row">
+        <input id="osg-tag" autocomplete="off">
+        <select id="osg-tags"></select>
+      </div>
+      <div class="label">最多步數</div>
+      <div class="row"><input id="osg-steps" type="number" min="10" max="3000" style="max-width:120px"></div>
+      <div class="row wrap" style="margin-top:12px">
+        <button id="osg-map" class="btn primary">建圖趟</button>
+        <button id="osg-search" class="btn primary">搜尋趟</button>
+        <button id="osg-stop" class="btn danger">停止 OSG</button>
+      </div>
+      <p class="hint">建圖趟：探索並記住物體；搜尋趟：從存好的場景圖出發找目標。兩趟之間不要重開 SLAM。</p>
+    </div>
+
+    <div class="card">
+      <h2>④ Demo 流程 <span id="demo-title" class="muted"></span></h2>
+      <div id="demo-steps"></div>
+      <div class="row wrap"><button id="demo-reset" class="btn small">重新開始</button></div>
+    </div>
+
+    <div class="card">
+      <h2>進度 Progress <span id="osg-run-state" class="pill"></span></h2>
+      <div id="osg-stage" class="stage"></div>
+      <div id="osg-verdict"></div>
+      <div id="osg-events" class="events"></div>
+      <div class="label">OSG 輸出</div>
+      <div id="osg-log" class="log"></div>
+    </div>
+
+    <div class="card">
+      <h2>場景圖 Scene graph <span id="osg-graph-meta" class="muted"></span></h2>
+      <div id="osg-objects" class="objects"></div>
+      <p class="hint">物體也畫在「地圖」分頁上（橘色 = 目標）。</p>
+    </div>
   </section>
 </main>
 
@@ -112,7 +169,7 @@
   <button data-tab="system" class="on">系統</button>
   <button data-tab="map">地圖</button>
   <button data-tab="drive">駕駛</button>
-  <button data-tab="sg">場景圖</button>
+  <button data-tab="osg">OSG</button>
 </nav>
 <div id="toast"></div>
 <script src="app.js"></script>

@@ -21,16 +21,20 @@ import signal
 import time
 from pathlib import Path
 
-from . import ros_io
+from . import osg_io, ros_io
 from .core import clean_name
 from .webserver import WebServer, WsClient
 
 STATIC = Path(__file__).resolve().parent / "static"
 STATE_HZ = 5.0
-CALL_TIMEOUT_S = {"save_map": 120.0, "unit": 30.0}
+CALL_TIMEOUT_S = {"save_map": 120.0, "unit": 30.0, "osg_check": 20.0, "osg": 40.0}
+# OSG's camera topics on the robot (configs/ros2/stretch3.yaml): the check
+# looks for publishers of exactly these.
+OSG_RGB = os.environ.get("PANEL_OSG_RGB", "/camera/color/image_raw/compressed")
+OSG_DEPTH = os.environ.get("PANEL_OSG_DEPTH", "/camera/aligned_depth_to_color/image_raw/compressedDepth")
 
 
-def build(ros: "ros_io.RosIO") -> WebServer:
+def build(ros: "ros_io.RosIO", runner: "osg_io.OsgRunner") -> WebServer:
     def map_png(_q):
         png = ros.map_png
         return None if png is None else (200, "image/png", png)
@@ -39,6 +43,13 @@ def build(ros: "ros_io.RosIO") -> WebServer:
         ros.want_camera()
         jpg = ros.camera_jpeg
         return None if jpg is None else (200, "image/jpeg", jpg)
+
+    def osg_view(_q):
+        png = ros.osg_view_png
+        return None if png is None else (200, "image/png", png)
+
+    def osg_presets(_q):
+        return 200, "application/json", json.dumps(osg_io.load_presets()).encode()
 
     def health(_q):
         body = json.dumps({"ok": True, "node": ros.get_name(),
@@ -50,7 +61,7 @@ def build(ros: "ros_io.RosIO") -> WebServer:
         op = msg.get("op")
         rid = msg.get("id")
         try:
-            ok, message = await dispatch(op, msg)
+            ok, message = await dispatch(op, msg, client)
         except asyncio.TimeoutError:
             ok, message = False, f"{op}: no answer in time"
         except Exception as e:  # noqa: BLE001 -- the page shows it
@@ -60,7 +71,7 @@ def build(ros: "ros_io.RosIO") -> WebServer:
     async def wait(fut, op):
         return await asyncio.wait_for(asyncio.wrap_future(fut), CALL_TIMEOUT_S.get(op, 10.0))
 
-    async def dispatch(op: str, m: dict):
+    async def dispatch(op: str, m: dict, client: WsClient):
         if op == "unit":
             action = m.get("action")
             if action not in ("start", "stop", "restart"):
@@ -85,6 +96,22 @@ def build(ros: "ros_io.RosIO") -> WebServer:
         if op == "nav_cancel":
             ros.cancel_nav()
             return True, "cancelling the goal"
+        if op == "osg":
+            # start / stop a unit in the OSG container: perception, map_run, search_run
+            action = m.get("action")
+            if action not in ("start", "stop", "stop_all"):
+                return False, f"osg action {action!r}?"
+            req = {"op": action, "unit": str(m.get("unit", "")), "args": m.get("args") or {}}
+            return await asyncio.wait_for(asyncio.to_thread(runner.request, req), CALL_TIMEOUT_S["osg"])
+        if op == "osg_check":
+            preset = str(m.get("preset", ""))
+            need_vlm = bool(next((p.get("inspection") for p in osg_io.load_presets().get("presets", [])
+                                  if p.get("id") == preset), False))
+            checks = await asyncio.to_thread(osg_io.http_checks, runner, need_vlm)
+            checks += ros.ros_checks(OSG_RGB, OSG_DEPTH)
+            bad = [c for c in checks if c["ok"] is False and c["hard"]]
+            await client.send({"type": "osg_check", "checks": checks})
+            return (not bad), ("全部就緒" if not bad else f"{len(bad)} 項未就緒")
         if op == "set_pose":
             ros.set_pose(float(m["x"]), float(m["y"]), float(m.get("yaw", 0.0)))
             return True, "pose sent to /initialpose"
@@ -103,7 +130,7 @@ def build(ros: "ros_io.RosIO") -> WebServer:
             asyncio.ensure_future(call(client, msg))
 
     async def on_open(client: WsClient) -> None:
-        await client.send(ros.snapshot())
+        await client.send(dict(ros.snapshot(), osg=dict(ros.osg_snapshot(), runner=runner.snapshot())))
 
     async def on_close(client: WsClient) -> None:
         # A page that drove and then vanished must not leave the base moving.
@@ -111,6 +138,7 @@ def build(ros: "ros_io.RosIO") -> WebServer:
             ros.teleop.release()
 
     server = WebServer(STATIC, routes={"/api/map.png": map_png, "/api/camera.jpg": camera_jpg,
+                                       "/api/osg_view.png": osg_view, "/api/osg_presets.json": osg_presets,
                                        "/api/health": health},
                        on_ws_open=on_open, on_ws_message=on_message, on_ws_close=on_close)
     return server
@@ -118,7 +146,8 @@ def build(ros: "ros_io.RosIO") -> WebServer:
 
 async def run(host: str, port: int, cfg: dict) -> None:
     ros = ros_io.start(cfg)
-    server = build(ros)
+    runner = osg_io.OsgRunner()
+    server = build(ros, runner)
     listener = await server.serve(host, port)
     # rclpy's own SIGINT/SIGTERM handler only shuts ROS down; without these the
     # web server would carry on, serving a page with no robot behind it and
@@ -137,6 +166,7 @@ async def run(host: str, port: int, cfg: dict) -> None:
             break
         if server.clients:
             state = ros.snapshot(with_scan=(tick % 2 == 0))
+            state["osg"] = dict(ros.osg_snapshot(), runner=runner.snapshot())
             await server.broadcast(state)
         tick += 1
         try:
