@@ -52,6 +52,8 @@ latched `/panel/supervisor/state` (units, their last log lines, saved maps).
 
 ## Running it
 
+Step-by-step deployment on the real robot, with a troubleshooting table: [DEPLOY.md](DEPLOY.md) (中文).
+
 **On the Stretch: the supervisor.** It runs hello-robot's own install, so natively first:
 
 ```bash
