@@ -176,9 +176,8 @@ def rotate_frame(rgb: np.ndarray, depth: np.ndarray, intr: CameraIntrinsics,
 
     The Stretch's D435i is mounted portrait on the head, so the published image
     is the room on its side. Every downstream consumer assumes an upright
-    image: the detector was trained on upright photographs, `stair_sense` reads
-    the bottom of the frame as the ground, and the costmap's obstacle band is
-    a height band. Rotating here -- rather than anywhere later -- keeps that
+    image: the detector was trained on upright photographs, and the costmap's
+    obstacle band is a height band. Rotating here -- rather than anywhere later -- keeps that
     assumption true with one knob, `ros2.rotate_deg`.
 
     Positive is counter-clockwise. Which sign this camera needs is a

@@ -178,9 +178,7 @@ def admits(
     return True
 
 
-def container_children(
-    scene_graph, *, floor_key: Optional[int] = None, radius_m: float = 0.0
-) -> Dict[int, set]:
+def container_children(scene_graph, *, radius_m: float = 0.0) -> Dict[int, set]:
     """{container id: the track ids whose appearance it inherits}.
 
     The support relation first -- our `container_id` is the same "resting on"
@@ -203,8 +201,6 @@ def container_children(
         ids = {int(t) for t in (getattr(node, "track_ids", []) or [])}
         children[int(cid)] = ids
     for obj in getattr(scene_graph, "objects", []) or []:
-        if floor_key is not None and int(getattr(obj, "floor_id", 0)) != int(floor_key):
-            continue
         cid = getattr(obj, "container_id", None)
         if cid is not None:
             children.setdefault(int(cid), set()).add(int(obj.track_id))
@@ -214,10 +210,6 @@ def container_children(
         if centre is None or centre.size < 3:
             continue
         for other, node in containers.items():
-            if floor_key is not None and int(
-                getattr(node, "floor_id", getattr(node, "floor", 0))
-            ) != int(floor_key):
-                continue
             node_c = np.asarray(node.center, dtype=float)
             if float(np.hypot(centre[0] - node_c[0], centre[2] - node_c[2])) <= radius_m:
                 children.setdefault(int(other), set()).add(int(obj.track_id))
@@ -230,7 +222,6 @@ def container_feature_scores(
     text_ft: Optional[np.ndarray],
     *,
     skip_refuted: bool = True,
-    floor_key: Optional[int] = None,
     radius_m: float = 0.0,
 ) -> Dict[int, float]:
     """{container id: best cosine over what it holds and what it is}.
@@ -251,10 +242,8 @@ def container_feature_scores(
     containers = getattr(scene_graph, "containers", {}) or {}
     if not containers:
         return scores
-    children = container_children(scene_graph, floor_key=floor_key, radius_m=radius_m)
+    children = container_children(scene_graph, radius_m=radius_m)
     for cid, node in containers.items():
-        if floor_key is not None and int(getattr(node, "floor_id", getattr(node, "floor", 0))) != int(floor_key):
-            continue
         best: Optional[float] = None
         for tid in children.get(int(cid), ()):  # noqa: B007
             track = object_layer.get(int(tid)) if object_layer is not None else None
@@ -371,7 +360,7 @@ class FeatureMemory:
         self.counters["feature_crops_encoded"] += len(feats)
         return len(feats)
 
-    def best_near(self, centre_xy, tracks, *, floor_key=None) -> Optional[Any]:
+    def best_near(self, centre_xy, tracks) -> Optional[Any]:
         """DualMap's local inquiry: the track near this surface that looks most
         like the query. Argmax, never a threshold, so it always answers.
 
@@ -393,8 +382,6 @@ class FeatureMemory:
             if int(getattr(track, "n_obs", 0)) < min_obs:
                 continue
             if refuted(track) or int(track.id) in self._picked:
-                continue
-            if floor_key is not None and int(getattr(track, "floor_key", 0)) != int(floor_key):
                 continue
             ft = getattr(track, "clip_ft", None)
             if ft is None:

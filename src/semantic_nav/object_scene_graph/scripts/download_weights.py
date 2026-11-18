@@ -1,6 +1,6 @@
-"""Stage every optional model asset used by OSG and the ASCENT policies.
+"""Stage every optional model asset used by OSG.
 
-YOLOE/MobileCLIP, CLIP, PointNav and RedNet can be selected independently so
+YOLOE/MobileCLIP, CLIP and PointNav can be selected independently so
 CPU-only development does not pull large checkpoints accidentally.
 """
 from __future__ import annotations
@@ -14,7 +14,6 @@ POINTNAV_SOURCES = (
     "data/external/ascent/third_party/vlfm/data/pointnav_weights.pth",
     "relative_work/ascent/third_party/vlfm/data/pointnav_weights.pth",
 )
-REDNET_DRIVE_ID = "1U0dS44DIPZ22nTjw0RfO431zV-lMPcvv"
 
 
 def download_clip(name: str) -> None:
@@ -100,31 +99,6 @@ def stage_pointnav(source_name: str = "") -> None:
     print(f"pointnav ready: {destination} ({len(state)} tensors, strict load passed)")
 
 
-def download_rednet() -> None:
-    """Fetch and validate ASCENT's 40-class RedNet checkpoint."""
-    import urllib.request
-
-    import torch
-
-    destination = Path("data/weights/rednet_semmap_mp3d_40.pth")
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    if not destination.exists():
-        url = (
-            "https://drive.usercontent.google.com/download?export=download&confirm=t"
-            f"&id={REDNET_DRIVE_ID}"
-        )
-        urllib.request.urlretrieve(url, destination)
-    try:
-        checkpoint = torch.load(destination, map_location="cpu", weights_only=False)
-        state = checkpoint.get("model_state", checkpoint)
-        output = state["module.final_deconv_custom.bias"].shape[0]
-        if output != 40:
-            raise ValueError(f"expected 40 output classes, got {output}")
-    except Exception as exc:
-        raise SystemExit(f"RedNet checkpoint validation failed: {destination}: {exc}") from exc
-    print(f"rednet ready: {destination} ({destination.stat().st_size} bytes)")
-
-
 def download_yoloe(profile: str) -> None:
     destination = Path("data/weights")
     destination.mkdir(parents=True, exist_ok=True)
@@ -149,7 +123,6 @@ def main() -> None:
     p.add_argument("--clip-name", default="ViT-B/32")
     p.add_argument("--pointnav", action="store_true")
     p.add_argument("--pointnav-src", default="")
-    p.add_argument("--rednet", action="store_true")
     args = p.parse_args()
     requested = False
     if args.clip:
@@ -157,9 +130,6 @@ def main() -> None:
         requested = True
     if args.pointnav:
         stage_pointnav(args.pointnav_src)
-        requested = True
-    if args.rednet:
-        download_rednet()
         requested = True
     if not requested:
         download_yoloe(args.profile)

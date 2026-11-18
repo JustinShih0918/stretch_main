@@ -2,6 +2,11 @@
 > stretch_main's sim container (conda envs from `scripts/scene_graph_demo/install_osg_envs.sh`).
 > Setup: [scripts/scene_graph_demo/README.md](../../../scripts/scene_graph_demo/README.md).
 > Local changes: [VENDORED.md](VENDORED.md).
+>
+> **Single-floor copy.** Multi-floor support (storey estimation, per-storey maps, stairs,
+> climbing, the `/osg/floor` switch) and the ASCENT transcription (`src/navigation/`,
+> `ascentnav`) were removed from this vendored copy; see [VENDORED.md](VENDORED.md). The paper text
+> and tables below describe the upstream multi-floor system.
 
 <div align="center">
 
@@ -113,13 +118,12 @@ Pass-1 maps are built once with `scripts/campaign/rebuild_maps.sh` / `scripts/ru
 
 <div align="center"><img src="docs/assets/robot_setup.jpg" alt="Hello Robot Stretch 3 with a Jetson AGX Thor" width="70%"></div>
 
-A Hello Robot Stretch 3 keeps its own Nav2 navigation and localisation; a Jetson AGX Thor beside it runs perception, the scene graph and the belief revision and publishes goal poses — *the pipeline keeps doing all of the thinking and stops steering.* Nav2's map is 2-D, so the storey is declared by the operator (`/osg/floor`), and a wheeled robot takes the lift. [docs/ROS2.md](docs/ROS2.md) is the layer, [docs/THOR.md](docs/THOR.md) the deployment:
+A Hello Robot Stretch 3 keeps its own Nav2 navigation and localisation; a Jetson AGX Thor beside it runs perception, the scene graph and the belief revision and publishes goal poses — *the pipeline keeps doing all of the thinking and stops steering.* This copy maps and searches one storey. [docs/ROS2.md](docs/ROS2.md) is the layer, [docs/THOR.md](docs/THOR.md) the deployment:
 
 ```bash
 python scripts/run_robot.py +experiment=stretch3_map    ros2.map_tag=lab ros2.target='sports ball'   # pass 1
-# move the ball upstairs
+# move the ball
 python scripts/run_robot.py +experiment=stretch3_search ros2.map_tag=lab ros2.target='sports ball'   # pass 2
-bash scripts/ros2/switch_floor.sh 1 lab_upstairs                                                     # after the lift
 ```
 
 Check the whole path with no robot present: `bash scripts/ros2/check_pipeline.sh`.
@@ -129,7 +133,6 @@ Check the whole path with no robot present: `bash scripts/ros2/check_pipeline.sh
 | | |
 |---|---|
 | `src/osg/` | the pipeline: `perception` → `objects` → `mapping` → `graph` → `exploration` → `planning` → `verification` → `agent` → `sim` / `eval` / `ros2` |
-| `src/navigation/` | a line-by-line transcription of ASCENT's control flow, run in the same harness as the reference policy |
 | `configs/` | Hydra groups backed by typed dataclasses; `configs/experiment/` the presets the paper's arms are made of, `archive/` the exploratory ladders |
 | `scripts/` | entry points, model servers, downloads, `analyze_*` diagnostics, `render_*` figure renderers, `ros2/`, `video/`; `legacy/` the one-off probes behind `docs/history/` |
 | `tests/` | `unit/` (synthetic, CPU) with two golden files that pin every calibrated constant and every preset's composition; `integration/` (`-m sim`) |

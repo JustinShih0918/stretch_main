@@ -39,7 +39,6 @@ FLAGS = {
     "move_timeout_s": "--move-timeout-s",
     "head_traj_action": "--head-traj-action",
     "head_tilt_joint": "--head-tilt-joint",
-    "floor_topic": "--floor-topic",
 }
 
 

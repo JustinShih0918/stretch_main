@@ -6,7 +6,8 @@
 #   - forced-choice VLM verify (verification=nim) -- rejects detector mislabels
 #     (e.g. stool->chair) before committing
 #   - MULTI-FLOOR: per-floor costmaps, 3D navmesh goals, portal-based cross-floor
-#     exploration timed by target-category context (docs/history/MULTI_FLOOR.md)
+#     exploration timed by target-category context. REMOVED from this
+#     single-floor copy, so the preset no longer reproduces the numbers below.
 #
 # Measured on full v1 (100 episodes):
 #   flags off                       SR 40.0  SPL 0.200  single 68.6  multi 24.6  cross  0.0
@@ -25,25 +26,14 @@ defaults:
 agent:
   success_distance: 0.18
   use_habitat_navmesh: true
-  # Snap navmesh goals at the TARGET's floor, not the agent's own height --
-  # without this every cross-floor candidate reads as unreachable.
-  navmesh_3d_goals: true
 
 exploration:
   # Rank frontiers by a path cost measured to the free-snapped centroid: the
   # costmap planner often cannot reach an UNKNOWN frontier cell, which collapsed
   # whole selection rounds (select_none 128 -> 7 per 100 episodes). The agent
   # still DRIVES to the frontier cell -- moving the drive goal too costs
-  # coverage (single-floor explore-failures 0 -> 3). See MULTI_FLOOR.md.
+  # coverage (single-floor explore-failures 0 -> 3).
   frontier_cost_free_cell: true
-
-floor:
-  enabled: true
-  estimate_only: false
-  per_floor_costmap: true
-  cross_floor: true
-  # floor.stairs stays OFF: the geometric stair detector does not detect
-  # staircases (flat tread interiors fragment the region). See MULTI_FLOOR.md.
 
 eval:
   num_episodes: 100

@@ -316,3 +316,47 @@ def test_the_driver_records_what_it_last_returned():
     d = _at(_driver(FakeBackend(state="succeeded")), (0.0, 0.0))
     d.step(np.array([5.0, 0.0]))
     assert d.last_action is None
+
+
+# ---------------------------------------------------------------- wedged
+
+
+def test_a_base_that_cannot_move_backs_out_then_posts_the_goal_again():
+    """outputs/20261113_182013: the Stretch drove into a supply cart, and every
+    goal after that was accepted by Nav2 and went nowhere for 200 steps."""
+    b = FakeBackend()
+    d = _driver(b, wedged_steps=4)
+    goal = np.array([5.0, 0.0])
+    cancels = b.cancels
+    steps = [_at(d, (1.0, 0.0)).step(goal) for _ in range(4)]
+    assert [s.action for s in steps[:3]] == [DRIVING] * 3
+    assert steps[3] == ("move_backward", "moving") and b.cancels == cancels + 1 and d.n_escapes == 1
+    assert not d.consume_tick()[1]                       # the base is the FSM's to move
+    rest = [_at(d, (0.8, 0.0)).step(goal).action for _ in range(2)]
+    assert rest == ["move_backward", "turn_left"]
+    n = len(b.goals)
+    assert _at(d, (0.6, 0.0)).step(goal) == (DRIVING, "moving") and len(b.goals) == n + 1
+
+
+def test_turning_in_place_is_not_wedged():
+    b = FakeBackend()
+    d = _driver(b, wedged_steps=3)
+    for k in range(6):
+        T = np.eye(4)
+        a = np.radians(30.0 * k)
+        T[:3, :3] = np.array([[np.cos(a), 0, np.sin(a)], [0, 1, 0], [-np.sin(a), 0, np.cos(a)]])
+        T[0, 3], T[1, 3], T[2, 3] = 1.0, 0.88, 0.0
+        d.observe(make_frame(_K, T))
+        assert d.step(np.array([5.0, 0.0])).action == DRIVING
+    assert d.n_escapes == 0
+
+
+def test_a_base_that_moves_is_never_wedged_and_the_check_can_be_off():
+    b = FakeBackend()
+    d = _driver(b, wedged_steps=3)
+    for k in range(8):
+        assert _at(d, (0.3 * k, 0.0)).step(np.array([9.0, 0.0])).action == DRIVING
+    off = _driver(FakeBackend())
+    for _ in range(30):
+        assert _at(off, (1.0, 0.0)).step(np.array([9.0, 0.0])).action == DRIVING
+    assert d.n_escapes == off.n_escapes == 0

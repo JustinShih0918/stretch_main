@@ -3,8 +3,8 @@
 Runs on the SYSTEM python3.10 (`/opt/ros/humble` is built against it), never
 inside a conda env -- `scripts/ros2/bridge.sh` is the only supported way to
 start it. Everything it does is mechanical: cache the newest synchronised
-frame, hand goals to `NavigateToPose`, meter a discrete move on cmd_vel, and
-pass the operator's floor switch through. No decisions, no conversions; the
+frame, hand goals to `NavigateToPose`, and meter a discrete move on cmd_vel.
+No decisions, no conversions; the
 pipeline side owns both (osg/ros2/frames.py).
 
 Images are decoded with numpy rather than cv_bridge, and quaternions turned by
@@ -127,7 +127,6 @@ class BridgeNode:
         from rclpy.action import ActionClient
         from rclpy.node import Node
         from sensor_msgs.msg import CameraInfo, Image
-        from std_msgs.msg import Int32
         from tf2_ros import Buffer, TransformListener
 
         import message_filters
@@ -138,7 +137,6 @@ class BridgeNode:
         self._frame: Optional[dict] = None
         self._seq = 0
         self._info = None
-        self._floor: Optional[int] = None
         self._goal_handle = None
         self._goal_id = 0
         self._goal_state = "idle"
@@ -170,7 +168,6 @@ class BridgeNode:
         self._sync.registerCallback(self._on_images)
         self.node.create_subscription(
             CameraInfo, args.camera_info_topic, self._on_info, qos)
-        self.node.create_subscription(Int32, args.floor_topic, self._on_floor, qos)
 
         self._cmd_vel = self.node.create_publisher(Twist, args.cmd_vel_topic, qos)
         # The goal as handed to Nav2, republished for RViz (scripts/ros2/osg.rviz).
@@ -187,6 +184,7 @@ class BridgeNode:
         self._image_pubs: dict = {}  # topic -> publisher, see publish_image
         self._marker_pubs: dict = {}  # likewise, see publish_markers
         self._grid_pubs: dict = {}    # likewise, see publish_grid
+        self._text_pubs: dict = {}    # likewise, see publish_text
         self._nav = ActionClient(self.node, NavigateToPose, args.nav_action)
         self._head = ActionClient(
             self.node, FollowJointTrajectory, args.head_traj_action)
@@ -199,12 +197,6 @@ class BridgeNode:
 
     def _on_info(self, msg) -> None:
         self._info = (np.asarray(msg.k, dtype=float).copy(), int(msg.width), int(msg.height))
-
-    def _on_floor(self, msg) -> None:
-        with self._lock:
-            self._floor = int(msg.data)
-            self._lock.notify_all()
-        self.node.get_logger().info(f"floor switch -> {int(msg.data)}")
 
     def _on_images(self, rgb_msg, depth_msg) -> None:
         if self._info is None:
@@ -486,6 +478,10 @@ class BridgeNode:
         """
         if action == "move_forward":
             return self._drive(distance_m=float(forward_m), yaw_deg=0.0)
+        if action == "move_backward":
+            # Only the inspection uses it: back out of a stop too close to see
+            # the whole object, along the way the robot came in.
+            return self._drive(distance_m=float(forward_m), yaw_deg=0.0, reverse=True)
         if action == "turn_left":
             return self._drive(distance_m=0.0, yaw_deg=float(turn_deg))
         if action == "turn_right":
@@ -501,7 +497,7 @@ class BridgeNode:
         R = F.quat_to_matrix(r.x, r.y, r.z, r.w)
         return np.array([t.x, t.y]), float(np.arctan2(R[1, 0], R[0, 0]))
 
-    def _drive(self, distance_m: float, yaw_deg: float) -> dict:
+    def _drive(self, distance_m: float, yaw_deg: float, reverse: bool = False) -> dict:
         start_xy, start_yaw = self._base_pose()
         target_yaw = np.radians(yaw_deg)
         twist = self._Twist()
@@ -514,7 +510,7 @@ class BridgeNode:
                 achieved = float(np.linalg.norm(xy - start_xy))
                 if achieved >= distance_m:
                     break
-                twist.linear.x = float(self.args.linear_speed)
+                twist.linear.x = -float(self.args.linear_speed) if reverse else float(self.args.linear_speed)
                 twist.angular.z = 0.0
             else:
                 achieved = float(np.arctan2(np.sin(yaw - start_yaw),
@@ -532,7 +528,7 @@ class BridgeNode:
         self._cmd_vel.publish(self._Twist())
 
     def look(self, tilt_delta_deg: float) -> dict:
-        """Tilt the head. `stair_sense` and the close look both use this."""
+        """Tilt the head."""
         from builtin_interfaces.msg import Duration as MsgDuration
         from trajectory_msgs.msg import JointTrajectoryPoint
 
@@ -548,11 +544,6 @@ class BridgeNode:
         self._head.send_goal_async(goal)
         self._tilt = float(target)
         return {"tilt_deg": float(np.degrees(target))}
-
-    def pop_floor_switch(self) -> dict:
-        with self._lock:
-            floor, self._floor = self._floor, None
-        return {"floor": floor}
 
     def publish_markers(self, topic: str, markers: list, frame_id: str = "map") -> dict:
         """Republish pipeline-side geometry as a MarkerArray for RViz.
@@ -610,7 +601,7 @@ class BridgeNode:
         `grid` is Costmap2D's array: grid[i, j] at pipeline (x, z) =
         origin + (i, j) * resolution, values UNKNOWN -1 / FREE 0 / OCCUPIED 100
         -- OccupancyGrid's own vocabulary. ROS's y is -z, so rows and columns
-        swap and the z axis flips; `z` lifts the grid for a stacked storey.
+        swap and the z axis flips; `z` lifts the grid off the floor.
         Latched, so a window opened mid-run gets the current map at once.
         /osg/* only, as publish_image.
         """
@@ -672,6 +663,27 @@ class BridgeNode:
         pub.publish(msg)
         return {"published": True}
 
+    def publish_text(self, topic: str, text: str) -> dict:
+        """Republish a pipeline-side status line as std_msgs/String.
+
+        For state that is neither a picture nor geometry: the scene graph as
+        JSON (DebugStream), the inspection's progress and verdict
+        (scripts/run_robot.py). Latched, so a window opened mid-run gets the
+        current state at once. /osg/* only, as publish_image.
+        """
+        from rclpy.qos import DurabilityPolicy, QoSProfile
+        from std_msgs.msg import String
+
+        if not str(topic).startswith("/osg/"):
+            raise ValueError(f"publish_text is for /osg/* topics, not {topic!r}")
+        pub = self._text_pubs.get(topic)
+        if pub is None:
+            pub = self.node.create_publisher(
+                String, topic, QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL))
+            self._text_pubs[topic] = pub
+        pub.publish(String(data=str(text)))
+        return {"published": True}
+
     def get_last_goal(self):
         return self.last_goal
 
@@ -680,9 +692,9 @@ class BridgeNode:
             "ping": self.ping, "get_frame": self.get_frame,
             "send_goal": self.send_goal, "nav_status": self.nav_status,
             "cancel": self.cancel, "execute": self.execute, "look": self.look,
-            "pop_floor_switch": self.pop_floor_switch, "last_goal": self.get_last_goal,
+            "last_goal": self.get_last_goal,
             "publish_image": self.publish_image, "publish_markers": self.publish_markers,
-            "publish_grid": self.publish_grid,
+            "publish_grid": self.publish_grid, "publish_text": self.publish_text,
         }
 
 
@@ -743,7 +755,6 @@ def parse_args(argv=None):
     p.add_argument("--head-traj-action",
                    default="/stretch_controller/follow_joint_trajectory")
     p.add_argument("--head-tilt-joint", default="joint_head_tilt")
-    p.add_argument("--floor-topic", default="/osg/floor")
     # Bridge-only, like --cancel-settle-s: a visualisation topic is not a
     # pipeline setting, so it has no field in the ros2 config group.
     p.add_argument("--goal-topic", default="/osg/goal")

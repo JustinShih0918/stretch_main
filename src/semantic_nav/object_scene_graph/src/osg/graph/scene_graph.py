@@ -1,4 +1,4 @@
-"""Hierarchical scene graph: building -> room -> object.
+"""Hierarchical scene graph: room -> container -> object.
 
 Kept as plain dataclasses over the live ObjectLayer (object nodes are thin
 views over tracks; the graph never owns object state). Object-object "near"
@@ -6,29 +6,58 @@ edges are derived on demand during serialization.
 """
 from __future__ import annotations
 
-from collections import Counter
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
-from ..mapping.costmap import HEIGHT_AXIS, PLANE, Costmap2D
+from ..mapping.costmap import PLANE, Costmap2D
 from ..objects.object_layer import ObjectLayer
 from . import containers as containers_mod
 
-ROOM_IDS_PER_FLOOR = 1_000_000
+# `SceneGraph._member_geometry`: what it memoises, in index order.
+_TOP, _AREA, _QUERY, _BOTTOM = range(4)
+_GEOMETRY = (
+    containers_mod.top_height,
+    lambda center, e: containers_mod.footprint_area(e),
+    containers_mod.footprint_query,
+    containers_mod.bottom_height,
+)
+_GEOMETRY_MEMO_MAX = 50_000
+_UNSET = object()
+# `SceneGraph._nearest_room_indexed`: how far from the vectorised minimum a
+# room is still re-measured exactly. Room centroids are metres; the two
+# computations differ by ~1e-15 of that.
+_ROOM_PREFILTER_TOL_M = 1e-6
 
 
-@dataclass
-class FloorNode:
-    """A storey. The missing middle of the advertised building -> room -> object
-    hierarchy (docs/history/MULTI_FLOOR.md); ids come from mapping.floors.FloorEstimator
-    and are creation-ordered, so never infer "upstairs" from the id."""
+def _room_cells(room_labels: np.ndarray) -> List[Tuple[int, np.ndarray, int]]:
+    """(label, centroid (row, col), n_cells) of every non-zero label, ascending.
 
-    id: int
-    height_y: float
-    label: Optional[str] = None
-    room_ids: List[int] = field(default_factory=list)
+    What `np.unique` + one `argwhere(labels == rid).mean(0)` per room gave,
+    from three bincounts: the unique-sort of the whole grid was 39% of the
+    rebuild, every keyframe (cProfile, 00862 s42). The centroid sums are sums
+    of integers, exact in float64 either way, so every value is the one the
+    per-room loop computed. Labels that are not non-negative integers take the
+    per-room loop."""
+    labels = np.asarray(room_labels)
+    if labels.size == 0 or not np.issubdtype(labels.dtype, np.integer) or int(labels.min()) < 0:
+        out = []
+        for rid in np.unique(labels):
+            if rid == 0:
+                continue
+            mask = labels == rid
+            out.append((int(rid), np.argwhere(mask).mean(axis=0), int(mask.sum())))
+        return out
+    flat = labels.ravel()
+    counts = np.bincount(flat)
+    rows, cols = np.indices(labels.shape)
+    sum_r = np.bincount(flat, weights=rows.ravel().astype(float), minlength=len(counts))
+    sum_c = np.bincount(flat, weights=cols.ravel().astype(float), minlength=len(counts))
+    return [
+        (int(rid), np.array([sum_r[rid] / counts[rid], sum_c[rid] / counts[rid]]), int(counts[rid]))
+        for rid in np.nonzero(counts)[0] if rid != 0
+    ]
 
 
 @dataclass
@@ -37,16 +66,7 @@ class RoomNode:
     label: Optional[str] = None  # e.g. "bedroom"; set by the LLM, cached
     centroid_xy: np.ndarray = field(default_factory=lambda: np.zeros(2))
     n_cells: int = 0
-    floor: int = 0
     container_ids: List[int] = field(default_factory=list)
-
-    @property
-    def floor_id(self) -> int:
-        return self.floor
-
-    @floor_id.setter
-    def floor_id(self, value: int) -> None:
-        self.floor = int(value)
 
 
 @dataclass
@@ -67,16 +87,7 @@ class ContainerNode:
     top_h: float  # world height of the support surface
     area_m2: float  # ground footprint area, summed over members
     room_id: int = 0
-    floor: int = 0
     object_ids: List[int] = field(default_factory=list)
-
-    @property
-    def floor_id(self) -> int:
-        return self.floor
-
-    @floor_id.setter
-    def floor_id(self, value: int) -> None:
-        self.floor = int(value)
 
 
 @dataclass
@@ -87,21 +98,12 @@ class ObjectNodeView:
     room_id: int  # 0 = unassigned
     n_obs: int
     best_crop: Optional[np.ndarray] = None
-    floor: int = 0
     # None = resting on no mapped surface. Deliberately NOT a reason to drop the
     # object: DualMap deletes a high-mobility detection with no supporting
     # anchor (utils/local_map_manager.py:316), which is why a mug on the floor
     # is unmappable there.
     container_id: Optional[int] = None
     p_rel: Optional[np.ndarray] = None  # container-relative centre, R_c^T (t_o - t_c)
-
-    @property
-    def floor_id(self) -> int:
-        return self.floor
-
-    @floor_id.setter
-    def floor_id(self, value: int) -> None:
-        self.floor = int(value)
 
 
 class SceneGraph:
@@ -118,7 +120,6 @@ class SceneGraph:
     ) -> None:
         self.rooms: Dict[int, RoomNode] = {}
         self.objects: List[ObjectNodeView] = []
-        self.floors: Dict[int, FloorNode] = {}
         self.containers: Dict[int, ContainerNode] = {}
         self._container_top_h_m = tuple(container_top_h_m)
         self._container_min_area_m2 = float(container_min_area_m2)
@@ -126,122 +127,52 @@ class SceneGraph:
         self._container_min_obs = int(container_min_obs)
         self._container_min_score = float(container_min_score)
         self._container_merge_m = float(container_merge_m)
-        # Measure a support surface's height from ITS OWN floor, not from y=0.
-        self._containers_floor_relative = bool(containers_floor_relative)
         self._container_merge_sigma = float(container_merge_sigma)
+        # Measure a support surface's top from the floor, not from y=0.
+        self._containers_floor_relative = bool(containers_floor_relative)
+        # Per-member container geometry, memoised on the exact bytes it reads
+        # (`_member_geometry`), and the room arrays `_nearest_room` prefilters
+        # with: None outside `rebuild`, `()` until first built inside it, alive
+        # only while `rebuild` holds the rooms fixed.
+        self._geometry_memo: Dict[tuple, list] = {}
+        self._room_index: Optional[tuple] = None
 
     def rebuild(
         self,
         room_labels: np.ndarray,  # (H, W) int32 room-id map (0 = none)
         costmap: Costmap2D,
         object_layer: ObjectLayer,
-        floors=None,  # mapping.floors.FloorEstimator, or None
+        floor_y: float = 0.0,
     ) -> None:
         """Rebuild the graph over the live object layer.
 
-        `floors` is optional: without it every node lands on floor 0, which is
-        exactly the previous single-floor behaviour. With it, an object's storey
-        comes from its 3D centre height -- the height that used to be discarded
-        here, so a bed upstairs and a bed directly below it were one node's
-        worth of ambiguity to every consumer.
+        `floor_y` is the world height of the ground plane, which surface tops
+        are measured from under `containers_floor_relative`.
+
+        Rooms keep the LLM label they were given last round when their id
+        survives re-segmentation (`VoronoiRoomSegmenter` stabilises ids).
         """
-        # Compatibility path for the original single-grid world model.  The
-        # floor-aware agent calls rebuild_floor() directly; callers that still
-        # pass a FloorEstimator retain the former height-inference behavior.
         prev_room_names = {rid: room.label for rid, room in self.rooms.items()}
         self.rooms = {}
-        for rid in np.unique(room_labels):
-            if rid == 0:
-                continue
-            mask = room_labels == rid
-            rc = np.argwhere(mask).mean(axis=0)
-            self.rooms[int(rid)] = RoomNode(
-                id=int(rid), label=prev_room_names.get(int(rid)),
-                centroid_xy=costmap.grid_to_world(rc), n_cells=int(mask.sum()),
+        for rid, rc, n_cells in _room_cells(room_labels):
+            self.rooms[rid] = RoomNode(
+                id=rid, label=prev_room_names.get(rid),
+                centroid_xy=costmap.grid_to_world(rc), n_cells=n_cells,
             )
         self.objects = []
-        for track in object_layer.tracks():
-            center = object_layer.center_of(track)
-            floor_id = (
-                floors.floor_of_height(float(center[HEIGHT_AXIS]))
-                if floors is not None and floors.levels else 0
-            )
-            self.objects.append(ObjectNodeView(
-                track_id=track.id, label=track.label, center=center,
-                room_id=self._room_at(center[list(PLANE)], room_labels, costmap),
-                n_obs=track.n_obs, best_crop=track.best_crop, floor=floor_id,
-            ))
-        self._rebuild_containers(object_layer, room_labels, costmap, floor_key=None)
-        self._rebuild_floors(floors)
-
-    def rebuild_floor(
-        self,
-        room_labels: np.ndarray,
-        costmap: Costmap2D,
-        object_layer: ObjectLayer,
-        floor_key: Optional[int] = 0,
-        floor_height: float = 0.0,
-    ) -> None:
-        """Replace one storey's derived nodes while retaining every other.
-
-        Room labels are local to a floor's segmenter, so their public IDs are
-        namespaced by the stable floor key.  Floor zero deliberately keeps the
-        historical IDs unchanged.
-        """
-        floor_key = int(floor_key)
-        base = floor_key * ROOM_IDS_PER_FLOOR
-        prev_room_names = {rid: r.label for rid, r in self.rooms.items()}
-        self.rooms = {
-            rid: room for rid, room in self.rooms.items()
-            if room.floor_id != floor_key
-        }
-        for rid in np.unique(room_labels):
-            if rid == 0:
-                continue
-            mask = room_labels == rid
-            rc = np.argwhere(mask).mean(axis=0)
-            gid = base + int(rid)
-            self.rooms[gid] = RoomNode(
-                id=gid,
-                label=prev_room_names.get(gid),
-                centroid_xy=costmap.grid_to_world(rc),
-                n_cells=int(mask.sum()),
-                floor=floor_key,
-            )
-
-        self.objects = [o for o in self.objects if o.floor_id != floor_key]
-        for track in object_layer.tracks():
-            if int(getattr(track, "floor_key", 0)) != floor_key:
-                continue
-            center = object_layer.center_of(track)
-            room_id = self._room_at(
-                center[list(PLANE)], room_labels, costmap, floor_key=floor_key
-            )
-            self.objects.append(
-                ObjectNodeView(
-                    track_id=track.id,
-                    label=track.label,
-                    center=center,
-                    room_id=room_id,
-                    n_obs=track.n_obs,
-                    best_crop=track.best_crop,
-                    floor=floor_key,
-                )
-            )
-
-        self._rebuild_containers(
-            object_layer, room_labels, costmap, floor_key=floor_key,
-            floor_height=float(floor_height),
-        )
-        self.floors[floor_key] = FloorNode(
-            id=floor_key,
-            height_y=float(floor_height),
-            label=self.floors.get(floor_key, FloorNode(floor_key, floor_height)).label,
-            room_ids=sorted(
-                rid for rid, room in self.rooms.items()
-                if room.floor_id == floor_key
-            ),
-        )
+        # The rooms are fixed from here to the end of the container rebuild.
+        self._room_index = ()
+        try:
+            for track in object_layer.tracks():
+                center = object_layer.center_of(track)
+                self.objects.append(ObjectNodeView(
+                    track_id=track.id, label=track.label, center=center,
+                    room_id=self._room_at(center[list(PLANE)], room_labels, costmap),
+                    n_obs=track.n_obs, best_crop=track.best_crop,
+                ))
+            self._rebuild_containers(object_layer, room_labels, costmap, floor_y)
+        finally:
+            self._room_index = None
 
     def _merge_pass(self, ids, footprints, merge_m: float, merge_sigma: float):
         """One sweep of duplicate-container merging; returns the survivors.
@@ -299,43 +230,30 @@ class SceneGraph:
         return keep
 
     def _room_at(
-        self, xy: np.ndarray, room_labels: np.ndarray, costmap: Costmap2D,
-        floor_key: int = 0,
+        self, xy: np.ndarray, room_labels: np.ndarray, costmap: Costmap2D
     ) -> int:
         rc = costmap.world_to_grid(xy)
         if costmap.in_bounds(rc) and room_labels[rc[0], rc[1]] > 0:
-            base = 0 if floor_key is None else floor_key * ROOM_IDS_PER_FLOOR
-            return base + int(room_labels[rc[0], rc[1]])
-        return self._nearest_room(xy, floor_id=floor_key)
+            return int(room_labels[rc[0], rc[1]])
+        return self._nearest_room(xy)
 
     def _rebuild_containers(
         self, object_layer: ObjectLayer, room_labels: np.ndarray, costmap: Costmap2D,
-        floor_key: Optional[int] = 0, floor_height: float = 0.0,
+        floor_y: float = 0.0,
     ) -> None:
         """Attach the container layer between rooms and objects.
 
         Recomputed from scratch every rebuild, like linking.relink -- there is no
         incremental state to drift. Tracks without an ellipsoid (the fakes in
-        tests/unit/test_scene_graph_floors.py, and anything a future data source
-        supplies pose-only) simply never qualify, so this is a no-op rather than
-        an error on such a layer.
+        unit tests, and anything a future data source supplies pose-only) simply
+        never qualify, so this is a no-op rather than an error on such a layer.
         """
-        self.containers = ({
-            cid: node for cid, node in self.containers.items()
-            if node.floor_id != floor_key
-        } if floor_key is not None else {})
+        self.containers = {}
         for room in self.rooms.values():
-            if floor_key is None or room.floor_id == floor_key:
-                room.container_ids = []
+            room.container_ids = []
 
-        tracks = {
-            t.id: t for t in object_layer.tracks()
-            if floor_key is None or int(getattr(t, "floor_key", 0)) == floor_key
-        }
-        views = {
-            o.track_id: o for o in self.objects
-            if floor_key is None or o.floor_id == floor_key
-        }
+        tracks = {t.id: t for t in object_layer.tracks()}
+        views = {o.track_id: o for o in self.objects}
 
         # 1. Linked components: an L-shaped sofa split across two ellipsoids is
         #    ONE surface. relink() gives every member the full component, so the
@@ -379,28 +297,15 @@ class SceneGraph:
                 continue
             # Top is the MAX over members (the tallest part of the surface);
             # area is the SUM (both halves of the sofa hold things).
-            top = max(containers_mod.top_height(views[i].center, e) for i, e in geoms)
-            area = sum(containers_mod.footprint_area(e) for _, e in geoms)
-            # `container_top_h_m` is a band ABOVE THE FLOOR -- 0.2 to 1.4 m, the
-            # height range a thing can be set down on -- while `top_height` is an
-            # absolute world height. On the ground floor the two coincide and
-            # nobody noticed. On any storey above it they do not: 00808's upper
-            # floor sits at y=2.86, so every table top there measures ~3.6 and
-            # fails a 1.4 m ceiling. Measured on that scene's prior map, 367
-            # tracks on floor 1 produced ZERO containers against floor 0's 76.
-            #
-            # The consequences run through the whole multi-storey line. The
-            # container posterior can propose no surface on an upper floor, and
-            # `_select_surface`'s per-floor mass -- the thing that chooses a
-            # storey -- has an entry only for the ground floor, so an agent
-            # standing upstairs computes floor_mass {'0': 48.2} and asks to go
-            # down, every round, whatever it is looking for.
-            #
-            # `ContainerNode.top_h` stays absolute: `build_container_candidates`
-            # subtracts the floor height itself, and the two must not both do it.
+            top = max(self._member_geometry(views[i].center, e, _TOP) for i, e in geoms)
+            area = sum(self._member_geometry(views[i].center, e, _AREA) for i, e in geoms)
+            # `container_top_h_m` is a band above the floor, and `top_height`
+            # an absolute world height; they coincide only with the floor at
+            # y=0. `ContainerNode.top_h` stays absolute:
+            # `build_container_candidates` subtracts the floor height itself.
             if not containers_mod.qualifies(
                 rep.label,
-                top - float(floor_height) if self._containers_floor_relative else top,
+                top - float(floor_y) if self._containers_floor_relative else top,
                 area,
                 top_h_m=self._container_top_h_m,
                 min_area_m2=self._container_min_area_m2,
@@ -409,7 +314,7 @@ class SceneGraph:
             shadows = [
                 q
                 for q in (
-                    containers_mod.footprint_query(views[i].center, e) for i, e in geoms
+                    self._member_geometry(views[i].center, e, _QUERY) for i, e in geoms
                 )
                 if q is not None
             ]
@@ -422,11 +327,7 @@ class SceneGraph:
                 center=view.center.copy(),
                 top_h=top,
                 area_m2=area,
-                room_id=self._room_at(
-                    view.center[list(PLANE)], room_labels, costmap,
-                    floor_key=floor_key,
-                ),
-                floor=view.floor_id,
+                room_id=self._room_at(view.center[list(PLANE)], room_labels, costmap),
             )
             footprints[cid] = shadows
 
@@ -437,10 +338,7 @@ class SceneGraph:
         # move -- so proximity and label are enough.
         merge_m = float(self._container_merge_m)
         merge_sigma = float(self._container_merge_sigma)
-        current_container_ids = [
-            cid for cid, node in self.containers.items()
-            if floor_key is None or node.floor_id == floor_key
-        ]
+        current_container_ids = list(self.containers)
         if (merge_m > 0.0 or merge_sigma > 0.0) and len(current_container_ids) > 1:
             for _ in range(8):
                 before = len(current_container_ids)
@@ -450,10 +348,7 @@ class SceneGraph:
                 if len(current_container_ids) == before:
                     break
 
-        current_container_ids = [
-            cid for cid, node in self.containers.items()
-            if floor_key is None or node.floor_id == floor_key
-        ]
+        current_container_ids = list(self.containers)
         for cid in sorted(current_container_ids):
             room = self.rooms.get(self.containers[cid].room_id)
             if room is not None:
@@ -474,14 +369,12 @@ class SceneGraph:
         )
         tol = self._container_support_tol_m
         for obj in self.objects:
-            if floor_key is not None and obj.floor_id != floor_key:
-                continue
             if obj.track_id in member_of_container or index.cid.size == 0:
                 continue
             ell = getattr(tracks.get(obj.track_id), "ellipsoid", None)
             if ell is None:
                 continue
-            bottom = containers_mod.bottom_height(obj.center, ell)
+            bottom = self._member_geometry(obj.center, ell, _BOTTOM)
             supporting = index.supporting(bottom, obj.center[list(PLANE)], tol_m=tol)
             if supporting.size == 0:
                 continue
@@ -497,49 +390,78 @@ class SceneGraph:
             )
             self.containers[cid].object_ids.append(obj.track_id)
 
-    def _rebuild_floors(self, floors) -> None:
-        """Attach floor nodes and push each room onto a storey.
-
-        While there is one shared costmap, a room is a 2D region that cannot
-        itself be split by height, so a room takes the storey most of its
-        objects are on. Per-floor room segmentation supersedes this once each
-        floor has its own costmap.
+    def _member_geometry(self, center, ellipsoid, what: int):
+        """containers_mod's `top_height` / `footprint_area` / `footprint_query`
+        / `bottom_height` of one member, memoised across rebuilds on the exact
+        bytes they read (the centre, the semi-axes, the rotation): most tracks'
+        ellipsoids are unchanged from one rebuild to the next, and the four
+        were recomputed for every member every time (38 s of a 75 s
+        scene-graph profile). Pure functions of those bytes, so the values are
+        the ones the direct calls return. A shadow is shared between rebuilds
+        and so read-only.
         """
-        self.floors = {}
-        if floors is None or not floors.levels:
-            return
-        for fid, height in floors.levels.items():
-            self.floors[fid] = FloorNode(id=fid, height_y=height)
-        for rid, room in self.rooms.items():
-            objs = [o for o in self.objects if o.room_id == rid]
-            if objs:
-                room.floor_id = Counter(o.floor_id for o in objs).most_common(1)[0][0]
-            else:
-                room.floor_id = floors.current
-            self.floors.setdefault(
-                room.floor_id, FloorNode(id=room.floor_id, height_y=0.0)
-            ).room_ids.append(rid)
+        axes, R = getattr(ellipsoid, "axes", None), getattr(ellipsoid, "R", None)
+        if not all(isinstance(a, np.ndarray) for a in (center, axes, R)):
+            return _GEOMETRY[what](center, ellipsoid)
+        key = (center.dtype.str, center.shape, center.tobytes(), axes.dtype.str, axes.tobytes(),
+               R.dtype.str, R.shape, R.tobytes())
+        entry = self._geometry_memo.get(key)
+        if entry is None:
+            if len(self._geometry_memo) >= _GEOMETRY_MEMO_MAX:
+                self._geometry_memo.clear()
+            entry = self._geometry_memo[key] = [_UNSET] * len(_GEOMETRY)
+        value = entry[what]
+        if value is _UNSET:
+            value = _GEOMETRY[what](center, ellipsoid)
+            if what == _QUERY and value is not None:
+                for a in value:
+                    a.setflags(write=False)
+            entry[what] = value
+        return value
 
-    def _nearest_room(
-        self, xy: np.ndarray, max_dist: float = 3.0,
-        floor_id: Optional[int] = None,
-    ) -> int:
+    def _nearest_room(self, xy: np.ndarray, max_dist: float = 3.0) -> int:
+        if self._room_index is not None:
+            return self._nearest_room_indexed(xy, max_dist)
         best, best_d = 0, max_dist
         for rid, room in self.rooms.items():
-            if floor_id is not None and room.floor_id != floor_id:
-                continue
             d = float(np.linalg.norm(room.centroid_xy - xy))
             if d < best_d:
                 best, best_d = rid, d
         return best
 
-    def objects_near(
-        self, xy: np.ndarray, radius_m: float, floor_key: Optional[int] = None
-    ) -> List[ObjectNodeView]:
+    def _nearest_room_indexed(self, xy: np.ndarray, max_dist: float) -> int:
+        """`_nearest_room` with one vectorised pass to find the candidates and
+        the loop above run over those alone, in the same order with the same
+        arithmetic -- so the same room. The pass only has to be close: every
+        room within _ROOM_PREFILTER_TOL_M of its minimum is re-measured. It
+        was the loop over every room for every object of every rebuild (640k
+        calls in one profiled episode)."""
+        if not self._room_index:
+            items = list(self.rooms.items())
+            C = (np.array([np.asarray(room.centroid_xy, dtype=float)[:2] for _, room in items])
+                 if items else np.empty((0, 2)))
+            self._room_index = (items, C)
+        items, C = self._room_index
+        if not items:
+            return 0
+        with np.errstate(all="ignore"):
+            diff = C - np.asarray(xy, dtype=float)[None, :2]
+            approx = np.sqrt(np.einsum("ij,ij->i", diff, diff))
+        approx[np.isnan(approx)] = np.inf
+        lo = float(approx.min())
+        if not lo < float(max_dist) + _ROOM_PREFILTER_TOL_M:
+            return 0
+        best, best_d = 0, max_dist
+        for k in np.flatnonzero(approx <= lo + _ROOM_PREFILTER_TOL_M):
+            rid, room = items[int(k)]
+            d = float(np.linalg.norm(room.centroid_xy - xy))
+            if d < best_d:
+                best, best_d = rid, d
+        return best
+
+    def objects_near(self, xy: np.ndarray, radius_m: float) -> List[ObjectNodeView]:
         out = []
         for obj in self.objects:
-            if floor_key is not None and obj.floor_id != floor_key:
-                continue
             if np.linalg.norm(obj.center[list(PLANE)] - xy) <= radius_m:
                 out.append(obj)
         return out
@@ -547,10 +469,8 @@ class SceneGraph:
     def objects_in_room(self, room_id: int) -> List[ObjectNodeView]:
         return [o for o in self.objects if o.room_id == room_id]
 
-    def room_of_point(
-        self, xy: np.ndarray, floor_key: Optional[int] = None
-    ) -> Optional[RoomNode]:
-        rid = self._nearest_room(xy, floor_id=floor_key)
+    def room_of_point(self, xy: np.ndarray) -> Optional[RoomNode]:
+        rid = self._nearest_room(xy)
         return self.rooms.get(rid)
 
     def containers_in_room(self, room_id: int) -> List[ContainerNode]:

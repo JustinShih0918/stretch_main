@@ -5,4 +5,3 @@ defaults:
   - nim
 
 enabled: false
-reject_cooldown_steps: 100

@@ -1,5 +1,10 @@
 # Figures
 
+> **Single-floor copy.** Multi-floor support (storey estimation, per-storey maps, stairs,
+> climbing, the `/osg/floor` switch) and the ASCENT transcription (`src/navigation/`,
+> `ascentnav`) were removed from this vendored copy; see [VENDORED.md](../VENDORED.md). What follows describes
+> the upstream system, including those parts.
+
 Every figure in `docs/PAPER.md`, with its caption, its provenance, and the command that
 regenerates it. These were ten separate `docs/*_CAPTION.md` files; the content below is
 theirs, unedited.

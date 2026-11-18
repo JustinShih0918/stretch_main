@@ -9,7 +9,6 @@ passes and only abandons a target at close range.
 from __future__ import annotations
 
 import numpy as np
-import pytest
 
 from osg.objects.association import ObjectTrack
 from osg.objects.ellipsoid import Ellipsoid
@@ -64,44 +63,3 @@ def test_no_step_means_no_suppression_filter():
     layer, _ = _layer()
     layer.suppress(0, until_step=10_000)
     assert [t.id for t in _cands(layer, step=None)] == [0]
-
-
-# ------------------------------------------------------- through the agent
-
-
-def _agent_with_candidate(cooldown):
-    from .test_nav_agent import make_agent, make_cfg
-
-    # `costmap` navigation: the cooldown is about the verifier, not the mover,
-    # and this keeps the fixture from having to stand up a PointNav driver.
-    cfg = make_cfg()
-    cfg.verification.reject_cooldown_steps = cooldown
-    # The hand-built track has no Observations, so the real min_obs gate would
-    # filter it out before the verifier is ever consulted.
-    cfg.verification.min_obs = 0
-    a = make_agent(cfg)
-    layer, t = _layer()
-    a.object_layer._tracks[0] = t
-    a.verifier = type("V", (), {"verify": lambda self, *_a: False,
-                                "n_calls": 0, "n_errors": 0})()
-    a._direct_approach = True
-    return a, t
-
-
-def test_agent_rejection_is_temporary_with_a_cooldown():
-    a, t = _agent_with_candidate(cooldown=100)
-    a.step_count = 10
-    a._check_candidates()
-    assert a.stats.get("verify_reject") == 1
-    assert t.blacklisted is False
-    assert t.suppressed_until == 110
-
-
-def test_agent_rejection_is_permanent_without_one():
-    """Default behaviour, which every pre-S38 number was measured on."""
-    a, t = _agent_with_candidate(cooldown=0)
-    a.step_count = 10
-    a._check_candidates()
-    assert a.stats.get("verify_reject") == 1
-    assert t.blacklisted is True
-    assert t.suppressed_until == 0

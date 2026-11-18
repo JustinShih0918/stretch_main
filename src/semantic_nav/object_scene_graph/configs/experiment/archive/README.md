@@ -18,8 +18,7 @@ under its `archive/<name>` key, the same lock the top-level presets have.
 
 | preset | what it tried |
 |---|---|
-| `ascent_sensor_all3`, `_arrival`, `_band`, `_carrot`, `_fix1`, `_full`, `_rednet` | the `ascent_sensor` ladder (S8–S30 in `AB_RESULTS.md`) |
-| `dualmap_protocol_ascent` | ASCENT's policy on DualMap's protocol |
+| `ascent_sensor_all3`, `_arrival`, `_band`, `_fix1`, `_full` | the `ascent_sensor` ladder (S8–S30 in `AB_RESULTS.md`); its stair/climb rungs were removed with multi-floor support |
 | `dualmap_protocol_osg_look_flat_anchor_v2_island_close_feat`, `_featp`, `_featsz` | feature-memory variants of the `look_flat` chain |
 | `dualmap_protocol_osg_sensor_v3`, `_v3_region` | the sensor arm between `_v2` and `_v4_fuse` |
 | `dualmap_protocol_osg_sensor_v4_observe` | `_v4_fuse` with the observe-only proposer |

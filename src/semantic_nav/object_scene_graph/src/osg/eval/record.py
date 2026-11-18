@@ -72,41 +72,6 @@ def detector_identity(cfg) -> dict:
     }
 
 
-STAIR_LABELS = ("stairs", "staircase", "stair")
-
-
-def stair_track_fields(agent) -> dict:
-    """Snapshot the mapped `stairs` tracks.
-
-    `"stairs"` is already in DEFAULT_VOCABULARY (core/config/detector.py), so YOLOE has
-    always been detecting staircases into the object layer -- but nothing has
-    ever consumed or measured them. Stage 4 of the multi-floor plan
-    (docs/history/MULTI_FLOOR.md) assumes these tracks exist and are usable; this logs
-    the evidence to confirm or falsify that BEFORE the stair-detection work is
-    built on top of it. Cheap: a filter over tracks the layer already holds.
-    """
-    object_layer = getattr(agent, "object_layer", None)
-    if object_layer is None:
-        return {"n_stair_tracks": 0, "stair_tracks": []}
-    tracks = [
-        t for t in object_layer.tracks(include_blacklisted=True)
-        if normalize_label(t.label) in STAIR_LABELS
-    ]
-    return {
-        "n_stair_tracks": len(tracks),
-        "stair_tracks": [
-            {
-                "center": [round(float(x), 3) for x in object_layer.center_of(t)],
-                "n_obs": int(t.n_obs),
-                "evidence": round(float(t.evidence), 3),
-                "best_score": round(float(t.best_score), 3),
-                "best_bbox_px": round(float(t.best_bbox_px), 1),
-            }
-            for t in tracks[:20]
-        ],
-    }
-
-
 def container_table(agent) -> dict:
     sg = getattr(agent, "scene_graph", None)
     nodes = getattr(sg, "containers", None) or {}
@@ -116,7 +81,6 @@ def container_table(agent) -> dict:
             out[str(int(cid))] = {
                 "label": str(node.label),
                 "center": [round(float(v), 3) for v in node.center],
-                "floor": int(getattr(node, "floor_id", getattr(node, "floor", 0))),
             }
         except (TypeError, ValueError, AttributeError):
             continue
@@ -158,8 +122,6 @@ def build_episode_record(
     are cumulative -- without the deltas, every episode after the first would
     report the run's running total instead of its own.
     """
-    from .floors import episode_floor_fields, runtime_floor_fields
-
     authored = authored_episode_metadata(episode)
     # The env knows things the episode record cannot: whether a relocation
     # fired, when, and whether the agent was looking at the time.
@@ -231,21 +193,12 @@ def build_episode_record(
         # Per-step trace, only when debug frames are on: ~20 numbers a step,
         # which would bloat every normal run's episodes.jsonl. It is what the
         # S49/S50 detector-recall and framing measurements were built from.
-        # Where the climb's steps went (agent/climb.py, ClimbPolicy._traced_climb).
-        **({"climb_trace": agent.climb_trace}
-           if (cfg.eval.debug_frames or getattr(cfg.eval, "behaviour_log", False))
-           and getattr(agent, "climb_trace", None) else {}),
         **({"step_trace": agent.step_trace}
            if (cfg.eval.debug_frames or getattr(cfg.eval, "behaviour_log", False))
            and hasattr(agent, "step_trace") else {}),
         **({"behaviour": agent.behaviour.summary()}
            if hasattr(agent, "behaviour") else {}),
         "prior_map": outcome.map_note,
-        # Which ASCENT-built storeys this episode planned over, and how many
-        # cells each contributed. Recorded because "the obstacle map was
-        # reused" is otherwise indistinguishable from a snapshot that loaded
-        # zero cells onto the wrong floor.
-        "prior_obstacle_map": outcome.obstacle_note,
         "attempts_used": outcome.attempts_used,
         "attempt_log": outcome.attempt_log,
         "presence_events": getattr(agent, "presence_events", []),
@@ -278,7 +231,6 @@ def build_episode_record(
                 "best_score": round(float(t.best_score), 3),
                 "best_bbox_px": round(float(t.best_bbox_px), 1),
                 "evidence": round(float(t.evidence), 3),
-                "floor_key": int(getattr(t, "floor_key", 0)),
                 # Provenance: how many of the observations the proposal stage
                 # contributed, and the running-mean feature's cosine to the
                 # query. A track with n_proposal_obs == n_obs was never named.
@@ -307,26 +259,9 @@ def build_episode_record(
         # mislocalized-track vs failed-nav vs false-positive detection
         # (scripts/analyze_localization.py).
         **target_track_fields(agent),
-        # Which floor the goal is on relative to the start pose, and whether the
-        # agent actually changed level (docs/history/MULTI_FLOOR.md).
-        **episode_floor_fields(episode, outcome.trajectory_y),
-        **runtime_floor_fields(episode, outcome.trajectory_y, agent, authored),
-        **stair_track_fields(agent),
         # Ground-truth visibility (runner-side only; the agent never sees it).
         # Splits "never perceived the object at its new pose" into never-looked
         # and looked-but-missed, which the rest of the record cannot do and
         # which two iterations had to guess at.
         **outcome.gt_view.fields(),
-        # Online floor estimate (mapping/floors.py). Compare n_floors_seen
-        # against the per-scene navmesh ground truth from scripts/scene_floors.py
-        # before letting behaviour depend on the estimator.
-        "floor_log": getattr(agent, "floor_log", []),
-        "n_floors_seen": len(getattr(getattr(agent, "floors", None), "levels", {}))
-        or len(getattr(agent, "_floors", []) or []),
-        "floor_y_drift": round(float(getattr(agent, "floor_y_drift", 0.0)), 4),
-        "floor_transitions": len(
-            getattr(getattr(agent, "floors", None), "transitions", [])
-        ),
-        "portal_log": getattr(agent, "portal_log", []),
-        "floor_llm_log": getattr(agent, "floor_llm_log", []),
     }

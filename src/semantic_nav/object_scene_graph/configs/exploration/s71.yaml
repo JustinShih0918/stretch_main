@@ -5,7 +5,6 @@ defaults:
 
 selector: ascent
 ranker: ascent
-floor_llm: true
 continuity_weight: 2.0
 value_map: true
 value_model: blip2itm

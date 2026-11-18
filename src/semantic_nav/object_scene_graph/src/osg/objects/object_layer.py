@@ -7,7 +7,7 @@ from typing import Dict, List, Optional
 
 import numpy as np
 
-from ..core.geometry import backproject, ellipse_from_mask
+from ..core.geometry import backproject, det_ellipse, mask_pixels
 from ..core.labels import normalize_label
 from ..core.types import Detection, FrameData
 from ..mapping.costmap import HEIGHT_AXIS, PLANE
@@ -44,6 +44,7 @@ class ObjectLayer:
         fp_disable_radius_m: float = 0.5,
         cloud_stride: int = 4,
         cloud_cap: int = 2000,
+        min_valid_depth_frac: float = 0.0,
         rng_seed: int = 0,
     ) -> None:
         self._tracks: Dict[int, ObjectTrack] = {}
@@ -56,6 +57,11 @@ class ObjectLayer:
         self.refine_every = refine_every
         self.link_dist_m = link_dist_m
         self.link_max_frame_gap = link_max_frame_gap
+        # Classes whose objects are told apart one by one (objects/instances.py),
+        # set by the agent: never linked, and matched to their tracks in 3D
+        # within `instance_assoc_gate_m` rather than in the image.
+        self.unlinked_labels: set = set()
+        self.instance_assoc_gate_m: float = 0.45
         self.min_det_score = min_det_score
         self.min_det_bbox_px = min_det_bbox_px
         # The gates below exist to keep INCIDENTAL noise out of the map. The
@@ -84,6 +90,9 @@ class ObjectLayer:
         self.fp_disable_radius_m = float(fp_disable_radius_m)
         self.cloud_stride = int(cloud_stride)
         self.cloud_cap = int(cloud_cap)
+        # A detection whose mask is mostly beyond depth range is skipped: its
+        # few valid pixels are the edge of something nearer (scene_graph config).
+        self.min_valid_depth_frac = float(min_valid_depth_frac)
         self.keep_cloud_labels: set = set()
         self._disabled_pts: List[tuple] = []
         self._rng = np.random.default_rng(rng_seed)
@@ -104,6 +113,7 @@ class ObjectLayer:
             "det_seen": 0,        # detections the detector produced
             "det_admitted": 0,    # cleared the score and size gates
             "obs_rejected": 0,    # no ellipse, or no valid depth under the mask
+            "obs_beyond_range": 0,  # mask mostly past depth range (min_valid_depth_frac)
             "ellipsoid_rejected": 0,  # depth too sparse to back-project a quadric
             "tracks_created": 0,
             "target_bypassed": 0,  # admitted only because it is the target
@@ -155,9 +165,7 @@ class ObjectLayer:
             and self._bbox_px(det) >= self.min_det_bbox_px
         )
 
-    def update(
-        self, frame: FrameData, dets: List[Detection], floor_key: int = 0
-    ) -> None:
+    def update(self, frame: FrameData, dets: List[Detection]) -> None:
         # Node-creation quality gate: a low-confidence or sliver detection
         # shouldn't seed a new track, or even lend support to an existing
         # one -- association still runs against every current track (a
@@ -189,16 +197,10 @@ class ObjectLayer:
         # extend proposal-only tracks, the detector's tracks never see them,
         # and the named path is bit-identical to a map without the stage.
         is_prop = lambda d: str(getattr(d, "source", "detector")) == "proposal"
-        same_floor = [
-            t for t in self._tracks.values()
-            if int(getattr(t, "floor_key", 0)) == int(floor_key) and not t.proposal_only
-        ]
-        prop_floor = [
-            t for t in self._tracks.values()
-            if int(getattr(t, "floor_key", 0)) == int(floor_key) and t.proposal_only
-        ]
+        named = [t for t in self._tracks.values() if not t.proposal_only]
+        proposed = [t for t in self._tracks.values() if t.proposal_only]
         if self.presence_filter is not None:
-            self.presence_filter.update(same_floor, frame, [d for d in dets if not is_prop(d)])
+            self.presence_filter.update(named, frame, [d for d in dets if not is_prop(d)])
         dets = admitted
         if not dets:
             return
@@ -211,12 +213,14 @@ class ObjectLayer:
         prop_idx = [i for i, d in enumerate(dets) if is_prop(d)]
         matches = [
             (det_idx[i], tid)
-            for i, tid in self._associator.associate([dets[i] for i in det_idx], frame, same_floor)
+            for i, tid in self._associator.associate(
+                [dets[i] for i in det_idx], frame, named,
+                xyz_labels=self.unlinked_labels, xyz_gate_m=self.instance_assoc_gate_m)
         ] if det_idx else []
         if prop_idx:
             matches += [
                 (prop_idx[i], tid)
-                for i, tid in self._associator.associate([dets[i] for i in prop_idx], frame, prop_floor)
+                for i, tid in self._associator.associate([dets[i] for i in prop_idx], frame, proposed)
             ]
         K = frame.intrinsics.K()
         T_cw = frame.T_cw
@@ -225,6 +229,11 @@ class ObjectLayer:
         relink_needed = False
         for det_idx, track_id in matches:
             det = dets[det_idx]
+            if self.min_valid_depth_frac > 0.0 and det.mask is not None:
+                d = frame.depth[det.mask]
+                if not len(d) or float((d > 1e-3).mean()) < self.min_valid_depth_frac:
+                    self.funnel["obs_beyond_range"] += 1
+                    continue
             obs = self._make_observation(det, frame, K, T_cw)
             if obs is None:
                 self.funnel["obs_rejected"] += 1
@@ -244,7 +253,7 @@ class ObjectLayer:
                     new_id, self._next_id = self._next_id, self._next_id + 1
                 track = ObjectTrack(
                     id=new_id, label=det.label, ellipsoid=ell, first_cam_xy=cam_xy.copy(),
-                    floor_key=int(floor_key), out_of_range=self._marginal(det, frame),
+                    out_of_range=self._marginal(det, frame),
                 )
                 if not proposal:
                     track.evidence += det.score  # first sighting: full weight
@@ -303,7 +312,8 @@ class ObjectLayer:
             # Proposal-only tracks are never linked: a link would fold a
             # region's centre into a named object's `center_of`.
             relink([t for t in self._tracks.values() if not t.proposal_only],
-                   self.link_dist_m, max_frame_gap=self.link_max_frame_gap)
+                   self.link_dist_m, max_frame_gap=self.link_max_frame_gap,
+                   skip_labels=self.unlinked_labels)
 
     # --------------------------------------------------------- surface clouds
 
@@ -336,7 +346,6 @@ class ObjectLayer:
             other = self._tracks.get(linked_id)
             if (
                 other is not None and not other.blacklisted
-                and other.floor_key == track.floor_key
                 and other.points_w is not None
             ):
                 clouds.append(other.points_w)
@@ -394,7 +403,7 @@ class ObjectLayer:
 
     def retract_unconfirmed(
         self, frame: FrameData, dets: List[Detection], half_range_m: float,
-        fov_rad: float, floor_key: Optional[int] = None,
+        fov_rad: float,
     ) -> int:
         cam_xy = frame.camera_position[list(PLANE)]
         forward = frame.T_wc[:3, :3] @ np.array([0.0, 0.0, 1.0])
@@ -408,7 +417,6 @@ class ObjectLayer:
         for track in self._tracks.values():
             if (
                 track.blacklisted or not track.out_of_range or track.proposal_only
-                or (floor_key is not None and track.floor_key != floor_key)
                 or track.label in seen
             ):
                 continue
@@ -466,7 +474,6 @@ class ObjectLayer:
         max_identity_rejections: int = 0,
         target_bypasses_bbox: bool = False,
         rank_by_presence: bool = False,
-        floor_key: Optional[int] = None,
         step: Optional[int] = None,
         proposal_commits: bool = True,
         proposal_min_obs: int = 1,
@@ -529,8 +536,6 @@ class ObjectLayer:
         out = []
         for t in self._tracks.values():
             if t.blacklisted or t.n_obs < min_obs:
-                continue
-            if floor_key is not None and t.floor_key != floor_key:
                 continue
             if step is not None and t.suppressed_until > step:
                 continue
@@ -631,10 +636,10 @@ class ObjectLayer:
     def _make_observation(
         det: Detection, frame: FrameData, K: np.ndarray, T_cw: np.ndarray
     ) -> Optional[Observation]:
-        ellipse = ellipse_from_mask(det.mask)
+        ellipse = det_ellipse(det)
         if ellipse is None:
             return None
-        ys, xs = np.nonzero(det.mask)
+        ys, xs = mask_pixels(det)
         d = frame.depth[ys, xs]
         valid = d > 1e-3
         if not valid.any():

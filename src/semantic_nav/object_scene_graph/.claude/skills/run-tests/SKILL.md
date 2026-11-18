@@ -12,8 +12,8 @@ and the habitat env are already set there. For CPU-only work outside it: `pip in
 
 ```bash
 pytest tests/unit -q                                  # ~1535 tests, ~50 s, no GPU or data
-pytest tests/unit/test_floors.py -q                   # one file
-pytest tests/unit/test_floors.py::test_name -q        # one test
+pytest tests/unit/test_map_store.py -q                # one file
+pytest tests/unit/test_map_store.py::test_name -q     # one test
 pytest tests/unit -q -k presence                      # by keyword
 ```
 
@@ -24,7 +24,6 @@ Pick the focused file from what changed:
 
 | changed | run first |
 |---|---|
-| `src/navigation/` (the ASCENT transcription) | `pytest tests/unit -q -k ascentnav` — each test names the reference line it pins; a failure means the transcription was broken, do it knowingly or not at all |
 | `src/osg/core/config/`, `configs/` | `pytest tests/unit/test_config_snapshot.py -q` (see §2) |
 | `src/osg/eval/record.py`, an analyzer under `scripts/` | `pytest tests/unit/test_episode_record_schema.py -q` |
 | `src/osg/ros2/`, `scripts/ros2/` | `pytest tests/unit -q -k ros2`, then §4 |
@@ -76,8 +75,8 @@ bash scripts/ros2/check_pipeline.sh --stop
 ```
 
 It proves frames convert into the pipeline's world, a goal reaches `NavigateToPose` in ROS
-coordinates, discrete actions move the base the right way, and the operator's floor switch
-arrives. `docs/ROS2.md` explains each check.
+coordinates, and discrete actions move the base the right way. `docs/ROS2.md` explains each
+check.
 
 ## Do not
 

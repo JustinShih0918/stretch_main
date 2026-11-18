@@ -5,7 +5,7 @@ defaults:
 # of a goal view-point BEFORE committing to something else -- 221 episodes do
 # this, and they are 37% of all same-floor failures.
 #
-#   python scripts/run_eval.py +experiment=ascentnav eval=missed16 \
+#   python scripts/run_eval.py eval=missed16 \
 #       eval.debug_frames=true output_dir=outputs/s59_missed
 #
 # A DIAGNOSTIC split, not an A/B. The question it answers: when the agent stood

@@ -19,7 +19,7 @@ from typing import List, Optional, Tuple
 
 import numpy as np
 
-from ..core.geometry import Ellipse2D, ellipse_from_mask, sqrtm_2x2_spd
+from ..core.geometry import Ellipse2D, det_ellipse, sqrtm_2x2_spd
 from ..core.types import Detection, FrameData
 from .ellipsoid import Ellipsoid
 from .presence import PresenceState
@@ -134,8 +134,6 @@ class ObjectTrack:
     # negative frame ids; a live sighting appends a non-negative one, which is
     # what `seen_live` reads.
     from_prior: bool = False
-    # Persistent floor identity.  Keys never change when height order changes.
-    floor_key: int = 0
     suppressed_until: int = 0
     out_of_range: bool = False
     disabled: bool = False
@@ -184,9 +182,73 @@ class DataAssociator:
         self.category_gate = category_gate
 
     def associate(
+        self, dets: List[Detection], frame: FrameData, tracks: List[ObjectTrack],
+        xyz_labels: Optional[set] = None, xyz_gate_m: float = 0.45,
+    ) -> List[Tuple[int, Optional[int]]]:
+        """Returns [(det_idx, track_id or None)]; None means create new track.
+
+        `xyz_labels` (normalised labels, objects/instances.py) are matched in 3D
+        rather than in the image: a detection placed by depth joins only a track
+        of its label whose centre is within `xyz_gate_m` on the ground, nearest
+        pair first, and starts a new track otherwise. In the image, an
+        extinguisher put down 0.65 m beside another is nearer the other's
+        projected ellipse than that one's own detection is, whenever the
+        other's estimate leans its way: it took the other's track, the other
+        started a new one, and the two indices swapped places
+        (outputs/20261113_013326). Without depth to place it, a detection is
+        matched as before. With `xyz_labels` empty nothing changes.
+        """
+        result: List[Tuple[int, Optional[int]]] = []
+        if xyz_labels:
+            placed, dets_idx, tracks = self._associate_xyz(dets, frame, tracks, xyz_labels, xyz_gate_m)
+            result += placed
+            rest = self._associate_2d([dets[i] for i in dets_idx], frame, tracks)
+            return result + [(dets_idx[i], tid) for i, tid in rest]
+        return self._associate_2d(dets, frame, tracks)
+
+    def _associate_xyz(self, dets, frame, tracks, labels, gate_m):
+        """3D matching for detections of `labels` that depth can place. Returns
+        (matches for those, indices of the detections left for 2D matching,
+        tracks left for 2D matching)."""
+        from ..core.labels import normalize_label
+        from ..mapping.costmap import PLANE
+        from .instances import detection_xyz
+
+        plane = list(PLANE)
+        mine = {}
+        for i, det in enumerate(dets):
+            if normalize_label(det.label) not in labels:
+                continue
+            xyz = detection_xyz(det, frame)
+            if xyz is not None:
+                mine[i] = np.asarray(xyz, dtype=float)[plane]
+        if not mine:
+            return [], list(range(len(dets))), [
+                t for t in tracks if normalize_label(t.label) not in labels]
+        cand = [t for t in tracks if normalize_label(t.label) in labels]
+        pairs = []
+        for i, p in mine.items():
+            for t in cand:
+                d = float(np.linalg.norm(np.asarray(t.ellipsoid.center, dtype=float)[plane] - p))
+                if d <= float(gate_m) and (not self.category_gate or t.label == dets[i].label):
+                    pairs.append((d, i, t.id))
+        pairs.sort()
+        used_d, used_t, out = set(), set(), []
+        for d, i, tid in pairs:
+            if i in used_d or tid in used_t:
+                continue
+            used_d.add(i)
+            used_t.add(tid)
+            out.append((i, tid))
+        out += [(i, None) for i in mine if i not in used_d]
+        # Instance-class tracks are matched here or not at all: a detection
+        # depth could not place must not take one of them in the image either.
+        left_tracks = [t for t in tracks if normalize_label(t.label) not in labels]
+        return out, [i for i in range(len(dets)) if i not in mine], left_tracks
+
+    def _associate_2d(
         self, dets: List[Detection], frame: FrameData, tracks: List[ObjectTrack]
     ) -> List[Tuple[int, Optional[int]]]:
-        """Returns [(det_idx, track_id or None)]; None means create new track."""
         K = frame.intrinsics.K()
         T_cw = frame.T_cw
 
@@ -199,7 +261,7 @@ class DataAssociator:
 
         pairs = []  # (nwd, det_idx, track_id)
         for i, det in enumerate(dets):
-            obs = ellipse_from_mask(det.mask)
+            obs = det_ellipse(det)
             if obs is None:
                 continue
             obs_bbox = obs.bbox()

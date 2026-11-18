@@ -12,11 +12,13 @@ a file, hands them to the ROS bridge, which republishes them as images for
                       object track as an ellipsoid coloured by presence belief
                       (green believed, red disbelieved, grey blacklisted),
                       containers, rooms, the trajectory, the current path, the
-                      chosen frontier and goal, and a status line -- the storey
-                      the agent is on and the storey it WANTS, which is the
-                      operator's cue to carry the robot. Storeys stack in z by
-                      `floor.virtual_storey_m`, exactly as the pipeline holds
-                      them, so the two floors of a map do not overprint.
+                      chosen frontier and goal, and a status line.
+    /osg/scene_graph_json
+                      the same graph as JSON (std_msgs/String): rooms,
+                      containers and objects with their room -> container ->
+                      object links, plus the robot, goal and trajectory, in
+                      `map` coordinates -- for a display that is not RViz
+                      (stretch_main's scripts/extinguisher_demo/demo_hud.py).
 
 As in `DebugVideo`, the detector is re-run here for visualisation only; the
 object layer is untouched and pipeline behaviour is unchanged. Best effort by
@@ -55,6 +57,19 @@ def _jsonable(value):
     return repr(value)
 
 
+def _accepts(fn, name: str) -> bool:
+    """Does callable `fn` take keyword `name` (or **kwargs)?"""
+    if fn is None:
+        return False
+    import inspect
+
+    try:
+        params = inspect.signature(fn).parameters.values()
+    except (TypeError, ValueError):
+        return False
+    return any(p.name == name or p.kind is p.VAR_KEYWORD for p in params)
+
+
 class DebugStream:
     """Same `write(frame, agent, target, detector)` contract as `DebugVideo`."""
 
@@ -62,7 +77,8 @@ class DebugStream:
     DET_TOPIC = "/osg/detections"
     PANEL_TOPIC = "/osg/debug"
     GRAPH_TOPIC = "/osg/scene_graph"
-    GRID_TOPIC = "/osg/costmap"     # the pipeline's own costmap, this storey, as an OccupancyGrid
+    GRID_TOPIC = "/osg/costmap"     # the pipeline's own costmap, as an OccupancyGrid
+    GRAPH_JSON_TOPIC = "/osg/scene_graph_json"
     PANEL_H = 640  # the simulator video's height; the costmap panel is square-ish
     JUMP_M = 1.0   # a step is seconds at 0.15 m/s; more than this is not driving
 
@@ -73,10 +89,10 @@ class DebugStream:
     # up -- is on disk while the robot is still moving, not when it stops.
     AGENT_LOGS = ("state_log", "frontier_select_log", "candidate_reject_log",
                   "goal_commit_log", "giveup_log", "approach_retarget_log",
-                  "approach_bbox_log", "presence_events", "floor_log",
-                  "close_look_log", "attempt_log")
+                  "approach_bbox_log", "presence_events",
+                  "close_look_log", "attempt_log", "instance_events")
 
-    def __init__(self, env, log_path=None, on_step=None) -> None:
+    def __init__(self, env, log_path=None, on_step=None, on_detections=None) -> None:
         import cv2
 
         from ..mapping.costmap import PLANE as _PLANE
@@ -86,7 +102,6 @@ class DebugStream:
         self._env = env
         self._traj: list = []
         self._dead = False
-        self._wanted_floor = None  # last storey the agent asked for, for the cue
         # One JSON line per step on disk, written as the run goes. The episode
         # record is only written when a run ENDS properly (Ctrl-C or completion);
         # a run killed any other way -- twice now -- left no record and the RViz
@@ -97,6 +112,13 @@ class DebugStream:
         self._seen: dict = {}      # log name -> entries already written
         self._diag_last = None     # last approach_diag written, to write it on change
         self._on_step = on_step    # called with the step after each write (map checkpoints)
+        # Called with (rgb, detections, step, frame=frame) after each step's
+        # detector pass, so a consumer of the target's views
+        # (osg/inspection/views.py) reuses it and can place each view in the world.
+        self._on_detections = on_detections
+        # Hooks written before the frame was passed take (rgb, dets, step).
+        self._hook_takes_frame = _accepts(on_detections, "frame")
+        self._text_broken = False
         self._markers_broken = False
         self._grid_broken = False
         self._yaw_deg = None
@@ -119,31 +141,22 @@ class DebugStream:
         p3 = np.asarray(p3, dtype=float)
         return (float(p3[0]), float(-p3[2]), float(p3[1]))
 
-    def _ros_xy(self, xy, floor: int) -> tuple:
-        """A ground-plane point on a storey, lifted the way the pipeline lifts it."""
-        z = float(floor) * float(getattr(self._env.cfg.floor, "virtual_storey_m", 3.0))
-        return (float(xy[0]), float(-xy[1]), z + 0.05)
+    @staticmethod
+    def _ros_xy(xy) -> tuple:
+        """A ground-plane point, just above the floor."""
+        return (float(xy[0]), float(-xy[1]), 0.05)
 
     def scene_graph_markers(self, agent, target: str, step: int) -> list:
         """The scene graph as plain dicts for the bridge's publish_markers.
-        Every accessor is optional: an agent that lacks one (AscentNav, a test
-        double) simply contributes nothing for it."""
+        Every accessor is optional: an agent that lacks one (a test double)
+        simply contributes nothing for it."""
         from ..core.labels import normalize_label
 
         tgt = normalize_label(target)
         ms: list = []
-        # Only this storey, when asked (ros2.viz_other_storeys=false): the
-        # graph of the floor the agent left disappears at the switch.
-        here = int(getattr(getattr(agent, "floors", None), "current_id", 0) or 0)
-        only_here = not bool(getattr(getattr(self._env.cfg, "ros2", None), "viz_other_storeys", True))
-
-        def on_this_storey(node, attr: str) -> bool:
-            return not only_here or int(getattr(node, attr, here) or 0) == here
-
         # Objects: one ellipsoid + label per track, from the same layer save_map reads.
         layer = getattr(agent, "object_layer", None)
-        tracks = layer.tracks(include_blacklisted=True) if layer is not None else []
-        tracks = [t for t in tracks if on_this_storey(t, "floor_key")]
+        tracks = list(layer.tracks(include_blacklisted=True)) if layer is not None else []
         for t in tracks:
             ell = getattr(t, "ellipsoid", None)
             centre = np.asarray(ell.center if ell is not None else layer.center_of(t), dtype=float)
@@ -160,7 +173,9 @@ class DebugStream:
             ms.append({"ns": "objects", "id": int(t.id), "type": "sphere",
                        "xyz": (x, y, z), "scale": (max(sx, 0.05), max(sy, 0.05), max(sz, 0.05)),
                        "rgba": rgba})
-            text = f"{t.label} {p:.2f}"
+            reg = getattr(agent, "instances", None)
+            name = reg.name_of(t) if reg is not None else str(t.label)
+            text = f"{name} {p:.2f}"
             if is_t:
                 # The target's label carries the numbers the candidate gate
                 # reads (object_layer.candidates), so "it saw the ball and
@@ -180,8 +195,6 @@ class DebugStream:
                        "text": text})
         graph = getattr(agent, "scene_graph", None)
         for c in (getattr(graph, "containers", {}) or {}).values():
-            if not on_this_storey(c, "floor"):
-                continue
             x, y, z = self._ros(c.center)
             ms.append({"ns": "containers", "id": int(c.id), "type": "cube",
                        "xyz": (x, y, z), "scale": (0.6, 0.6, 0.06),
@@ -190,52 +203,40 @@ class DebugStream:
                        "xyz": (x, y, z + 0.25), "scale": (0.0, 0.0, 0.1),
                        "rgba": (0.5, 0.8, 1.0, 0.9), "text": str(c.label)})
         for r in (getattr(graph, "rooms", {}) or {}).values():
-            if not on_this_storey(r, "floor"):
-                continue
-            x, y, z = self._ros_xy(r.centroid_xy, int(getattr(r, "floor", 0)))
+            x, y, z = self._ros_xy(r.centroid_xy)
             ms.append({"ns": "rooms", "id": int(r.id), "type": "text",
                        "xyz": (x, y, z + 1.6), "scale": (0.0, 0.0, 0.25),
                        "rgba": (1.0, 0.85, 0.3, 0.9), "text": str(r.label or f"room {r.id}")})
         # Where it is going: trajectory, planned path, chosen frontier, goal.
-        floors = getattr(agent, "floors", None)
-        floor = int(getattr(floors, "current_id", 0)) if floors is not None else 0
         if len(self._traj) >= 2:
             ms.append({"ns": "trajectory", "id": 0, "type": "line_strip",
                        "scale": (0.03, 0.0, 0.0), "rgba": (1.0, 0.6, 0.0, 0.9),
-                       "points": [self._ros_xy(p_, floor) for p_ in self._traj]})
+                       "points": [self._ros_xy(p_) for p_ in self._traj]})
         path = getattr(agent, "_current_path", None)
         if path is not None and len(path) >= 2:
             ms.append({"ns": "path", "id": 0, "type": "line_strip",
                        "scale": (0.04, 0.0, 0.0), "rgba": (0.1, 1.0, 0.1, 0.9),
-                       "points": [self._ros_xy(p_, floor) for p_ in np.asarray(path)]})
+                       "points": [self._ros_xy(p_) for p_ in np.asarray(path)]})
         fr = getattr(agent, "_current_frontier", None)
         if fr is not None and getattr(fr, "centroid_xy", None) is not None:
-            x, y, z = self._ros_xy(fr.centroid_xy, floor)
+            x, y, z = self._ros_xy(fr.centroid_xy)
             ms.append({"ns": "frontier", "id": 0, "type": "cylinder", "xyz": (x, y, z),
                        "scale": (0.5, 0.5, 0.05), "rgba": (1.0, 0.0, 1.0, 0.6)})
         goal = getattr(agent, "_goal_xy", None)
         if goal is not None:
-            x, y, z = self._ros_xy(goal, floor)
+            x, y, z = self._ros_xy(goal)
             ms.append({"ns": "goal", "id": 0, "type": "sphere", "xyz": (x, y, z + 0.15),
                        "scale": (0.3, 0.3, 0.3), "rgba": (1.0, 0.1, 0.0, 0.9)})
-        # The status line, and the operator's cue.
-        want = getattr(getattr(agent, "exploration", None), "requested_floor", None)
+        # The status line.
         state = getattr(getattr(agent, "state", None), "name", str(getattr(agent, "state", "")))
-        status = f"{target}  step {step}  floor {floor}  {state}"
-        if want is not None and int(want) != floor:
-            status += f"   >>> WANTS FLOOR {int(want)}: carry the robot, then  ros2 topic pub --once /osg/floor std_msgs/Int32 '{{data: {int(want)}}}'"
-            stairs = (getattr(agent, "stats", None) or {}).get("stairs_wait_goal_ros")
-            if stairs is not None:
-                where = "waiting at" if state == "EXPLORE" else "driving to"
-                status += f"   [{where} the stairs ({stairs[0]:.2f}, {stairs[1]:.2f})]"
-        ax, ay, az = self._ros_xy(self._traj[-1], floor) if self._traj else (0.0, 0.0, 0.0)
+        status = f"{target}  step {step}  {state}"
+        ax, ay, az = self._ros_xy(self._traj[-1]) if self._traj else (0.0, 0.0, 0.0)
         ms.append({"ns": "status", "id": 0, "type": "text", "xyz": (ax, ay, az + 2.2),
                    "scale": (0.0, 0.0, 0.3), "rgba": (1.0, 1.0, 1.0, 1.0), "text": status})
         if self._log is not None:
             import json, time as _time
-            rec = {"t": round(_time.time(), 2), "step": int(step), "state": state, "floor": floor,
+            rec = {"t": round(_time.time(), 2), "step": int(step), "state": state,
                    "yaw_deg": self._yaw_deg,
-                   "wants_floor": None if want is None else int(want),
                    "agent_xy": [round(float(v), 3) for v in self._traj[-1]] if self._traj else None,
                    "goal_xy": None if goal is None else [round(float(v), 3) for v in goal],
                    "frontier_xy": None if fr is None or getattr(fr, "centroid_xy", None) is None
@@ -246,16 +247,12 @@ class DebugStream:
                    "target_tracks": [m["text"] for m in ms if m["ns"] == "labels" and normalize_label(m["text"]).startswith(tgt + " ")]}
             rec.update(self._agent_log_deltas(agent))
             self._log.write(json.dumps(rec, default=_jsonable) + "\n"); self._log.flush()
-        if want is not None and int(want) != floor and want != self._wanted_floor:
-            print(f"[robot] the agent wants floor {int(want)} (it is on floor {floor}): "
-                  f"carry it there, then publish  /osg/floor {int(want)}", flush=True)
-        self._wanted_floor = want if (want is not None and int(want) != floor) else None
         return ms
 
     def _agent_log_deltas(self, agent) -> dict:
         """The entries each agent log gained since the last step, plus
         approach_diag whenever it changed. Missing attributes are simply
-        absent -- the AscentNav agent has few of these."""
+        absent."""
         out: dict = {}
         for name in self.AGENT_LOGS:
             log = getattr(agent, name, None)
@@ -307,14 +304,8 @@ class DebugStream:
         rgb = np.asarray(frame.rgb, dtype=np.uint8)
         self._push(self.RGB_TOPIC, rgb, "rgb8")
 
-        if hasattr(agent, "debug_panel"):  # AscentNav draws its own maps
-            self._push(self.PANEL_TOPIC, agent.debug_panel(frame), "bgr8")
-            self._traj.append(frame.camera_position[self._plane])
-            self._push_markers(agent, target, len(self._traj))
-            self._after_step(len(self._traj))
-            return
-
         dets = detector.detect(rgb)  # viz-only; does not update the object layer
+        self._after_detections(rgb, dets, frame)
         seg = overlay_segmentation(rgb, dets, target)
         self._push(self.DET_TOPIC, seg, "bgr8")
 
@@ -334,11 +325,105 @@ class DebugStream:
                     cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 2, cv2.LINE_AA)
         self._push(self.PANEL_TOPIC, panel, "bgr8")
         self._push_markers(agent, target, len(self._traj))
+        self._push_graph_json(agent, target, len(self._traj))
         self._push_grid(agent)
         self._after_step(len(self._traj))
 
+    def scene_graph_json(self, agent, target: str, step: int) -> dict:
+        """The scene graph and the robot's progress, in ROS `map` coordinates.
+
+        Built from the graph `SceneGraph.rebuild` last produced, so the
+        room -> container -> object links are the agent's own, with each
+        object's presence belief read off its track. Every accessor is
+        optional, as in `scene_graph_markers`.
+        """
+        from ..core.labels import normalize_label
+
+        tgt = normalize_label(target)
+        graph = getattr(agent, "scene_graph", None)
+        layer = getattr(agent, "object_layer", None)
+        r2 = lambda v: round(float(v), 2)  # noqa: E731
+        rooms = [{"id": int(r.id), "label": r.label,
+                  "xy": [r2(c) for c in self._ros_xy(r.centroid_xy)[:2]]}
+                 for r in (getattr(graph, "rooms", {}) or {}).values()]
+        containers = [{"id": int(c.id), "label": str(c.label), "room_id": int(c.room_id),
+                       "xy": [r2(v) for v in self._ros(c.center)[:2]]}
+                      for c in (getattr(graph, "containers", {}) or {}).values()]
+        objects = []
+        reg = getattr(agent, "instances", None)
+        want_k = int(getattr(agent, "target_instance", 0) or 0)
+        for o in (getattr(graph, "objects", []) or []):
+            track = layer.get(o.track_id) if layer is not None and hasattr(layer, "get") else None
+            pres = getattr(track, "presence", None)
+            x, y, z = self._ros(o.center)
+            is_t = normalize_label(str(o.label)) == tgt
+            entry = {
+                "id": int(o.track_id), "label": str(o.label), "room_id": int(o.room_id),
+                "container_id": None if o.container_id is None else int(o.container_id),
+                "xyz": [r2(x), r2(y), r2(z)], "n_obs": int(o.n_obs),
+                "p": r2(getattr(pres, "p", 1.0)) if pres is not None else 1.0,
+                "target": is_t,
+            }
+            if reg is not None and reg.covers(str(o.label)):
+                # "fire extinguisher #1"; "?" while the registry cannot yet say
+                # which one it is. With a mission for one instance, only that
+                # instance is the target.
+                k = reg.index_of(o.track_id)
+                entry["instance"] = k
+                entry["name"] = f"{o.label} #{k}" if k is not None else f"{o.label} ?"
+                if is_t and want_k > 0:
+                    entry["target"] = k == want_k
+            objects.append(entry)
+        state = getattr(getattr(agent, "state", None), "name", str(getattr(agent, "state", "")))
+        goal = getattr(agent, "_goal_xy", None)
+        robot = None
+        if self._traj:
+            robot = [r2(v) for v in self._ros_xy(self._traj[-1])[:2]] + [self._yaw_deg]
+        stride = max(1, len(self._traj) // 400)
+        instances = None
+        if reg is not None:
+            instances = [{"name": i.name, "index": int(i.index), "track_id": int(i.track_id),
+                          "moved": len(i.moves)} for i in reg.instances()]
+        return {
+            "target": str(target), "step": int(step), "state": state, "robot": robot,
+            "instances": instances,
+            "goal": None if goal is None else [r2(v) for v in self._ros_xy(goal)[:2]],
+            "trajectory": [[r2(v) for v in self._ros_xy(p_)[:2]] for p_ in self._traj[::stride]],
+            "rooms": rooms, "containers": containers, "objects": objects,
+        }
+
+    def publish_graph(self, agent, target: str) -> None:
+        """The scene-graph JSON once more, between steps: after the inspection
+        has re-bound an instance at the stop, so the display shows the move."""
+        self._push_graph_json(agent, target, len(self._traj))
+
+    def _push_graph_json(self, agent, target: str, step: int) -> None:
+        """Same guard as the markers: a bridge without publish_text (an older
+        one, a test double) switches this view off, never the run."""
+        if self._dead or self._text_broken:
+            return
+        import json
+
+        try:
+            text = json.dumps(self.scene_graph_json(agent, target, step), default=_jsonable)
+            self._env.transport.publish_text(self.GRAPH_JSON_TOPIC, text)
+        except Exception as exc:  # noqa: BLE001
+            self._text_broken = True
+            log.warning("scene-graph JSON off: %s failed (%r)", self.GRAPH_JSON_TOPIC, exc)
+
+    def _after_detections(self, rgb, dets, frame=None) -> None:
+        if self._on_detections is None:
+            return
+        try:
+            if self._hook_takes_frame:
+                self._on_detections(rgb, dets, len(self._traj) + 1, frame=frame)
+            else:
+                self._on_detections(rgb, dets, len(self._traj) + 1)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("on_detections hook failed (%r)", exc)
+
     def _push_grid(self, agent) -> None:
-        """This storey's costmap -- what the frontiers are chosen on -- beside
+        """The pipeline's costmap -- what the frontiers are chosen on -- beside
         the robot's own map in the map window. Same guard as the markers."""
         if self._dead or self._grid_broken:
             return
@@ -347,9 +432,7 @@ class DebugStream:
         if grid is None:
             return
         try:
-            floor = int(getattr(getattr(agent, "floors", None), "current_id", 0) or 0)
-            z = floor * float(self._env.cfg.floor.virtual_storey_m)
-            self._env.transport.publish_grid(self.GRID_TOPIC, grid, cm.origin, cm.resolution, "map", z)
+            self._env.transport.publish_grid(self.GRID_TOPIC, grid, cm.origin, cm.resolution, "map", 0.0)
         except Exception as exc:  # noqa: BLE001
             self._grid_broken = True
             log.warning("costmap view off: %s failed (%r)", self.GRID_TOPIC, exc)

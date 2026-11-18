@@ -392,41 +392,6 @@ def test_follow_to_threads_configured_tolerances_to_planner_and_controller():
 # --------------------------------------------------------- cross-floor goals
 
 
-def test_portal_goal_keeps_its_target_floor_height():
-    """A portal pursuit runs in GOTO_FRONTIER but targets another storey.
-
-    Regression: `_follow_path` used to decide the snap height from the STATE
-    ("frontier goals are on my floor"), which silently discarded the portal's
-    target height and snapped its (x, z) onto the floor below it. The agent
-    walked to a point under the mezzanine, arrived, never gained height, and
-    the pursuit died as `no_vertical_progress` -- 26 of 35 endings on full v1.
-    """
-    calls = []
-
-    def nav_fn(goal, floor_y=None):
-        calls.append(floor_y)
-        return "move_forward"
-
-    cfg = make_cfg()
-    cfg.agent.use_habitat_navmesh = True
-    agent = NavAgent(cfg, StubDetector(), AsyncScorer(_StubScorer()), None, "chair",
-                     nav_fn=nav_fn)
-    agent.costmap.grid[:, :] = FREE
-
-    # An ordinary frontier goal: own floor, default height.
-    agent.state = State.GOTO_FRONTIER
-    agent._goal_xy = np.array([2.0, 0.0])
-    agent._goal_floor_y_cache = 2.8
-    agent.floors.pursuing = False
-    agent._follow_path(_frame((0.0, 0.0)))
-    assert calls[-1] is None, "a same-floor frontier goal must not carry a height"
-
-    # The same state, but pursuing a portal one storey up.
-    agent.floors.pursuing = True
-    agent._follow_path(_frame((0.0, 0.0)))
-    assert calls[-1] == 2.8, "portal pursuit lost its target floor height"
-
-
 def test_absence_does_not_erase_where_the_object_used_to_be():
     """Confirming the object is not at its old POSE does not refute "objects are
     moved short distances" -- it refutes one surface.

@@ -28,6 +28,10 @@ $H/pip install "numpy<2" "ultralytics==8.3.*" openai "hydra-core>=1.3" omegaconf
    scipy scikit-image scikit-learn "opencv-python==4.10.0.84" \
    pytest pytest-timeout imageio matplotlib pillow pyyaml tqdm anthropic "rerun-sdk"
 $H/pip install git+https://github.com/ultralytics/CLIP.git
+# region-proposal extra (OSG pyproject.toml). open_clip 3.3.0 and timm 1.0.11 conflict on paper and
+# mobileclip asks for torch>=2.8, but only mobileclip.modules.common.mobileone is imported: --no-deps.
+$H/pip install "timm==1.0.11" "huggingface_hub==0.25.2" ftfy regex
+$H/pip install --no-deps "open_clip_torch==3.3.0" "mobileclip @ git+https://github.com/apple/ml-mobileclip.git"
 echo "=== ascent env"
 if [ ! -x /opt/conda/envs/ascent/bin/python ]; then
   conda create -y -n ascent python=3.9 cmake=3.14.0

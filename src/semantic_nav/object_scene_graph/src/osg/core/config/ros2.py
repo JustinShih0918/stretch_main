@@ -69,17 +69,21 @@ class Ros2Config:
     # frontier it could retire instead of spending the whole run there. 0
     # waits forever.
     nav_timeout_s: float = 20.0
+    # The base neither moving (0.1 m) nor turning (15 deg) for this long with a
+    # goal outstanding: back out and post it again (`Nav2Driver.wedged_steps`,
+    # converted by `step_period_s` like nav_timeout_s). Nav2's costmap misses a
+    # cart's and a scale's low frames, the Stretch drove into them, and each
+    # goal after that was accepted and impossible (outputs/20261113_182013). 0
+    # disables.
+    nav_wedged_s: float = 0.0
     # How long a step may wait for a camera frame before the run is failed.
     # Separate from nav_timeout_s, which is about the navigator: a missing
     # frame means the camera or TF is gone, and continuing on a frozen view is
     # the failure that looks like a bad planner.
     frame_timeout_s: float = 10.0
     # How long a run keeps WAITING through missing frames before it gives up,
-    # printing once per timeout. This is the carry: on the Stretch a second
-    # storey is reached by hand, and slam_toolbox (2D) has to be relaunched
-    # there, which takes `map -> camera` away for the minutes it takes to
-    # carry the robot up and bring the stack back. Without patience the
-    # mapping pass died on the stairs. 0 = fail at the first timeout.
+    # printing once per timeout: a relaunched localisation stack takes
+    # `map -> camera` away for a while. 0 = fail at the first timeout.
     frame_patience_s: float = 900.0
     # The FSM's own discrete actions (the opening scan, the escape window, the
     # close look) are metered on velocity against odometry rather than sent
@@ -91,7 +95,7 @@ class Ros2Config:
     linear_speed: float = 0.15
     angular_speed: float = 0.5
     move_timeout_s: float = 10.0
-    # look_up / look_down, which stair_sense and the close look both use.
+    # look_up / look_down, which the close look uses.
     head_traj_action: str = "/stretch_controller/follow_joint_trajectory"
     head_tilt_joint: str = "joint_head_tilt"
     look_step_deg: float = 30.0
@@ -99,12 +103,6 @@ class Ros2Config:
     # step is a decision, not a fixed distance, once the base moves
     # continuously; at 0.15 m/s this is ~0.08 m, well inside one `forward_m`.
     step_period_s: float = 0.5
-
-    # ----------------------------------------------------------- the operator
-    # Which storey the robot is on. The real-world stand-in for habitat's z:
-    # `ros2 topic pub --once /osg/floor std_msgs/Int32 '{data: 1}'`. Needs
-    # `floor.source=external` to have any effect.
-    floor_topic: str = "/osg/floor"
 
     # -------------------------------------------------------------- the runs
     # Run 1 explores and writes the map; run 2 loads it and searches. Two
@@ -122,31 +120,10 @@ class Ros2Config:
     map_checkpoint_steps: int = 20
     # What to look for. There is no episode dataset on a robot.
     target: str = "chair"
-    # Where the staircase is, as (x, y) in the robot's `map` frame -- e.g.
-    # `ros2.stairs_xy=[3.2,-1.5]` at launch. Nothing climbs: when the agent
-    # asks for a storey nobody has mapped (agent.request_new_storey_when_
-    # exhausted) it drives here and waits for the carry, which is where the
-    # operator wants it, and what the demo shows. Unset, it waits where it is.
-    stairs_xy: Optional[List[float]] = None
-    # Hold after the map is restored, before the first step, until the
-    # operator declares a storey on /osg/floor. To RESUME a two-floor demo
-    # whose search pass died after the carry: the run starts on floor 0 with
-    # the stale graph on screen, the switch is published, and the storey lift
-    # is shown as it would have been. Frames flow during the hold; the base
-    # gets no command and no step is spent.
-    wait_for_switch: bool = False
-    # RViz: draw the scene graph of every storey, stacked in z by
-    # floor.virtual_storey_m (the default -- both floors of a map, never
-    # overprinted), or only the storey the agent is on, so a switch visibly
-    # clears the floor it left. The bridge prefixes every marker array with
-    # DELETEALL, so what is not published is not shown.
-    viz_other_storeys: bool = True
-    # An operator waypoint: the first exploration goal on storey
-    # `waypoint_floor` (-1: the run's first round) is this (x, y) in the
-    # robot's `map` frame, facing `waypoint_yaw_deg` on arrival (a quaternion
+    # An operator waypoint: the run's first exploration goal is this (x, y) in
+    # the robot's `map` frame, facing `waypoint_yaw_deg` on arrival (a quaternion
     # (z, w) is yaw = 2 * atan2(z, w)); the search then resumes as usual from
     # there. A human choosing where the search starts -- say so when the run
     # is reported. Unset, nothing changes.
     waypoint_xy: Optional[List[float]] = None
     waypoint_yaw_deg: Optional[float] = None
-    waypoint_floor: int = -1

@@ -49,14 +49,14 @@ python scripts/run_eval.py +experiment=archive/<preset>     # an exploratory lad
 python scripts/run_eval.py detector=yoloe_small llm=ollama verification=off   # swap groups
 ```
 
-Three orthogonal axes: `agent.navigation` (mover), `agent.policy`, `eval.mode` (benchmark).
-The paper's arms are `+experiment=dualmap_osg_unified` (single-floor tables) and
-`+experiment=mf5_osg_on_ascent_map` (multi-floor). Read `docs/PAPER.md` Appendix B and
-`docs/CROSS_ANCHOR_REPRODUCTION.md` before re-running or quoting a paper number: the
+Two axes: `agent.navigation` (mover) and `eval.mode` (benchmark); `nav_agent` is the only
+policy. The paper's single-floor arm is `+experiment=dualmap_protocol_osg_sensor_v4_fuse_cls`;
+its multi-floor arm is not runnable in this single-floor copy. Read `docs/PAPER.md` Appendix B
+and `docs/CROSS_ANCHOR_REPRODUCTION.md` before re-running or quoting a paper number: the
 single-floor result depends on which prior maps the run loads.
 
 Useful extras: `eval.behaviour_log=true` (per-step trace, needed by
-`compare_ascent_osg.py` / `analyse_behaviour.py`), `eval.debug_frames=true` (mp4 + the exact
+`analyse_behaviour.py`), `eval.debug_frames=true` (mp4 + the exact
 VLM input per episode; slow), `eval.episode_ids=[...]` (re-run named episodes).
 
 ## 4. Rules that decide whether a result means anything

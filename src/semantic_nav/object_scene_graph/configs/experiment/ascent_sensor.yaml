@@ -78,19 +78,11 @@ agent:
   #    to a median 0.67 m of their goal and never issued STOP.
   terminal_requires_detection: false
 
-verification:
-  # S38: a VLM rejection sets a track aside for 100 steps instead of retiring it
-  # for good. ASCENT's equivalent gate is re-evaluated every step until it
-  # passes and only abandons a target at close range (map_controller.py:770-776,
-  # ascent_policy.py:910-922). OSG asked once, from wherever the agent stood,
-  # and a NO was final -- measured at 3 of 22 episodes ending within 0.5 m of
-  # the goal with no candidate left to stop on, two of them at 3-5 cm.
-  reject_cooldown_steps: 100
-  # 2 and 3 (`pointnav_stop_means_blocked: false`,
-  #    `frontier_reachability_gate: false`) are MEASURED NULL and are therefore
-  #    NOT enabled here. Both are faithful to ASCENT and both demonstrably fire
-  #    -- but on 100 paired episodes they moved SR 42.0% -> 41.0% (net -1,
-  #    McNemar p = 1.00) and their predicted mechanism did not happen:
-  #    `GOTO_FRONTIER` steps stayed flat at ~24k and `frontier_give_up` rose
-  #    from 127 to 168. See docs/history/AB_RESULTS.md S30, and
-  #    `+experiment=ascent_sensor_all3` to run that arm.
+# 2 and 3 (`pointnav_stop_means_blocked: false`,
+#    `frontier_reachability_gate: false`) are MEASURED NULL and are therefore
+#    NOT enabled here. Both are faithful to ASCENT and both demonstrably fire
+#    -- but on 100 paired episodes they moved SR 42.0% -> 41.0% (net -1,
+#    McNemar p = 1.00) and their predicted mechanism did not happen:
+#    `GOTO_FRONTIER` steps stayed flat at ~24k and `frontier_give_up` rose
+#    from 127 to 168. See docs/history/AB_RESULTS.md S30, and
+#    `+experiment=ascent_sensor_all3` to run that arm.

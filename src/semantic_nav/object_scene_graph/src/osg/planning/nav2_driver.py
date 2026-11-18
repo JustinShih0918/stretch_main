@@ -20,8 +20,9 @@ above it is tested once, against a fake (tests/unit/test_nav2_driver.py).
 """
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass
-from typing import Optional
+from typing import List, Optional
 
 import numpy as np
 
@@ -52,14 +53,19 @@ class BackendStatus:
 class Nav2Driver:
     """`goal_xy -> NavStep`, with the driving done by a Nav2-shaped backend.
 
-    SAME STOREY ONLY. A goal carries no height: Nav2 navigates one 2D map, and
-    on the robot the storey is the operator's switch rather than a height at
-    all (`floor.source=external`). Reaching another floor is not something this
-    mover can do, which is why the robot presets turn the climb machinery off.
+    A goal carries no height: Nav2 navigates one 2D map.
     """
 
+    # A base this still for `wedged_steps` ticks of an outstanding goal is wedged.
+    WEDGED_MOVE_M = 0.1
+    WEDGED_TURN_DEG = 15.0
+    # What it does about it before the goal is posted again: back out the way
+    # it came, and turn (alternating sides between escapes).
+    ESCAPE = ("move_backward", "move_backward")
+
     def __init__(self, backend, *, stop_radius: float = 0.9,
-                 goal_resend_m: float = 0.5, timeout_steps: int = 0) -> None:
+                 goal_resend_m: float = 0.5, timeout_steps: int = 0,
+                 wedged_steps: int = 0) -> None:
         self.backend = backend
         # Read by `nav_agent._frontier_reach_m` (:373) and the climb (:137) to
         # decide how close counts as having reached a frontier, so it has to
@@ -71,6 +77,13 @@ class Nav2Driver:
         # for a very long time without ever aborting, and a pursuit that never
         # ends is a whole run spent on one frontier. 0 disables.
         self.timeout_steps = int(timeout_steps)
+        # Ticks of an outstanding goal with the base neither moving nor turning
+        # before it backs out (`ESCAPE`) and posts the goal again. In Isaac the
+        # Stretch drove into a supply cart and a height scale whose low frames
+        # Nav2's costmap does not hold, and sat there for 200 steps while the
+        # pipeline gave up one frontier after another, each goal accepted and
+        # none possible (outputs/20261113_182013, _182916). 0 disables.
+        self.wedged_steps = int(wedged_steps)
         self.reset()
 
     def reset(self) -> None:
@@ -90,7 +103,11 @@ class Nav2Driver:
         self.n_aborts = 0
         self.n_resets = 0
         self.n_timeouts = 0
+        self.n_escapes = 0
         self.last_rho = float("nan")
+        self._pose = None
+        self._still: deque = deque(maxlen=max(1, self.wedged_steps))
+        self._escape: List[str] = []
         self.backend.cancel()
 
     # ------------------------------------------------------------- per step
@@ -98,6 +115,8 @@ class Nav2Driver:
     def observe(self, frame: FrameData) -> None:
         """Cache this step's pose. Called once per step by `NavAgent.act`."""
         self._agent_xy = frame.camera_position[list(PLANE)].copy()
+        fwd = np.asarray(frame.T_wc, dtype=float)[:3, 2][list(PLANE)]
+        self._pose = (self._agent_xy.copy(), float(np.degrees(np.arctan2(fwd[1], fwd[0]))))
         self.stepped_this_tick = False
         self.backend.observe(frame)
 
@@ -124,7 +143,12 @@ class Nav2Driver:
         # before the radius test swallows the arrival entirely.
         if radius > 0.0 and rho < radius:
             self._cancel_if_active()
+            self._still.clear()
+            self._escape = []
             return self._report(NavStep(None, "arrived"))
+        if self._escape:
+            # Backing out: the base is the FSM's this tick (goal not active).
+            return self._report(NavStep(self._escape.pop(0), "moving"))
 
         first = self._last_goal is None
         moved = first or float(np.linalg.norm(goal - self._last_goal)) > self.goal_resend_m
@@ -144,6 +168,13 @@ class Nav2Driver:
                 self.n_resets += 1
 
         status = self.backend.poll()
+        if status.state == "active" and self._wedged():
+            self._cancel_if_active()
+            self._last_goal = None          # posted afresh once it is out
+            self.n_escapes += 1
+            turn = "turn_left" if self.n_escapes % 2 else "turn_right"
+            self._escape = list(self.ESCAPE[1:]) + [turn]
+            return self._report(NavStep(self.ESCAPE[0], "moving"))
         if status.state == "active":
             self._ticks_on_goal += 1
             if 0 < self.timeout_steps <= self._ticks_on_goal:
@@ -171,6 +202,24 @@ class Nav2Driver:
         # FSM issued). Re-post on the next tick rather than reporting failure.
         self.goal_active = False
         return self._report(NavStep(DRIVING, "moving"))
+
+    def _wedged(self) -> bool:
+        """This tick's pose, and whether the last `wedged_steps` of them, all
+        with a goal outstanding, stayed within `WEDGED_MOVE_M` and
+        `WEDGED_TURN_DEG` of each other."""
+        if self.wedged_steps <= 0 or self._pose is None:
+            return False
+        self._still.append(self._pose)
+        if len(self._still) < self.wedged_steps:
+            return False
+        xy0, yaw0 = self._still[0]
+        for xy, yaw in self._still:
+            if float(np.linalg.norm(xy - xy0)) > self.WEDGED_MOVE_M:
+                return False
+            if abs((yaw - yaw0 + 180.0) % 360.0 - 180.0) > self.WEDGED_TURN_DEG:
+                return False
+        self._still.clear()
+        return True
 
     def _report(self, step: NavStep) -> NavStep:
         self.last_action = step.action

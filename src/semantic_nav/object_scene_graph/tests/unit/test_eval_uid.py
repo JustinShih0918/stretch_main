@@ -3,14 +3,14 @@
 habitat's ObjectNav loader assigns episode_id per CONTENT FILE
 (object_nav_dataset.py: `episode.episode_id = str(i)` inside the per-scene
 loop), so EVERY scene contains an episode "0". Anything that subsets episodes
-(the dev50 / dev50_mf A/B splits) or joins two runs together
+(the dev50 A/B split) or joins two runs together
 (scripts/compare_runs.py) must key on the scene as well, or a 50-episode split
 silently selects one episode per scene from all 20 scenes and the paired
 comparison lines up unrelated episodes.
 """
 import types
 
-from osg.eval.runner import _episode_uid, _goal_floor_gap_m
+from osg.eval.runner import _episode_uid
 
 
 def _ep(scene: str, eid: str):
@@ -26,58 +26,6 @@ def test_same_episode_id_in_different_scenes_is_distinct():
     a = _ep("data/scene_datasets/hm3d/val/00800-TEEsavR23oF/TEEsavR23oF.basis.glb", "0")
     b = _ep("data/scene_datasets/hm3d/val/00801-HaxA7YrQdEC/HaxA7YrQdEC.basis.glb", "0")
     assert _episode_uid(a) != _episode_uid(b)
-
-
-def _goal(view_point_ys):
-    return types.SimpleNamespace(
-        view_points=[
-            types.SimpleNamespace(agent_state=types.SimpleNamespace(position=[0.0, y, 0.0]))
-            for y in view_point_ys
-        ]
-    )
-
-
-def _episode(start_y, goal_view_point_ys):
-    return types.SimpleNamespace(
-        start_position=[0.0, start_y, 0.0], goals=[_goal(goal_view_point_ys)]
-    )
-
-
-def test_gap_is_zero_when_goal_is_on_the_starting_floor():
-    assert _goal_floor_gap_m(_episode(0.1, [0.1, 0.15])) < 0.1
-
-
-def test_gap_measures_a_storey():
-    assert _goal_floor_gap_m(_episode(0.0, [2.8])) == 2.8
-
-
-def test_gap_takes_the_nearest_view_point():
-    """A goal category with instances on several floors is reachable via the
-    closest one, so the episode is only cross-floor if EVERY instance is."""
-    assert _goal_floor_gap_m(_episode(0.0, [2.8, 0.05])) == 0.05
-
-
-def test_gap_is_absolute_so_downstairs_counts():
-    assert _goal_floor_gap_m(_episode(2.8, [0.0])) == 2.8
-
-
-def test_gap_is_none_without_view_points():
-    assert _goal_floor_gap_m(types.SimpleNamespace(start_position=[0, 0, 0], goals=[])) is None
-
-
-def test_gap_matches_make_dev_split():
-    """The split selects episodes with this measure and compare_runs filters
-    A/B results with it; the two implementations must agree."""
-    import importlib.util
-    import pathlib
-
-    path = pathlib.Path(__file__).resolve().parents[2] / "scripts" / "make_dev_split.py"
-    spec = importlib.util.spec_from_file_location("_mds_gap", path)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-
-    ep = _episode(0.0, [2.8, 5.6])
-    assert mod.goal_floor_gap(ep) == _goal_floor_gap_m(ep)
 
 
 def test_uid_matches_make_dev_split():
@@ -129,7 +77,7 @@ def test_algorithm_fingerprint_covers_every_flag_an_ab_can_switch():
         behavioural |= {prefix + f.name for f in dataclasses.fields(cls)}
     behavioural |= {
         "detector_weights", "detector_imgsz",
-        "multi_floor", "room_classifier", "room_erode_iters",
+        "room_classifier", "room_erode_iters",
         "terminal_rule", "terminal_stop_m", "terminal_percentile", "fp_retraction",
     }
     # Tuning constants that no A/B in this repo varies; listing them would be
@@ -138,7 +86,7 @@ def test_algorithm_fingerprint_covers_every_flag_an_ab_can_switch():
         "frontier_text_scorer", "subgraph_radius_m", "top_n_frontiers",
         "frontier_dedup_m", "min_path_cost_m", "unscored_prior",
         "info_gain_radius_m", "max_frontiers_per_call", "knowledge_radius_m", "value_clip_name", "value_clip_root",
-        "value_stride", "value_radius_m", "value_prompt", "floor_exp_steps", "stair_min_hits",
+        "value_stride", "value_radius_m", "value_prompt",
         # VerificationConfig knobs no A/B in this repo varies.
         "verify_enabled", "verify_vlm_model", "verify_min_evidence",
         "verify_ring_radii_m", "verify_center_tol_deg", "verify_center_max_turns",
@@ -149,14 +97,11 @@ def test_algorithm_fingerprint_covers_every_flag_an_ab_can_switch():
         "approach_stop_bbox_px", "approach_depth_stop", "approach_max_steps",
         "approach_goal_tolerance_m", "approach_arrival_tol_m",
         "approach_standoff_m", "navmesh_goal_radius", "navmesh_approach_steps",
-        "stair_reach_m", "climb_max_steps", "stair_exit_m", "terminal_engage_m",
-        # S33: a weights path, recorded as `rednet_stairs` (the behavioural
-        # switch) rather than by filename.
-        "rednet_weights",
-        # Same rule: `osg_world_model` is the switch an A/B flips, the detector
-        # it loads is a filename.
-        "osg_world_model_weights",
+        "terminal_engage_m",
         "terminal_progress_eps", "terminal_stall_steps",
+        # Which object the mission is for ("fire extinguisher #1"), not how the
+        # algorithm runs; run_robot.py writes it into each episode record.
+        "target_instance",
     }
     # Every exempt name must still name a field. Eight of them did not when this
     # guard was added -- score_cache_radius_m, ssim_thresh, verify_debug_dir and

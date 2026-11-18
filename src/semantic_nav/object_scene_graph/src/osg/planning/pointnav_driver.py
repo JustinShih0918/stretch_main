@@ -277,7 +277,7 @@ class PointNavDriver:
             #
             # Reporting the reason rather than acting on it keeps that policy
             # decision with the caller, which is the only place that knows
-            # whether this is a frontier or a staircase.
+            # whether this is a frontier or an approach goal.
             return NavStep(None, "policy_stop")
         return NavStep(ACTION_NAMES[idx], "moving")
 

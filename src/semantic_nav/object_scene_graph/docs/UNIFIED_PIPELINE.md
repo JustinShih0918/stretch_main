@@ -1,5 +1,10 @@
 # The unified pipeline: one agent, three datasets
 
+> **Single-floor copy.** Multi-floor support (storey estimation, per-storey maps, stairs,
+> climbing, the `/osg/floor` switch) and the ASCENT transcription (`src/navigation/`,
+> `ascentnav`) were removed from this vendored copy; see [VENDORED.md](../VENDORED.md). What follows describes
+> the upstream system, including those parts.
+
 The fusion branch had grown two arms that were never the same agent:
 
 * `dualmap_protocol_osg_sensor_v4_fuse_cls` — the DualMap released benchmark,

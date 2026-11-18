@@ -66,8 +66,8 @@ pose together.
 ## Who owns the base
 
 In Habitat every tick is one discrete action and the question never arises. Here the FSM still
-issues its own actions in several states — the opening 360° scan, the escape window, a
-`look_down` near stairs, the close look — while Nav2 may be driving toward a goal. Two things
+issues its own actions in several states — the opening 360° scan, the escape window, the
+close look — while Nav2 may be driving toward a goal. Two things
 steering one base is two things fighting over the wheels.
 
 `Ros2Env.step` resolves it every tick:
@@ -84,50 +84,12 @@ The FSM's own actions are metered against odometry (`map → base_link` via TF),
 open-loop timed move drifts with battery and carpet, and `agent.forward_m` is a distance the
 costmap and the frontier reach radius both assume.
 
-## Two floors, one switch
+## One storey
 
-Every floor decision in the pipeline reads `camera_position[1]` — the agent's own height above
-the floor. **On the robot that signal does not exist.** Nav2's `map` is 2D and reports both
-storeys at the same z.
-
-So the operator declares the storey:
-
-```bash
-ros2 topic pub --once /osg/floor std_msgs/Int32 '{data: 1}'   # upstairs
-ros2 topic pub --once /osg/floor std_msgs/Int32 '{data: 0}'   # back down
-```
-
-`floor.source=external` makes that the only source; the estimator is never consulted. The
-switch propagates:
-
-```
-/osg/floor ─▶ bridge ─▶ Transport.pop_floor_switch ─▶ Ros2Env.step
-   ─▶ FloorPolicy.request_floor  (queued: the costmap must not change
-                                  underneath a control loop that read it)
-   ─▶ FloorPolicy.observe, next step: the storey's own grid, planner and room
-      labels; new objects filed under `floor_key`; `rebuild_floor` on that
-      storey; frontiers and the search posterior on that storey.
-```
-
-The switch also **lifts the pose** by `key * floor.virtual_storey_m` (3 m). The switch is the
-height sensor. Without it, both storeys occupy one costmap band, one `floor_of_height`
-answer, and one position in the LLM prompt's height-ordered floor list — so the second floor's
-map would be pasted on top of the first. With it, every height consumer downstream sees the
-geometry it was calibrated on, and run 1's snapshot is consistent with run 2's.
-
-The same path is exercisable in Habitat with no ROS at all:
-
-```bash
-python scripts/run_eval.py +experiment=floor_schedule_habitat eval=dev50_mf \
-       eval.num_episodes=1 eval.behaviour_log=true
-# episodes.jsonl: floor_log keys 0 -> 1 -> 0 at steps 60/160,
-#                 agent_stats.floor_switch_external == 2
-```
-
-**Nothing climbs.** `stretch3_map` turns off `climb_enabled`, `floor.stairs` and
-`floor.cross_floor`: the stair machinery assumes the agent can walk up a staircase it
-detected, the Stretch cannot, and a portal pursuit with no way to complete it just burns the
-step budget. Floors change because an operator says so and by no other route.
+The pipeline is single-floor. Every height decision -- the costmap's obstacle band, the
+height prior at commit -- is measured from the ground plane latched on the first frame
+(`agent.camera_height` below the camera), and Nav2's 2D `map` is one storey. A run maps and
+searches the storey it starts on; there is no floor switch and nothing climbs.
 
 ## The two runs
 
@@ -143,8 +105,8 @@ python scripts/run_robot.py +experiment=stretch3_search ros2.map_tag=lab ros2.ta
 
 The two presets are one field apart on purpose: the arm that searches must be the arm that
 mapped. Run 1 writes `outputs/robot_maps/lab.json` (+ `.npz`) — the scene graph's evidence and
-per-storey occupancy, schema v2, exactly what the YCB two-pass protocol writes. Run 2 restores
-it with `apply_map(..., initial_floor_key=<the declared storey>)`, capped at
+its occupancy grid, schema v3, exactly what the YCB two-pass protocol writes. Run 2 restores
+it with `apply_map(...)`, capped at
 `reload_max_log_odds` so a stale belief cannot saturate, and then the presence filter, the
 identity channel and absence-as-evidence do what they were built for
 (`docs/ARCHITECTURE.md`).
@@ -188,16 +150,15 @@ Then the whole pipeline — both runs, the map written and read back — against
 with no model servers:
 
 ```bash
-python -m osg.ros2.loopback --floor-switch-after 8 &     # or the bridge + fake_robot
+python -m osg.ros2.loopback &                            # or the bridge + fake_robot
 python scripts/run_robot.py +experiment=stretch3_map    detector.name=stub \
        exploration=nearest region_proposal.enabled=false agent.max_steps=40 ros2.map_tag=fake
 python scripts/run_robot.py +experiment=stretch3_search detector.name=stub \
        exploration=nearest region_proposal.enabled=false agent.max_steps=25 ros2.map_tag=fake
 ```
 
-Measured on the loopback: 40 steps, 3 goals posted, a floor switch at step 18, and a schema-v2
-snapshot with **two storeys** — floor 0 with ~25k known cells and floor 1 with ~2.7k, in
-separate grids, which is the virtual storey offset doing its job. With `--abort-goals` every
+Measured on the loopback (upstream, before the single-floor change): 40 steps, 3 goals
+posted, and a snapshot written and restored. With `--abort-goals` every
 goal is refused and the FSM retires one frontier per refusal (6 posted, 6 refused, 6 retired),
 which is the `policy_stop` path end to end.
 
@@ -310,7 +271,6 @@ vendor from its GID and `run_robot.py` refuses to start against a Fast-DDS robot
 | `src/osg/ros2/loopback.py` | the same robot with the ROS taken out |
 | `src/osg/planning/nav2_driver.py` | the mover: `goal_xy -> NavStep` |
 | `src/osg/planning/nav2_backends.py` | the robot's navigator, and habitat's |
-| `src/osg/sim/ros2_env.py` | the env contract, base ownership, the storey lift |
-| `src/osg/agent/floor_policy.py` | `request_floor` and the external source |
+| `src/osg/sim/ros2_env.py` | the env contract and base ownership |
 | `scripts/run_robot.py` | the two runs |
 | `scripts/check_ros2_pipeline.py` | the checks |

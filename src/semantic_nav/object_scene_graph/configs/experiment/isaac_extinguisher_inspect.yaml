@@ -1,0 +1,78 @@
+# @package _global_
+#
+# stretch_main's fire-extinguisher demo: search Isaac's hospital for a fire
+# extinguisher with the scene graph, then ask a vision-language model what
+# condition it is in (scripts/extinguisher_demo/README.md at stretch_main's
+# root). The search is isaac_hospital_map's, unchanged; only the target and the
+# inspection differ.
+#
+#   python scripts/run_robot.py +experiment=isaac_extinguisher_inspect
+defaults:
+  - isaac_hospital_map
+  - override /inspection: nim
+  - _self_
+
+ros2:
+  target: fire extinguisher
+  map_tag: isaac_hospital_extinguisher
+  # Back out of a wedge: the Stretch drove into a supply cart and a height scale
+  # Nav2's costmap does not hold, and sat 200 steps (outputs/20261113_182013).
+  nav_wedged_s: 6.0
+
+scene_graph:
+  # A 0.66 m extinguisher is first seen from past the 5 m depth range, where
+  # its mask has almost no depth and the little it has is whatever is in front
+  # of it: one map run's track landed on a reception desk 7.6 m short of it
+  # and the run stopped there (2026-11-10). Place it only from frames that see
+  # most of it in range.
+  min_valid_depth_frac: 0.5
+  # Two or more extinguishers are told apart: "#1", "#2" in the scene graph, a
+  # mission may name one (ros2.target="fire extinguisher #1"), and when one is
+  # moved its index follows it instead of passing to the other
+  # (osg/objects/instances.py). With one extinguisher this changes nothing but
+  # the "#1" on its label.
+  instance_labels: [fire extinguisher]
+  # The extinguishers stand on the floor (track centres 0.20-0.45 m); the
+  # hospital's FIRE EXTINGUISHER wall signs, detected as extinguishers, sit at
+  # 1.36-1.51 m and one was claimed as a moved #1 (outputs/20261113_184240).
+  instance_max_height_m: 1.0
+
+eval:
+  # A STOP where the detector names no extinguisher is taken back and the
+  # search goes on (scripts/run_robot.py `_stop_check`), up to three times; the
+  # place is struck off (verification.failed_attempt_disables_place). One run
+  # stopped at a shelf of red-labelled binders only the region proposer had
+  # called an extinguisher and ended the mission there (outputs/20261113_191403).
+  attempts: 4
+
+agent:
+  # Stop back from the target instead of beside it, but not far. The head
+  # camera is 1.3 m up with a 90-degree vertical field of view (after the
+  # portrait rotation), so the floor is only in frame from 1.3 m out; from a
+  # camera 1.9 m off, a 0.66 m extinguisher was ~80 px wide and the VLM
+  # called a missing hose, missing levers and heavy rust "good" (2026-11-10).
+  # 1.4 m to its nearest point puts the camera ~1.5 m from it: the whole
+  # extinguisher and its stand in frame, as large as that allows.
+  terminal_engage_m: 2.0
+  terminal_stop_m: 1.4
+
+inspection:
+  # The floor beside an extinguisher (spilled powder, a dropped hose) is part
+  # of its condition, and its box is tall and narrow: widen the crop toward
+  # square, and enlarge it so the model sees the detail (inspection.py).
+  crop_pad: 0.3
+  crop_min_aspect: 0.75
+  crop_upscale_px: 768
+  # Lift a dark image before the model sees it: moved to an unlit corner the
+  # corroded extinguisher was judged "good" twice (outputs/20261113_202629,
+  # _203830; inspection.py brighten_below).
+  brighten_below: 0.35
+  # What a monthly extinguisher inspection looks for (after NFPA 10's visual
+  # checks).
+  checklist:
+    - "body: rust, corrosion, dents, or faded and peeling paint on the cylinder or its stand"
+    - "hose and nozzle: missing, detached, cracked or blocked"
+    - "operating parts: a missing or broken handle or squeeze lever, a missing safety pin or seal, a gauge needle outside the green band"
+    - "placement: not upright in its stand or bracket, lying on the floor, or missing from its place"
+    - "discharge: powder or residue around it, a sign it has been used or is leaking"
+    - "access: blocked or hidden by objects"

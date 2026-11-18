@@ -31,9 +31,8 @@ EXPECTED_KEYS = {
     "habitat_success", "habitat_spl",
     "attempt_log", "attempts_used", "authored_layout", "cand_best_cam_xy",
     "cand_best_score", "cand_n_obs", "control_fps", "detector",
-    "distance_to_goal", "episode_id", "final_xy", "final_y", "floor_changes",
-    "floor_class", "floor_log", "floor_transitions", "floor_y_drift",
-    "frontier_select_log", "giveup_log", "goal_commit_log", "goal_y_span",
+    "distance_to_goal", "episode_id", "final_xy",
+    "frontier_select_log", "giveup_log", "goal_commit_log",
     # One entry per appearance commit (agent/candidate._appearance_pick):
     # which surface, which track, its cosine, how many it beat.
     "feature_pick_log",
@@ -45,29 +44,22 @@ EXPECTED_KEYS = {
     "gt_kf_far_centred_detected", "gt_kf_far_peripheral",
     "gt_frames_within_3m", "gt_kf_far_peripheral_detected", "gt_kf_in_view",
     "gt_mean_visible_fraction", "gt_min_range_any_m", "gt_min_range_m", "llm_calls", "llm_errors",
-    "llm_last_error", "n_floors_seen", "n_stair_tracks", "portal_log", "floor_llm_log",
-    "presence_events", "prior_map", "prior_obstacle_map",
+    "llm_last_error",
+    "presence_events", "prior_map",
     "scene", "search_log_events", "spl",
     # SPL's inputs, so a recorded SPL can be audited from the file it lives
     # in. Their absence is how an SPL of 0.0 on a SUCCESSFUL episode survived
     # a whole run unnoticed (outputs/mf5_pass2_final, 00862/50001).
     "shortest_path_to_object_m", "travelled_m", "attempt_count",
-    "stair_tracks", "start_y", "state_log", "steps", "success", "target",
-    "target_obj_xy", "target_tracks", "traj_y_range", "verify_calls",
-    "verify_errors", "wall_time_s", "start_floor", "goal_floor", "prior_floor",
-    "relocation_direction", "selected_search_floor", "floor_switches",
-    "climb_attempts", "goal_floor_reached",
+    "state_log", "steps", "success", "target",
+    "target_obj_xy", "target_tracks", "verify_calls",
+    "verify_errors", "wall_time_s",
 }
 
-# The four blocks spliced in with `**`, and the analyses that would go quiet
+# The blocks spliced in with `**`, and the analyses that would go quiet
 # without them.
 CONTRIBUTED_BY_HELPERS = {
     "target_obj_xy", "cand_best_cam_xy", "cand_best_score", "cand_n_obs",
-    "floor_class", "start_y", "final_y", "traj_y_range", "floor_changes",
-    "goal_y_span", "n_stair_tracks", "stair_tracks",
-    "start_floor", "goal_floor", "prior_floor", "relocation_direction",
-    "selected_search_floor", "floor_switches", "climb_attempts",
-    "goal_floor_reached",
 }
 
 
@@ -109,19 +101,12 @@ def _literal_keys() -> set:
 def _helper_keys() -> set:
     """The `**` blocks, actually called. Each takes stub inputs happily: the
     point is the key set, not the values."""
-    from osg.eval.floors import episode_floor_fields, runtime_floor_fields
     from osg.eval.instruments import GroundTruthVisibility
-    from osg.eval.record import stair_track_fields, target_track_fields
+    from osg.eval.record import target_track_fields
     from osg.objects.object_layer import ObjectLayer
 
-    agent = types.SimpleNamespace(object_layer=ObjectLayer(), floors=None, stats={})
-    return (
-        set(target_track_fields(agent))
-        | set(episode_floor_fields(types.SimpleNamespace(), [0.0]))
-        | set(runtime_floor_fields(types.SimpleNamespace(), [0.0], agent, {}))
-        | set(stair_track_fields(agent))
-        | set(GroundTruthVisibility(None).fields())
-    )
+    agent = types.SimpleNamespace(object_layer=ObjectLayer(), stats={})
+    return set(target_track_fields(agent)) | set(GroundTruthVisibility(None).fields())
 
 
 def test_the_record_still_has_every_field_the_analyzers_read():
@@ -146,22 +131,18 @@ def test_the_spliced_blocks_are_still_spliced_in():
 
 def test_every_spliced_value_survives_json_dumps():
     """`json.dumps` is what writes the record, and numpy scalars do not survive
-    it. The helpers are where numpy gets in -- ellipsoid centres, camera poses,
-    trajectory heights -- so they are the ones worth checking."""
+    it. The helpers are where numpy gets in -- ellipsoid centres, camera poses
+    -- so they are the ones worth checking."""
     import json
     import types
 
-    from osg.eval.floors import episode_floor_fields, runtime_floor_fields
     from osg.eval.instruments import GroundTruthVisibility
-    from osg.eval.record import stair_track_fields, target_track_fields
+    from osg.eval.record import target_track_fields
     from osg.objects.object_layer import ObjectLayer
 
-    agent = types.SimpleNamespace(object_layer=ObjectLayer(), floors=None, stats={})
+    agent = types.SimpleNamespace(object_layer=ObjectLayer(), stats={})
     for block in (
         target_track_fields(agent),
-        episode_floor_fields(types.SimpleNamespace(), [0.0]),
-        runtime_floor_fields(types.SimpleNamespace(), [0.0], agent, {}),
-        stair_track_fields(agent),
         GroundTruthVisibility(None).fields(),
     ):
         json.dumps(block)

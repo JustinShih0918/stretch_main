@@ -12,6 +12,11 @@ is never wrong about anything and therefore measures nothing.
 Everything below follows from that. The mechanisms exist to let a map be wrong,
 notice, and recover.
 
+This copy is **single-floor**: one occupancy grid banded above a ground plane
+latched on the first frame, and a `room -> container -> object` scene graph.
+Upstream's multi-floor machinery (storey estimation, per-storey maps, stairs,
+portals, climbing) and the ASCENT transcription were removed (`VENDORED.md`).
+
 ---
 
 ## One step
@@ -20,7 +25,7 @@ notice, and recover.
 
 ```python
 def _act_inner(self, frame):
-    floor_y = self.floors.observe(frame, self.step_count)   # which storey
+    floor_y = self.map.floor_y                              # latched on frame 1
     self.costmap.update(frame, floor_y=floor_y, ...)        # depth -> occupancy
     if self.kf_selector.is_keyframe(frame.T_wc):
         self._on_keyframe(frame)                            # detect, map, believe
@@ -41,7 +46,6 @@ Each line is one module. `nav_agent.py` owns the FSM state and nothing else.
 | `agent/state.py` | the states and the two literal actions, so a handler can name a state without importing the agent |
 | `agent/candidate.py` | what becomes a goal — presence, identity, evidence, reachability, and the optional VLM gate |
 | `agent/approach.py` | the terminal walk and the stop decision, plus the arrival sweep |
-| `agent/floor_policy.py` | storeys, portals, stairs, the climb. Inert unless `floor.enabled` |
 | `agent/close_look.py` | the close look at a surface — the frame an absence decision is allowed to rest on |
 | `exploration/strategy.py` | where to go next — frontiers and mapped surfaces under one index |
 | `exploration/search_belief.py` | `b(x)`, `d(x)`, and the inspection log that retires a searched surface |
@@ -53,8 +57,7 @@ Each line is one module. `nav_agent.py` owns the FSM state and nothing else.
 | `verification/verifier.py` | the VLM, in both its roles |
 | `graph/priors.py` | affordance and affinity — which surfaces could hold this class |
 | `graph/map_store.py` | the snapshot pass 1 writes and pass 2 loads |
-| `mapping/floors.py`, `floor_stack.py` | which storey the agent stands on; one occupancy grid per storey |
-| `mapping/stairs.py`, `portals.py` | where the agent can change storey, and where it can see another one |
+| `mapping/map_layer.py` | the one occupancy grid, its room segmentation, planner and value map, and the latched ground-plane height |
 | `pipeline/components.py` | which detector, scorer, verifier, benchmark |
 | `pipeline/beliefs.py` | which belief models, with which constants |
 | `perception/vocabulary.py` | which query strings the detector is asked about |
@@ -63,7 +66,7 @@ Each line is one module. `nav_agent.py` owns the FSM state and nothing else.
 | `eval/attempts.py` | several navigation attempts per query |
 | `eval/prior_map.py` | the two-pass protocol |
 | `eval/instruments.py` | ground truth, on the runner's side of the wall |
-| `eval/record.py` | the fields of `episodes.jsonl` (90, pinned by `test_episode_record_schema`) |
+| `eval/record.py` | the fields of `episodes.jsonl` (pinned by `test_episode_record_schema`) |
 | `ros2/` | the real robot: sensor data in, a Nav2 goal out (`docs/ROS2.md`) |
 
 ---
@@ -253,9 +256,11 @@ mechanism flag, and a dataset preset adds only what to load (`docs/UNIFIED_PIPEL
 
 | benchmark | preset | success |
 |---|---|---|
-| DualMap's release, 00829 / 00848 / 00880 — 79 static, 54 in-anchor, 53 cross-anchor | `dualmap_osg_unified` | within 1 m horizontally of any instance of the query, ≤ 3 attempts (`eval/dualmap_release.py`) |
-| multi-floor cross-anchor, 5 scenes, 25 episodes | `mf5_osg_on_ascent_map` (the paper's arm), `mf5_osg_unified` | the same 1 m rule (`ycb.score_by_object_distance`) |
-| authored, 15 scenes | `ycb15_osg_unified` | the same 1 m rule |
+| DualMap's release, 00829 / 00848 / 00880 — 79 static, 54 in-anchor, 53 cross-anchor | `dualmap_protocol_osg_sensor_v4_fuse_cls` | within 1 m horizontally of any instance of the query, ≤ 3 attempts (`eval/dualmap_release.py`) |
+| authored, 15 scenes | `ycb15_osg_unified` | the same 1 m rule (`ycb.score_by_object_distance`) |
+
+The paper's multi-floor arm (`mf5_*`, five multi-storey scenes) is not runnable in
+this single-floor copy.
 
 The paper's tables and the run behind each number are `docs/PAPER.md` Appendix B; whether
 they re-derive on the current tree is `docs/CROSS_ANCHOR_REPRODUCTION.md`.
@@ -373,16 +378,16 @@ ycb.map_in=<dir>                           start from a stale map
 ## Testing
 
 ```bash
-pytest tests/unit -q          # 1535 passed, 2 skipped, 1 xfailed, ~50 s, no GPU or data
-pytest -m sim                 # tests/integration: the trajectory and climb locks; Habitat + HM3D
+pytest tests/unit -q          # no GPU or data needed
+pytest -m sim                 # tests/integration: the trajectory locks; Habitat + HM3D
 ```
 
-Four locks exist specifically so the code can be moved without moving its
+Three locks exist specifically so the code can be moved without moving its
 behaviour:
 
-- **`test_config_snapshot`** — every flattened default (532), pinned; its sibling
+- **`test_config_snapshot`** — every flattened default, pinned; its sibling
   `experiment_fingerprints.json` pins what each preset composes to.
-- **`test_episode_record_schema`** — the 90 `episodes.jsonl` keys, derived the
+- **`test_episode_record_schema`** — the `episodes.jsonl` keys, derived the
   way the runner builds them. Nine analysis scripts read this record by name and
   none would fail loudly on a drop; they would report zero, and the conclusion
   drawn from that zero would be wrong.
@@ -392,10 +397,6 @@ behaviour:
   posterior, 300 steps) reaches DONE at step 236 having inspected three surfaces
   and made 1501 belief updates. It asserts a counter fingerprint *before* the
   action hash, so a failure names the module that moved.
-- **`test_climb_lock`** — the climb, which neither trajectory fixture reaches:
-  the real `_start_climb` + `_do_climb` from the foot of a ground-truth flight on
-  00800, in three stair-height variants, with the action sequence and the climb
-  counters pinned.
 
 ---
 
@@ -469,12 +470,9 @@ does exist, or a genuinely new signal should be found.
 number switched the search line off entirely, because the offline scorer measured
 order and the live system also reads magnitude. Pilot before trusting a proxy.
 
-**The trajectory locks are single-floor.** Both `test_trajectory_lock` fixtures run
-`ycb_authored_nav`, which composes `floor.enabled=false`, so the storey machinery in
-`agent/floor_policy.py` is guarded by `test_climb_lock` (the climb itself) and by unit
-tests, not by a whole-episode hash. The multi-floor arm is on in every `*_osg_unified`
-preset; why it is shaped as it is lives in `docs/history/MULTI_FLOOR.md` and
-`docs/history/CROSS_FLOOR_CLIMB.md`.
+**One storey.** The costmap is one ground plane: a target on another storey than
+the start is out of reach, and multi-storey scenes in the HM3D and authored splits
+score accordingly.
 
 ---
 
@@ -485,5 +483,4 @@ preset; why it is shaped as it is lives in `docs/history/MULTI_FLOOR.md` and
 - `docs/history/AUTHORED_BENCHMARK_LADDER.md` — conditions A–U, the measurements behind many constants here
 - `docs/history/DYNAMIC_SCENES.md` — the full design and experiment log, in order
 - `docs/history/REPORT_zh.md`, `docs/history/PROGRESS_zh.md` — report-facing summaries (中文)
-- `docs/history/MULTI_FLOOR.md` — the multi-floor line, including two negative results
 - `docs/history/INVESTIGATION.md` — the earlier SR-gap A/Bs

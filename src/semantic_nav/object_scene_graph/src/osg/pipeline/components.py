@@ -131,31 +131,6 @@ def build_ranker(cfg):
     )
 
 
-def build_floor_planner(cfg):
-    if not bool(getattr(cfg.exploration, "floor_llm", False)):
-        return None
-    from ..exploration.floor_planner import FloorDecisionPlanner
-    from ..exploration.knowledge_prior import FloorPrior, KnowledgeGraph
-
-    client = ChatClient(
-        cfg.llm.base_url, cfg.llm.text_model, cfg.llm.api_key,
-        cfg.llm.timeout_s, cfg.llm.max_image_px, cfg.llm.send_response_format,
-    )
-    try:
-        floor_prior = FloorPrior.load()
-    except OSError:
-        floor_prior = None
-    try:
-        knowledge = KnowledgeGraph.load()
-    except OSError:
-        knowledge = None
-    return FloorDecisionPlanner(
-        client, floor_prior=floor_prior, kg=knowledge,
-        ask_every_steps=int(cfg.exploration.floor_ask_every),
-        min_steps_on_floor=int(cfg.exploration.floor_min_steps),
-    )
-
-
 def build_run_components(cfg, env=None) -> dict:
     """Construct heavyweight, shareable components once per evaluation run.
 
@@ -166,7 +141,6 @@ def build_run_components(cfg, env=None) -> dict:
     """
     from ..perception.image_text import build_image_text_scorer
     from ..perception.room_classifier import build_room_classifier
-    from ..perception.stair_seg import build_stair_segmenter
 
     navigation = resolve_navigation(cfg.agent)
     pointnav = None
@@ -188,12 +162,9 @@ def build_run_components(cfg, env=None) -> dict:
         "scorer": build_scorer(cfg),
         "verifier": build_verifier(cfg),
         "ranker": build_ranker(cfg),
-        "floor_planner": build_floor_planner(cfg),
         "room_classifier": build_room_classifier(cfg),
         "image_text": build_image_text_scorer(cfg),
         "feature_memory": build_feature_memory(cfg),
-        "stair_segmenter": build_stair_segmenter(cfg),
-        "stair_detector": build_stair_detector(cfg),
         "region_proposer": build_region_proposer(cfg),
         "ram": build_ram_tagger(cfg),
     }
@@ -223,25 +194,7 @@ def build_nav2_driver(cfg, env):
         stop_radius=float(cfg.agent.pointnav_stop_radius),
         goal_resend_m=float(cfg.ros2.goal_resend_m),
         timeout_steps=int(round(float(cfg.ros2.nav_timeout_s) / period)),
-    )
-
-
-def build_stair_detector(cfg):
-    """GroundingDINO `stair` boxes + MobileSAM masks -- the detector half of
-    ASCENT's stair fusion. Only under the strict fusion; the union does not
-    read it."""
-    if str(getattr(cfg.agent, "policy", "")) != "ascentnav":
-        return None
-    if str(getattr(cfg.agent, "stair_up_mode", "ascent")) != "ascent":
-        return None
-    from ..perception.ascent_models import GroundingDinoStairDetector
-
-    return GroundingDinoStairDetector(
-        url=str(getattr(cfg.detector, "gdino_url", "http://localhost:13184/gdino")),
-        sam_url=str(getattr(cfg.detector, "sam_url", "http://localhost:13183/mobile_sam")),
-        conf=float(getattr(cfg.detector, "gdino_stair_conf", 0.60)),
-        timeout_s=float(getattr(cfg.detector, "timeout_s", 15.0)),
-        strict=bool(getattr(cfg.detector, "strict", False)),
+        wedged_steps=int(round(float(getattr(cfg.ros2, "nav_wedged_s", 0.0)) / period)),
     )
 
 
@@ -270,9 +223,6 @@ def probe_served_models(cfg) -> None:
             endpoints["mobile_sam"] = str(cfg.detector.sam_url)
     if str(getattr(cfg.exploration, "value_model", "clip")) == "blip2itm" and bool(cfg.exploration.value_map):
         endpoints["blip2itm"] = str(getattr(cfg.exploration, "value_blip2_url", "http://localhost:13182/blip2itm"))
-    if (str(getattr(cfg.agent, "policy", "")) == "ascentnav"
-            and str(getattr(cfg.agent, "stair_up_mode", "ascent")) == "ascent"):
-        endpoints["gdino"] = str(getattr(cfg.detector, "gdino_url", "http://localhost:13184/gdino"))
     if bool(getattr(cfg.exploration, "ram_tags", False)):
         endpoints["ram"] = str(getattr(cfg.exploration, "ram_url", "http://localhost:13185/ram"))
     if endpoints and bool(getattr(cfg.detector, "strict", False)):
@@ -283,72 +233,20 @@ def build_agent(
     cfg, components: dict, target: str, *, keyframe_dir=None, profiler=None,
     nav_fn=None, reachable_fn=None, nearest_navigable_fn=None,
 ):
-    """Build one policy behind the common ``act(frame)`` contract."""
-    policy = components["policy"]
-    extra = {}
-    if policy == "nav_agent":
-        from ..agent.nav_agent import NavAgent
+    """Build the OSG agent behind the ``act(frame)`` contract."""
+    from ..agent.nav_agent import NavAgent
 
-        agent_cls = NavAgent
-        extra["nearest_navigable_fn"] = nearest_navigable_fn
-    elif policy == "ascent":
-        from ..agent.ascent_agent import AscentAgent
-
-        agent_cls = AscentAgent
-    else:
-        from navigation.agent import AscentNavAgent
-
-        agent_cls = AscentNavAgent
-        extra["world_model"] = build_world_model(
-            cfg, target, keyframe_dir=keyframe_dir, profiler=profiler,
-            room_classifier=components.get("room_classifier"),
-            stair_detector=components.get("stair_detector"),
-        )
-    return agent_cls(
+    return NavAgent(
         cfg, components["detector"], components["scorer"],
         components["verifier"], target, keyframe_dir=keyframe_dir,
         profiler=profiler, nav_fn=nav_fn, reachable_fn=reachable_fn,
-        pointnav=components["pointnav"], ranker=components["ranker"], **extra,
-        floor_planner=components["floor_planner"],
+        pointnav=components["pointnav"], ranker=components["ranker"],
+        nearest_navigable_fn=nearest_navigable_fn,
         room_classifier=components["room_classifier"],
         image_text=components["image_text"],
         feature_memory=components.get("feature_memory"),
         region_proposer=components.get("region_proposer"),
-        stair_segmenter=components["stair_segmenter"],
-        stair_detector=components.get("stair_detector"),
         ram=components.get("ram"),
-    )
-
-
-def build_world_model(cfg, target, *, keyframe_dir=None, profiler=None,
-                      room_classifier=None, stair_detector=None):
-    """OSG's world model for a policy that does not have one, or None.
-
-    Its detector is built here rather than reused from `components`: the
-    driving policy's detector answers a different question (see
-    `agent/world_model.py`).
-    """
-    if not bool(getattr(cfg.agent, "osg_world_model", False)):
-        return None
-    from ..agent.world_model import WorldModel
-    from ..perception.detector import YoloeDetector
-
-    detector = YoloeDetector(
-        weights=str(getattr(cfg.agent, "osg_world_model_weights",
-                            "data/weights/yoloe-11s-seg.pt")),
-        conf=cfg.detector.conf if str(cfg.detector.name) == "yoloe" else 0.3,
-        class_conf=dict(cfg.detector.class_conf or {}),
-        imgsz=cfg.detector.imgsz,
-        half=cfg.detector.half,
-        device=cfg.detector.device,
-    )
-    detector.set_vocabulary(
-        [target.replace("_", " ")] + list(getattr(cfg.detector, "vocabulary", []) or [])
-    )
-    return WorldModel(
-        cfg, detector, target=target, keyframe_dir=keyframe_dir,
-        profiler=profiler, room_classifier=room_classifier,
-        stair_detector=stair_detector,
     )
 
 

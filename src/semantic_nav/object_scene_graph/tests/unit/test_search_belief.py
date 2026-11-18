@@ -44,15 +44,10 @@ class _Planner:
 
 
 class _Node:
-    def __init__(self, cid, label, center, top_h=0.75, area=0.6, floor=0):
+    def __init__(self, cid, label, center, top_h=0.75, area=0.6):
         self.id, self.label = cid, label
         self.center = np.asarray(center, float)
         self.top_h, self.area_m2 = top_h, area
-        self.floor = floor
-
-    @property
-    def floor_id(self):
-        return self.floor
 
 
 class _Graph:
@@ -177,21 +172,14 @@ def test_surfaces_that_cannot_hold_the_target_are_not_offered_at_all():
     assert ids == {2}
 
 
-def test_container_candidates_carry_stable_floor_keys_and_use_relative_height():
-    from types import SimpleNamespace
-
-    graph = _Graph([
-        _Node(1, "table", [0.0, 0.75, 0.0], floor=4),
-        # Its world top is 3.45 m, but it is an ordinary 0.75 m table on the
-        # upper floor and must not be rejected as a head-height shelf.
-        _Node(2, "table", [0.0, 3.45, 0.0], top_h=3.45, floor=9),
-    ])
-    graph.floors = {
-        4: SimpleNamespace(height_y=0.0),
-        9: SimpleNamespace(height_y=2.7),
-    }
-    candidates = build_container_candidates(graph, "bowl", InspectionLog())
-    assert {candidate.floor_key for candidate in candidates} == {4, 9}
+def test_container_height_is_measured_above_the_floor():
+    # Its world top is 3.45 m, but on a floor at y=2.7 it is an ordinary
+    # 0.75 m table and must not be rejected as a head-height shelf.
+    graph = _Graph([_Node(2, "table", [0.0, 3.45, 0.0], top_h=3.45)])
+    assert not build_container_candidates(graph, "bowl", InspectionLog())
+    ids = {c.ref_id for c in build_container_candidates(
+        graph, "bowl", InspectionLog(), floor_y=2.7)}
+    assert ids == {2}
 
 
 def test_the_far_field_stays_ordered_by_distance():
@@ -366,7 +354,7 @@ def test_choosing_a_surface_must_also_drive_to_it():
     surface = ExplorationChoice(
         kind="surface", goal_xy=np.array([2.0, 1.0]), container_id=3, face_turns=8,
     )
-    agent.exploration.select = lambda world, floor_switch: surface
+    agent.exploration.select = lambda world: surface
     agent._explore(_nav_frame())
 
     assert agent.state == State.GOTO_FRONTIER, "a chosen surface must be driven to"

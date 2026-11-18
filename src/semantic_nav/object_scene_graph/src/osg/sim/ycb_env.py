@@ -66,18 +66,6 @@ def manifest_cache_payload(
         "viewpoint_min_visible_pixels": int(cfg.ycb.viewpoint_min_visible_pixels),
         "start_min_geodesic_m": float(cfg.ycb.start_min_geodesic_m),
         "start_sample_attempts": int(cfg.ycb.start_sample_attempts),
-        "cross_floor_relocations_only": bool(
-            getattr(cfg.ycb, "cross_floor_relocations_only", False)
-        ),
-        "relocation_directions": [
-            str(x) for x in getattr(
-                cfg.ycb, "relocation_directions", ["upward", "downward"]
-            )
-        ],
-        "start_on_prior_floor": bool(getattr(cfg.ycb, "start_on_prior_floor", False)),
-        "relocation_floor_tolerance_m": float(
-            getattr(cfg.ycb, "relocation_floor_tolerance_m", 0.5)
-        ),
         "skip_incomplete_layouts": bool(
             getattr(cfg.ycb, "skip_incomplete_layouts", False)
         ),
@@ -390,7 +378,6 @@ def _viewpoints_for_object(simulator: _ManifestSimulator, authored, cfg) -> List
 
 def _starts_for_object(
     pathfinder, viewpoints: Sequence[Mapping[str, Any]], authored, cfg,
-    required_floor_y: Optional[float] = None,
 ) -> List[Dict[str, Any]]:
     goals = [item["position"] for item in viewpoints]
     starts: List[Dict[str, Any]] = []
@@ -401,10 +388,6 @@ def _starts_for_object(
         for _ in range(int(cfg.ycb.start_sample_attempts)):
             point = _finite_point(pathfinder.get_random_navigable_point())
             if point is None:
-                continue
-            if required_floor_y is not None and abs(
-                float(point[1]) - float(required_floor_y)
-            ) > float(getattr(cfg.ycb, "relocation_floor_tolerance_m", 0.5)):
                 continue
             distance = _geodesic_distance(pathfinder, point, goals)
             if math.isfinite(distance) and distance >= float(cfg.ycb.start_min_geodesic_m):
@@ -445,10 +428,7 @@ def generate_manifest(
                 # same opt-in must apply to the static map pass; otherwise a
                 # single unobservable object aborts map generation before the
                 # dynamic suite can run.
-                if not (
-                    bool(getattr(cfg.ycb, "cross_floor_relocations_only", False))
-                    or bool(getattr(cfg.ycb, "skip_incomplete_layouts", False))
-                ):
+                if not bool(getattr(cfg.ycb, "skip_incomplete_layouts", False)):
                     raise
                 skipped_targets.append({
                     "semantic_id": int(authored.semantic_id),
@@ -457,54 +437,12 @@ def generate_manifest(
                 })
                 continue
             prior = source_by_id.get(int(authored.semantic_id))
-            prior_floor_y = None
-            destination_floor_y = float(viewpoints[0]["position"][1])
-            direction = None
-            if prior is not None:
-                snapped = _finite_point(
-                    simulator.sim.pathfinder.snap_point(
-                        np.asarray(prior.translation, dtype=np.float32)
-                    )
-                )
-                if snapped is not None:
-                    prior_floor_y = float(snapped[1])
-                    delta = destination_floor_y - prior_floor_y
-                    tolerance = float(getattr(cfg.ycb, "relocation_floor_tolerance_m", 0.5))
-                    direction = (
-                        "same_floor" if abs(delta) <= tolerance
-                        else "upward" if delta > 0.0 else "downward"
-                    )
-            if bool(getattr(cfg.ycb, "cross_floor_relocations_only", False)):
-                allowed = {
-                    str(value) for value in getattr(
-                        cfg.ycb, "relocation_directions", ["upward", "downward"]
-                    )
-                }
-                if direction not in {"upward", "downward"} or direction not in allowed:
-                    continue
-            required_y = (
-                prior_floor_y
-                if bool(getattr(cfg.ycb, "start_on_prior_floor", False))
-                and prior_floor_y is not None
-                else None
-            )
-            # The control arm: begin on the storey the object is really on, so
-            # the episode measures search and approach with the staircase taken
-            # out. Takes precedence, because asking for both is asking for the
-            # destination.
-            if bool(getattr(cfg.ycb, "start_on_target_floor", False)) \
-                    and destination_floor_y is not None:
-                required_y = destination_floor_y
             try:
                 starts = _starts_for_object(
                     simulator.sim.pathfinder, viewpoints, authored, cfg,
-                    required_floor_y=required_y,
                 )
             except YCBLayoutError as exc:
-                if not (
-                    bool(getattr(cfg.ycb, "cross_floor_relocations_only", False))
-                    or bool(getattr(cfg.ycb, "skip_incomplete_layouts", False))
-                ):
+                if not bool(getattr(cfg.ycb, "skip_incomplete_layouts", False)):
                     raise
                 skipped_targets.append({
                     "semantic_id": int(authored.semantic_id),
@@ -527,9 +465,6 @@ def generate_manifest(
                             "prior_position": (
                                 list(prior.translation) if prior is not None else None
                             ),
-                            "prior_floor_y": prior_floor_y,
-                            "destination_floor_y": destination_floor_y,
-                            "relocation_direction": direction,
                         },
                         "start": start,
                         "viewpoints": viewpoints,
@@ -584,13 +519,7 @@ def prepare_ycb_benchmark(cfg, *, force: bool = False) -> PreparedYCB:
     # The static layout is the RELOCATION SOURCE, not only an episode type. The
     # nav pass runs `layout_types=[in_anchor,cross_anchor]`, which kept static
     # out of discovery entirely -- so `source_layout` was None, and with it
-    # every relocation field: `prior_position`, `prior_floor_y` and
-    # `relocation_direction` are null in all 30 episodes of
-    # outputs/osg_authored_15. Two things silently did not happen. The record
-    # could not say which floor the object came FROM, and `start_on_prior_floor`
-    # -- the combined preset's headline, "every deterministic start is sampled
-    # on the object's prior floor" -- had no floor to require, so starts were
-    # sampled anywhere and `floor_class` was an accident of sampling.
+    # `prior_position`, the record of where the object came FROM.
     #
     # Discover the static layouts separately when the episode types exclude
     # them. This changes the manifest cache key, and therefore the sampled
@@ -604,24 +533,7 @@ def prepare_ycb_benchmark(cfg, *, force: bool = False) -> PreparedYCB:
             # A root with no static layout at all is a valid static-only or
             # legacy corpus; the fields simply stay null, as before.
             pass
-    if bool(getattr(cfg.ycb, "cross_floor_relocations_only", False)):
-        missing = sorted({
-            layout.scene_name for layout in discovery.layouts
-            if layout.layout_type != "static" and layout.scene_name not in static_by_scene
-        })
-        if missing:
-            raise YCBLayoutError(
-                "cross-floor relocation manifests require the static source layout for: "
-                + ", ".join(missing)
-            )
     for layout in discovery.layouts:
-        if (
-            bool(getattr(cfg.ycb, "cross_floor_relocations_only", False))
-            and layout.layout_type == "static"
-        ):
-            # The static layout is the relocation source and snapshot pass, not
-            # an episode in the cross-floor destination suite.
-            continue
         source_layout = (
             static_by_scene.get(layout.scene_name)
             if layout.layout_type != "static" else None
@@ -677,13 +589,7 @@ def _make_dataset(
 
     dataset = ObjectNavDatasetV1()
     dataset.episodes = []
-    active_manifests = [
-        manifest for manifest in prepared.manifests
-        if not (
-            bool(getattr(cfg.ycb, "cross_floor_relocations_only", False))
-            and str(manifest["layout"].get("layout_type")) == "static"
-        )
-    ]
+    active_manifests = list(prepared.manifests)
     selected = {
         id(manifest): select_targets(manifest["episodes"], targets)
         for manifest in active_manifests
@@ -735,9 +641,6 @@ def _make_dataset(
                     "target_semantic_id": int(target["semantic_id"]),
                     "target_position": [float(x) for x in target["position"]],
                     "prior_position": target.get("prior_position"),
-                    "prior_floor_y": target.get("prior_floor_y"),
-                    "destination_floor_y": target.get("destination_floor_y"),
-                    "relocation_direction": target.get("relocation_direction"),
                     "start": _plain(item["start"]),
                     "viewpoints": _plain(item["viewpoints"]),
                     "manifest_cache_key": str(manifest["cache_key"]),

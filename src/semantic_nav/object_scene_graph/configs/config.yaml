@@ -1,13 +1,13 @@
-# The default: ASCENT's control flow on ASCENT's served models, sensor-only,
-# measured at 63.0% SR / 0.36 SPL on `scenes20_ep0to4` (docs/history/AB_RESULTS.md S71;
-# native ASCENT on the same 100 episodes: 65.0% / 0.36).
+# The default: OSG's `nav_agent` on ASCENT's served models, sensor-only.
+# (S71's 63.0% SR on `scenes20_ep0to4`, docs/history/AB_RESULTS.md, was measured
+# with the ASCENT transcription, which this copy no longer carries.)
 #
 #   bash scripts/serve_perception.sh          # the five model servers, once
 #   python scripts/run_eval.py                # this config, on the 100-episode split
 #
 # It needs the servers and a local ollama with qwen2.5:7b; the run refuses to
-# start if any of them is down. `+experiment=ascentnav` is the same config by
-# name. Pre-S71 presets pull `legacy_defaults` to get the old base back.
+# start if any of them is down. Pre-S71 presets pull `legacy_defaults` to get
+# the old base back.
 defaults:
   - base_config
   - agent: s71
@@ -18,6 +18,7 @@ defaults:
   - verification: s71
   - eval: scenes20_ep0to4
   - ros2: stretch3
+  - inspection: "off"
   - s71_defaults
   - _self_
 

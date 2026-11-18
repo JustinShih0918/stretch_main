@@ -1,5 +1,10 @@
 # MD-SG — Multi-floor Open-vocabulary Online 3D Scene Graph with Dynamic Handling Navigation
 
+> **Single-floor copy.** Multi-floor support (storey estimation, per-storey maps, stairs,
+> climbing, the `/osg/floor` switch) and the ASCENT transcription (`src/navigation/`,
+> `ascentnav`) were removed from this vendored copy; see [VENDORED.md](../VENDORED.md). What follows describes
+> the upstream system, including those parts.
+
 *The ICRA 2027 submission, transcribed in full. Sections I–V and the references are the
 paper as submitted; nothing there is edited, corrected or updated. The three appendices are
 **not** part of the paper — they map its symbols onto the modules that implement them, trace

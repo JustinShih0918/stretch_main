@@ -24,17 +24,12 @@ class ExplorationConfig:
     voronoi_goal_near_m: float = 0.7
     frontier_dedup_m: float = 1.0
     frontier_min_cells: int = 8
-    area_thresh_m2: float = 1.5
     selector: str = "utility"  # utility | ascent
     nearby_distance_m: float = 3.0
     frontier_commit: bool = False
     ranker: str = "none"  # none | ascent
     ranker_topk: int = 3
     ranker_every_steps: int = 20
-    floor_llm: bool = False
-    floor_ask_every: int = 60
-    floor_min_steps: int = 100
-    floor_llm_boost: float = 5.0
     subgraph_radius_m: float = 3.0
     select_every: int = 5
     reselect_every: int = 0
@@ -98,65 +93,6 @@ class ExplorationConfig:
     # the first scene. `ObjectTrack.absence_arrivals` counts only "I went to
     # look and it was gone".
     search_drop_proximity_after_absence: bool = False
-    # ---------------------------------------------------------------- fusion
-    # Order the two systems: test the stale anchor BEFORE choosing a storey.
-    #
-    # `_select_surface` aggregates container mass per floor and asks FloorPolicy
-    # for the argmax. With a flat proximity prior that mass is just "which floor
-    # has more mapped surfaces", so on a two-storey prior map it fires on the
-    # FIRST selection round -- measured on outputs/osg_authored_15, the first
-    # cross-floor request came at step 13 in 17 of 30 episodes, including 10 of
-    # the 19 whose object never left the start floor. The agent leaves before it
-    # has been anywhere, and the presence filter -- the mechanism that knows the
-    # object moved -- never gets to speak: 4 absence checks in 30 episodes.
-    #
-    # With this on, a cross-floor request is held while a target-labelled track
-    # on THIS floor is still believed, i.e. no absence arrival yet and presence
-    # still above the candidate gate. The held round falls through to same-floor
-    # selection, so the agent searches where the map says the object is, and the
-    # storey question is asked once that belief has actually been tested.
-    search_floor_requires_anchor_test: bool = False
-    # Weight `graph.priors.floor_target_evidence` by presence instead of
-    # counting labels. A mapped instance of the target category scores +10 and
-    # closes the switch gate for good ("never leave a floor that has the thing
-    # we are looking for on it") -- but on a stale prior map that instance is
-    # exactly the object that has since been moved. Presence already knows: the
-    # track sits below `min_presence` after an absence arrival. Off by default
-    # because it changes when a single-storey run may leave a floor at all.
-    floor_evidence_by_presence: bool = False
-    # A storey request that cannot be executed must not veto searching this one.
-    #
-    # `_select_surface` returns None when it wants another floor, and the round
-    # then falls through to a frontier. If `try_switch` finds no portal -- 405
-    # requests produced 12 directed attempts on outputs/osg_authored_15, so 97%
-    # of them found nothing to drive to -- the container posterior is switched
-    # off for as long as the request stands, on the floor the agent is on and
-    # among the surfaces it can actually reach. With this on, a failed switch
-    # falls back to same-floor surface selection instead of to frontiers alone.
-    search_surface_when_floor_unreachable: bool = False
-    # How a storey's candidate mass is scored: "sum" (every mapped surface adds
-    # to it, the shipped behaviour) or "mean" (how good this floor's surfaces
-    # are, independent of how many there are). See the measurement in
-    # `_select_surface`: on 00808 the two floors' means agree to within half a
-    # percent while their sums differ 2.4x, purely because one floor holds more
-    # furniture.
-    floor_mass_rule: str = "sum"
-    # How much better another storey must score before the agent pays for the
-    # stairs. 0.0 disables the test, which is the shipped behaviour; 1.15 means
-    # "15% better or stay". With `floor_mass_rule: mean` this is what lets the
-    # posterior answer "no opinion" instead of breaking a tie by floor area.
-    floor_mass_margin: float = 0.0
-    # Steps after ARRIVING on a storey during which an empty container
-    # posterior there means "unmapped", not "the target is not here". 0 is the
-    # shipped rule: with nothing at all here, anywhere else is better at once
-    # (tests/unit/test_floor_anchor_order.py). Measured on 00800
-    # (outputs/mf5_pass2_v12 ep1): three steps after climbing down, the
-    # storey had no containers yet -- they are rebuilt from tracks at
-    # keyframes -- so `floor_mass={'0': 11.8}` named only the storey just
-    # left, and the agent climbed straight back up. The margin rule cannot
-    # see this: 0 * margin is 0. Within this window the round explores here
-    # instead; containers appear as the storey is mapped.
-    empty_storey_settle_steps: int = 0
     # Belief carried by the single most plausible mapped surface. The candidate
     # priors are affinity x proximity normalised so the best of them equals this,
     # which separates the ORDERING (what the proximity model is for) from the
@@ -303,26 +239,12 @@ class ExplorationConfig:
     # that moving the drive goal causes -- see select_frontier.
     frontier_cost_free_cell: bool = False
     los_visibility_penalty: float = 1.0
-    stair_prior: float = 0.6
-    stair_explored_rule: str = "no_frontiers"  # no_frontiers | steps
-    floor_exp_steps: int = 100
-    stair_min_hits: int = 1
-    stair_min_cells: int = 25
     value_map: bool = False
-    # ASCENT constructs its ValueMap with `use_max_confidence=False`
-    # (`map_controller.py:79-83`): a confidence-weighted running average. The
-    # vendored default is True (single most-confident view wins). Read by
-    # ascentnav only.
-    value_use_max_confidence: bool = False
     # Fail loud on the value model, see `osg/perception/ascent_models.py`.
     value_strict: bool = False
     # RAM++ per-step scene tags for the LLM prompt (`map_controller.py:800-813`).
     ram_url: str = "http://localhost:13185/ram"
     ram_tags: bool = False
-    # ASCENT's multi-floor prompt is dead in the reference run: `_explore`
-    # never passes `floor_num`, so the `> 1` branch never fires. Kept behind a
-    # flag so the reference-effective behaviour is the default.
-    llm_multi_floor: bool = False
     # clip | constant | blip2itm. `blip2itm` is ASCENT's own value model,
     # reached over HTTP because lavis cannot be installed in this environment;
     # see `perception/image_text.py::Blip2ItmScorer` and

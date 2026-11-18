@@ -21,7 +21,6 @@ class FakeTransport:
 
     def __init__(self, camera_z=1.3, xy=(0.0, 0.0)):
         self.calls = []
-        self.floor_queue = []
         self.cancels = 0
         self.pose = [float(xy[0]), float(xy[1]), float(camera_z)]
         self.stamp = 1000.0
@@ -69,9 +68,6 @@ class FakeTransport:
     def look(self, tilt_delta_deg):
         self.calls.append(("look", tilt_delta_deg))
         return {"tilt_deg": tilt_delta_deg}
-
-    def pop_floor_switch(self):
-        return self.floor_queue.pop(0) if self.floor_queue else None
 
     def last_goal(self):
         return None
@@ -164,38 +160,6 @@ def test_a_discrete_action_is_metered_on_the_base():
             env.cfg.agent.turn_deg) in t.calls
 
 
-def test_a_wait_touches_neither_the_wheels_nor_the_head():
-    """WAIT_ACTION: the robot is standing at the stairs for the carry. One
-    tick's pause and a fresh frame, no command to the base."""
-    from osg.agent.state import WAIT_ACTION
-
-    t = FakeTransport()
-    env = _env(t)
-    env.reset()
-    before = _kinds(t)
-    frame = env.step(WAIT_ACTION)
-    assert frame is not None
-    assert "execute" not in _kinds(t)[len(before):] and "look" not in _kinds(t)[len(before):]
-
-
-def test_the_hold_ends_on_the_operators_switch_and_spends_no_step():
-    """ros2.wait_for_switch: frames flow, the base is untouched, the switch is
-    applied and recorded, and the episode's step budget is intact."""
-    t = FakeTransport(camera_z=1.3)
-    env = _env(t)
-    heard = []
-    env.on_floor_switch = heard.append
-    env.reset()
-    t.floor_queue.append(1)
-    seen = []
-    frame = env.wait_for_floor_switch(on_frame=seen.append)
-    assert frame is not None and seen, "frames were delivered during the hold"
-    assert env.floor_key == 1 and env.floor_switches == [(0, 1)]
-    assert heard == [1], "the agent's floor policy was told"
-    assert "execute" not in _kinds(t) and "look" not in _kinds(t)
-    assert not env.episode_over
-
-
 def test_a_look_goes_to_the_head_not_the_wheels():
     t = FakeTransport()
     env = _env(t, look_step_deg=30.0)
@@ -281,85 +245,7 @@ def test_an_action_the_fsm_substituted_takes_the_base_from_nav2():
     assert order.index("cancel") < order.index("execute")
 
 
-# ------------------------------------------------------------ the floor switch
-
-
-def test_the_switch_lifts_the_pose_so_two_storeys_are_two_heights():
-    """Nav2's map is 2D: both floors report the same z. Without the lift the
-    two storeys share one costmap band and one `floor_of_height` answer."""
-    from osg.mapping.costmap import HEIGHT_AXIS
-
-    t = FakeTransport(camera_z=1.3)
-    env = _env(t, driver=FakeDriver())
-    ground = env.reset()
-    t.floor_queue.append(1)
-    upstairs = env.step("turn_left")
-    assert ground.camera_position[HEIGHT_AXIS] == pytest.approx(1.3)
-    assert upstairs.camera_position[HEIGHT_AXIS] == pytest.approx(
-        1.3 + env.cfg.floor.virtual_storey_m)
-
-
-def test_the_switch_reaches_the_agent_and_is_recorded():
-    t = FakeTransport()
-    env = _env(t, driver=FakeDriver())
-    seen = []
-    env.on_floor_switch = seen.append
-    env.reset()
-    t.floor_queue.append(1)
-    env.step("turn_left")
-    assert seen == [1] and env.floor_key == 1
-    assert env.floor_switches == [(1, 1)]
-    assert env.episode_metadata()["floor_switches"] == [(1, 1)]
-
-
-def test_a_switch_drops_the_goal_chosen_on_the_floor_left_behind():
-    t = FakeTransport()
-    driver = FakeDriver(stepped=True, goal_active=True)
-    env = _env(t, driver=driver)
-    env.reset()
-    t.floor_queue.append(1)
-    env.step("move_forward")
-    assert driver.cancelled == 1
-
-
-def test_a_repeated_switch_to_the_same_floor_is_ignored():
-    t = FakeTransport()
-    env = _env(t, driver=FakeDriver())
-    seen = []
-    env.on_floor_switch = seen.append
-    env.reset()
-    t.floor_queue.extend([1, 1])
-    env.step("turn_left")
-    env.step("turn_left")
-    assert seen == [1]
-
-
-def test_reset_drains_a_switch_left_over_from_a_previous_run():
-    """Run 2 must not begin by switching to the floor run 1 ended on."""
-    t = FakeTransport()
-    t.floor_queue.append(1)
-    env = _env(t, driver=FakeDriver())
-    seen = []
-    env.on_floor_switch = seen.append
-    env.reset()
-    env.step("turn_left")
-    assert seen == [] and env.floor_key == 0
-
-
 # ------------------------------------------------------- the episode contract
-
-
-def test_a_second_run_starts_on_the_ground_floor():
-    """`reset` clears the storey as well as the log: a second run on the same
-    env must not inherit the floor the previous one ended on."""
-    t = FakeTransport()
-    env = _env(t, driver=FakeDriver())
-    env.reset()
-    t.floor_queue.append(1)
-    env.step("turn_left")
-    assert env.floor_key == 1
-    env.reset()
-    assert env.floor_key == 0 and env.floor_switches == []
 
 
 def test_the_run_ends_at_the_step_budget():
@@ -391,6 +277,70 @@ def test_nothing_is_scored_because_there_is_no_ground_truth():
     # bare NaN token is unreadable by any JSON parser outside Python.
     assert np.isnan(metrics["success"]) and np.isnan(metrics["spl"])
     assert env.attempt_scored(None, env.cfg) is False
+
+
+def test_a_stop_check_the_run_installs_is_asked_instead():
+    """scripts/run_robot.py looks at what it stopped at: where the detector
+    names no target, the stop is a failed attempt and the search goes on."""
+    env = _env()
+    env.reset()
+    asked = []
+    env.stop_check = lambda frame: asked.append(frame) or False
+    assert env.attempt_scored("frame", env.cfg) is False and asked == ["frame"]
+    env.stop_check = lambda frame: True
+    assert env.attempt_scored("frame", env.cfg) is True
+
+
+def test_a_taken_back_stop_does_not_end_the_run():
+    """With `eval.attempts` > 1 the episode loop asks the stop check, re-arms the
+    agent on a no, and the robot is never told to stop."""
+    from osg.eval.episode import run_episode
+
+    class Agent:
+        def __init__(self):
+            self.n = self.rearmed = 0
+
+        def act(self, frame):
+            self.n += 1
+            return "stop" if self.n in (2, 4) else "turn_left"
+
+        def rearm(self, max_steps):
+            self.rearmed += 1
+
+    t = FakeTransport()
+    env = _env(t)
+    env.cfg.eval.attempts = 3
+    frame = env.reset()
+    verdicts = iter([False, True])
+    env.stop_check = lambda _frame: next(verdicts)
+    agent = Agent()
+    outcome = run_episode(env.cfg, env, agent, env.current_episode, "fire extinguisher",
+                          frame, detector=None)
+    assert agent.rearmed == 1 and outcome.attempts_used == 2
+    assert [a["success"] for a in outcome.attempt_log] == [False, True]
+    assert env.episode_over is True and outcome.steps == 3  # turn, turn, stop
+
+
+def test_halting_frees_the_base_without_ending_the_run():
+    t = FakeTransport()
+    driver = FakeDriver(goal_active=True)
+    env = _env(t, driver=driver)
+    env.reset()
+    env.halt()
+    assert t.cancels == 1 and driver.cancelled == 1
+    assert env.episode_over is False
+
+
+def test_an_abort_ends_the_run_and_says_why():
+    """A robot that fell over still answers every step; the run ends there."""
+    t = FakeTransport()
+    env = _env(t)
+    env.reset()
+    env.abort("the robot fell over at step 70")
+    assert env.episode_over is True and t.cancels >= 1
+    assert env.abort_reason == "the robot fell over at step 70"
+    env.reset()
+    assert env.episode_over is False and env.abort_reason is None
 
 
 def test_the_unmeasured_metrics_survive_the_trip_to_disk_as_null():

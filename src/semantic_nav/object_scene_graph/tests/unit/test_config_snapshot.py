@@ -28,7 +28,6 @@ from osg.core.paths import (
     hm3d_scene_root,
     hm3d_scenes_dir,
     ycb_authoring_root,
-    ycb_multi_floor_root,
 )
 
 SNAPSHOT = Path(__file__).parent / "golden" / "config_snapshot.json"
@@ -54,7 +53,6 @@ def _env_root_tokens() -> list:
     tokens = [
         (str(hm3d_scene_root()), "<HM3D_SCENE_ROOT>"),
         (str(hm3d_scenes_dir()), "<HM3D_SCENES_DIR>"),
-        (str(ycb_multi_floor_root()), "<YCB_MULTI_FLOOR_ROOT>"),
         (str(ycb_authoring_root()), "<YCB_AUTHORING_ROOT>"),
         (str(collector_data_root()), "<DATA_ROOT>"),
     ]

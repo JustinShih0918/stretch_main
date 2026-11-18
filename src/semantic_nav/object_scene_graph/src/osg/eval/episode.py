@@ -22,7 +22,7 @@ from typing import Any, Optional
 from ..mapping.costmap import HEIGHT_AXIS, PLANE
 from .attempts import attempt_succeeded, rearm_after_failed_attempt
 from .instruments import GroundTruthVisibility
-from .prior_map import load_obstacle_map, load_prior_map
+from .prior_map import load_prior_map
 from .record import authored_episode_metadata, episode_tag
 
 
@@ -33,11 +33,9 @@ class EpisodeOutcome:
     steps: int = 0
     wall_time_s: float = 0.0
     trajectory: list = field(default_factory=list)
-    trajectory_y: list = field(default_factory=list)
     attempts_used: int = 1
     attempt_log: list = field(default_factory=list)
     map_note: Optional[dict] = None
-    obstacle_note: Optional[dict] = None
     gt_view: Any = None
 
 
@@ -52,20 +50,8 @@ def run_episode(cfg, env, agent, episode, target, frame, detector, debug=None) -
         initial_floor_y=float(frame.camera_position[HEIGHT_AXIS])
         - float(cfg.agent.camera_height),
     )
-    # The occupancy ASCENT's navigation built, if this run was given one. AFTER
-    # the scene-graph snapshot, because that is what creates the per-storey
-    # layers this pastes into -- on a fresh stack there is only the one floor
-    # to restore (eval/prior_map.py).
-    outcome.obstacle_note = load_obstacle_map(cfg, agent, scene)
 
-    # Height is tracked alongside the 2D trajectory (rather than making
-    # `trajectory` 3D) so the analyze_*.py tools keep working unchanged, while
-    # episodes.jsonl still records which floor the agent was on. Camera height
-    # is subtracted so these are FLOOR heights, directly comparable to
-    # episode.start_position and the goal view points.
-    cam_h = float(cfg.agent.camera_height)
     outcome.trajectory = [frame.camera_position[list(PLANE)]]
-    outcome.trajectory_y = [float(frame.camera_position[HEIGHT_AXIS]) - cam_h]
 
     attempts_allowed = max(1, int(cfg.eval.attempts))
     dump = None
@@ -103,7 +89,6 @@ def run_episode(cfg, env, agent, episode, target, frame, detector, debug=None) -
             debug.write(frame, agent, target, detector)
         frame = env.step(action)
         outcome.trajectory.append(frame.camera_position[list(PLANE)])
-        outcome.trajectory_y.append(float(frame.camera_position[HEIGHT_AXIS]) - cam_h)
         outcome.steps += 1
     outcome.wall_time_s = round(time.time() - t0, 1)
     return outcome

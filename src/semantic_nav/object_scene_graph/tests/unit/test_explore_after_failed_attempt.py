@@ -4,16 +4,13 @@
 goes back to exploring". It does not follow. `_act_inner` runs
 `candidates.check` BEFORE the EXPLORE branch on every step, so the next
 same-label track commits immediately and the agent is back in APPROACH within
-the same step -- and the exploration ROUND, which is the only call site of
-`floor_switch` and therefore of `_try_floor_switch`, is separately rate-limited
-to one run per `exploration.select_every` steps.
+the same step -- and the exploration ROUND is separately rate-limited to one run
+per `exploration.select_every` steps.
 
 Measured on 00800 cross_anchor_01 (outputs/mf5_pass2_v2): attempt 1 fails at
 step 70, the next commit lands at step 74, and those four EXPLORE steps sit
 inside the 5-step rate limit. `frontier_select_log` and `search_log_events` are
-EMPTY across 180 and 362 steps; `flights_seen` and `portals_seen` never appear.
-All three attempts went to same-label tracks on the starting storey while the
-goal was on the other one.
+EMPTY across 180 and 362 steps. All three attempts went to same-label tracks.
 
 `agent.explore_after_failed_attempt_steps` holds the commit open for a window
 and forces the round to run now. Default 0 keeps every measured arm unchanged.

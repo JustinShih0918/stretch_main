@@ -9,8 +9,7 @@
 # two-panel picture the simulator's debug video shows. /osg/scene_graph is the
 # scene graph itself as markers: objects as ellipsoids coloured by presence
 # belief, containers, rooms, the trajectory, path, chosen frontier and goal,
-# and a status line (storey, and the storey the agent WANTS -- the operator's
-# cue to carry it). Storeys stack in z by floor.virtual_storey_m. The raw
+# and a status line. The raw
 # camera streams are kept but off by default; they are the room on its side.
 # Window Geometry: size and position only. A hand-written QMainWindow State
 # string does not match these panels and docks every image view as a collapsed

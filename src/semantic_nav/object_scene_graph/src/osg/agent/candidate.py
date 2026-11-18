@@ -74,10 +74,10 @@ class CandidatePolicy:
         self._unreachable_from: dict = {}
 
     def _height_plausible(self, candidates: list) -> list:
-        """Hold back a one-shot track sitting far above the storey.
+        """Hold back a one-shot track sitting far above the floor.
 
         A target rests on the floor or on furniture; a detection whose centre
-        is metres above the storey the agent is standing on is usually a
+        is metres above the floor the agent is standing on is usually a
         mis-projected sliver -- a reflection, a ceiling fitting, or a box fitted
         to a wall texture. Measured on 00800: the toy-airplane episode spent
         both early attempts, by step 95, on single-observation tracks at y 5.64
@@ -95,10 +95,9 @@ class CandidatePolicy:
         if limit <= 0.0:
             return candidates
         min_obs = int(getattr(self.nav.cfg.verification, "commit_high_min_obs", 2))
-        try:
-            floor_y = float(self.nav.floors.height_of(self.nav.floors.current_id))
-        except Exception:
+        if self.nav.map.floor_y is None:
             return candidates
+        floor_y = float(self.nav.map.floor_y)
         kept = []
         held = 0
         for track in candidates:
@@ -113,7 +112,7 @@ class CandidatePolicy:
                 self.nav.stats.get("commit_held_high_track", 0) + held)
         return kept or candidates
 
-    def check(self, agent_xy=None, admit=None) -> None:
+    def check(self, agent_xy=None) -> None:
         candidates = self.nav.object_layer.candidates(
             self.nav.target,
             min_obs=self.nav.cfg.verification.min_obs,
@@ -124,26 +123,36 @@ class CandidatePolicy:
             max_identity_rejections=int(self.nav.cfg.scene_graph.presence.max_identity_rejections),
             target_bypasses_bbox=self.nav.cfg.verification.target_bypasses_bbox_gate,
             rank_by_presence=self.nav.cfg.verification.rank_candidates_by_presence,
-            floor_key=self.nav.floors.current_id,
             step=self.nav.step_count,
             **self._proposal_gate(),
         )
         if candidates:
             candidates = self._height_plausible(candidates)
-        if candidates and bool(self.nav.cfg.verification.retire_stale_twins_after_absence):
+        reg = getattr(self.nav, "instances", None)
+        if candidates and reg is not None:
+            # A floor-standing class's track centred far up is a wall sign, not
+            # one (InstanceRegistry.max_height_m). Unlike the hold above, this
+            # may empty the list: then the agent keeps exploring.
+            kept = reg.plausible(candidates, self.nav.object_layer)
+            if len(kept) < len(candidates):
+                self.nav.stats["instance_too_high"] = (
+                    self.nav.stats.get("instance_too_high", 0) + len(candidates) - len(kept))
+            candidates = kept
+        named = self._named_instance()
+        if candidates and named is not None:
+            candidates = self._for_instance(candidates, *named)
+        elif candidates and bool(self.nav.cfg.verification.retire_stale_twins_after_absence):
             candidates = self._without_stale_twins(candidates)
         if not candidates:
             picked = self._appearance_pick()
             if picked is None:
                 return
+            if reg is not None and not reg.plausible([picked], self.nav.object_layer):
+                return
+            if named is not None and not self._for_instance([picked], *named):
+                return
             candidates = [picked]
         track = candidates[0]
-        if admit is not None and not admit(track):
-            # The caller has a reason not to be interrupted right now (a floor
-            # switch in flight) and this candidate is not strong enough to
-            # override it. Nothing is struck off: the track is still there
-            # next step, when the reason may be gone.
-            return
         self.nav._candidate_id = track.id
         self.center_turns = 0  # fresh centering budget for this candidate
         obj_center = self.nav.object_layer.center_of(track)
@@ -214,9 +223,7 @@ class CandidatePolicy:
                     self.nav.stats["verify_reject"] = self.nav.stats.get("verify_reject", 0) + 1
                     return
             self._log_goal_commit(track)
-            self.nav._start_approach(
-                obj_xy, floor_y=self.nav.floors.goal_floor_y(obj_center)
-            )
+            self.nav._start_approach(obj_xy)
             return
 
         # Always pre-position at a viewpoint from which the object is visible
@@ -230,6 +237,71 @@ class CandidatePolicy:
         self.nav.state = State.GOTO_VERIFY_VIEW
         self.nav._current_path = None
         self.nav._goto_deadline = self.nav.step_count + 80
+
+    def _named_instance(self):
+        """(registry, index) when the mission names one instance of a class the
+        registry tells apart ("fire extinguisher #1"), else None."""
+        reg = getattr(self.nav, "instances", None)
+        k = int(getattr(self.nav, "target_instance", 0) or 0)
+        if reg is None or k <= 0 or not reg.covers(self.nav.target):
+            return None
+        return reg, k
+
+    def _for_instance(self, candidates, reg, k):
+        """Only #k's own track, or -- once #k is missing from where it was -- an
+        extinguisher nothing else explains. Never another instance's track: when
+        #1 is gone, #2 standing where it always stood is not a candidate for #1.
+        (The stale-twin rule is not applied here: it assumes one object per label,
+        and the other instances are not twins of this one.)"""
+        kept = reg.order_for(candidates, self.nav.target, k, self.nav.object_layer)
+        dropped = len(candidates) - len(kept)
+        if dropped:
+            self.nav.stats["other_instance_skipped"] = (
+                self.nav.stats.get("other_instance_skipped", 0) + dropped)
+        return kept
+
+    def follow_registry(self) -> None:
+        """Keep an approach on the mission's instance after the registry moves.
+
+        A commit to an extinguisher no instance held yet is a guess at which one
+        it is, and the registry can answer differently a keyframe later -- the
+        approach did not ask, drove on, and stopped at the guess. In far-placement
+        runs (outputs/20261113_200152, _202629, _203830): the track committed to at
+        #2's place became #2's two steps later (its old track had drifted) and #2
+        was inspected for the #1 mission; #1 was claimed on the committed track
+        and re-anchored onto its neighbour, retiring it; #1 was claimed on a track
+        0.56 m from the committed one. Each time the stop was at a "?".
+
+        So, on every update while approaching for #k: #k believed somewhere else
+        -> approach that; the committed track now another instance's -> drop the
+        approach and search on, with nothing held against the track (it is
+        simply the other one).
+        """
+        nav = self.nav
+        named = self._named_instance()
+        if named is None or nav.state is not State.APPROACH or nav._candidate_id is None:
+            return
+        reg, k = named
+        cid = int(nav._candidate_id)
+        held = reg.index_of(cid)
+        if held == k:
+            return
+        inst = reg.get(nav.target, k)
+        own = nav.object_layer.get(inst.track_id) if inst is not None else None
+        if own is not None and int(own.id) != cid and not reg.is_missing(nav.target, k, nav.object_layer):
+            nav._candidate_id = int(own.id)
+            self._log_goal_commit(own)
+            nav._start_approach(np.asarray(nav.object_layer.center_of(own), dtype=float)[list(PLANE)])
+            nav.stats["approach_follows_instance"] = nav.stats.get("approach_follows_instance", 0) + 1
+            return
+        if held is not None:
+            nav._candidate_id = None
+            nav._target_obj_xy = None
+            nav._goal_xy = None
+            nav._current_path = None
+            nav.state = State.EXPLORE
+            nav.stats["approach_dropped_other_instance"] = (
+                nav.stats.get("approach_dropped_other_instance", 0) + 1)
 
     def _proposal_gate(self) -> dict:
         """The bar a proposal-only track must clear to be a candidate."""
@@ -279,7 +351,6 @@ class CandidatePolicy:
         picked = fm.best_near(
             centre_xy,
             self.nav.object_layer.tracks(),
-            floor_key=self.nav.floors.current_id,
         )
         if picked is None:
             return None
@@ -396,7 +467,6 @@ class CandidatePolicy:
         episode is abandoned: on 00829, six of thirty-six authored target poses
         are off-navmesh and all six have a reachable viewpoint.
         """
-        floor_y = self.nav.floors.goal_floor_y(obj_center)
         if self.nav.cfg.agent.reachable_via_viewpoint:
             view_xy = self.nav.viewpoint_planner.approach_viewpoint(
                 obj_xy, self.nav.costmap
@@ -406,18 +476,18 @@ class CandidatePolicy:
                     obj_xy, self.nav.costmap,
                     require_line_of_sight=False, allow_unknown=True,
                 )
-            if view_xy is not None and self.nav._reachable_fn(view_xy, floor_y):
+            if view_xy is not None and self.nav._reachable_fn(view_xy, None):
                 return True
         if bool(getattr(self.nav.cfg.agent, "reachable_via_nearest_free", False)):
             from ..mapping.costmap import nearest_free_xy
 
             near_xy = np.asarray(nearest_free_xy(self.nav.costmap, obj_xy), dtype=float)
-            if self.nav._reachable_fn(near_xy, floor_y):
+            if self.nav._reachable_fn(near_xy, None):
                 self.nav.stats["reachable_via_nearest_free"] = (
                     self.nav.stats.get("reachable_via_nearest_free", 0) + 1
                 )
                 return True
-        return bool(self.nav._reachable_fn(obj_xy, floor_y))
+        return bool(self.nav._reachable_fn(obj_xy, None))
 
     def verify(self, frame: FrameData) -> str:
         track = (

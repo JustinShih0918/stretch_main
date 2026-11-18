@@ -70,9 +70,8 @@ def container_in_view(frame: FrameData, node, max_range_m: float,
 class WorldView:
     """What one exploration round is allowed to see.
 
-    Passed in per round rather than held, because every field of it changes
-    under the strategy's feet -- `costmap` is a different object once the agent
-    changes storey, and `goal_xy` is owned by the FSM.
+    Passed in per round rather than held, because its fields change under the
+    strategy's feet -- `goal_xy` is owned by the FSM.
     """
 
     frame: FrameData
@@ -84,8 +83,8 @@ class WorldView:
     keyframes: object
     target: str
     goal_xy: Optional[np.ndarray]
-    floor_id: int = 0
     value_map: object = None
+    floor_y: float = 0.0  # world height of the ground plane
 
 
 @dataclass
@@ -102,24 +101,11 @@ class ExplorationChoice:
     face_turns: int = 0
 
 
-# Consecutive selection rounds with no frontier before a storey counts as
-# finished (nav_agent asks the operator for another one). See `select`.
-EXHAUSTED_ROUNDS = 3
-
-
 class ExplorationStrategy:
     def __init__(self, cfg, planner, scorer, viewpoint_planner, affinity,
                  stats: dict, profiler) -> None:
         # `cfg` is the exploration group alone: nothing here reads any other.
         self.cfg = cfg.exploration
-        # The one exception, read once at construction rather than held: the bar
-        # candidates are proposed at. `_anchor_untested` has to agree with
-        # ObjectLayer.candidates about whether a track is still believed, and a
-        # second threshold of its own would be a way for them to disagree.
-        self._anchor_min_presence = float(
-            getattr(getattr(getattr(cfg, "scene_graph", None), "presence", None),
-                    "min_presence", 0.45)
-        )
         self.planner = planner
         self.scorer = scorer
         self.viewpoint_planner = viewpoint_planner
@@ -160,16 +146,13 @@ class ExplorationStrategy:
     def reset(self) -> None:
         self.current_frontier: Optional[Frontier] = None
         # Location-keyed blacklist: frontier ids are reassigned on every
-        # extraction, so blocking must be spatial to persist. [(xy, until, floor)]
+        # extraction, so blocking must be spatial to persist. [(xy, until)]
         self._blocked_pts: list = []
         # Centroid of the frontier the agent most recently gave up on: excluded
         # from the "all frontiers blocked" fallback so the agent doesn't
-        # immediately re-pursue the dead-end it just abandoned. Floor-scoped for
-        # the same reason as the blacklist.
-        self._last_giveup_pt: Optional[tuple] = None
+        # immediately re-pursue the dead-end it just abandoned.
+        self._last_giveup_pt: Optional[np.ndarray] = None
         self._last_select_step = -100
-        self.forced_floor = None
-        self._floor_arrived_step, self._floor_seen = 0, None
         # What has already been searched, and how well (C3). A visit multiplies
         # a surface's belief by (1 - d) rather than zeroing it, so a place
         # glanced at from four metres stays plausible and one inspected closely
@@ -203,42 +186,6 @@ class ExplorationStrategy:
         # Surfaces that have had a real inspection -- an arrival or a close
         # look -- so the opportunistic look does not spend a detour on them.
         self._inspected: set = set()
-        # A surface posterior may select another storey.  Only candidates on
-        # the active floor are ever converted to viewpoints or sent to the 2D
-        # planner; this field hands the other-floor decision to FloorPolicy.
-        self.requested_floor: Optional[int] = None
-        self.selected_search_floor: Optional[int] = None
-        # A storey the AGENT has decided on -- after failed attempts disproved
-        # the one it is on -- as opposed to one the posterior argmax chose.
-        # Overrides the mass rule and the anchor hold in `_select_surface`,
-        # because both are answers to "where might it be" and this is an
-        # answer to "where it is not". Cleared on arrival.
-        self.forced_floor: Optional[int] = None
-        # Storeys the agent's own failed attempts have disproved (nav_agent
-        # shares its set). The mass rule may not send the agent back to one:
-        # measured (outputs/mf5_pass2_v12 ep1), the agent disproved the upper
-        # storey, climbed down, and at the next round the posterior selected
-        # the upper storey again -- it climbed back up and ended where it
-        # started.
-        self.disproved_floors: set = set()
-        self._floor_arrived_step: int = 0
-        self._floor_seen: Optional[int] = None
-        # The storey the last real round found no frontier on, or None. Read
-        # by nav_agent: on the robot that is the cue to ask the operator for a
-        # storey nobody has mapped (agent.request_new_storey_when_exhausted).
-        self._exhausted_floor: Optional[int] = None
-        self._empty_rounds: int = 0
-        self._empty_floor: Optional[int] = None
-
-    def storey_exhausted(self, floor_id: int) -> bool:
-        """Did the last real round find no frontier on THIS storey?"""
-        return self._exhausted_floor is not None and int(self._exhausted_floor) == int(floor_id)
-
-    def steps_on_storey(self, step: int, floor_id: int) -> int:
-        """Steps since the first real round on this storey; 0 before one."""
-        if self._floor_seen is None or int(self._floor_seen) != int(floor_id):
-            return 0
-        return int(step) - int(self._floor_arrived_step)
 
     def force_select_next(self) -> None:
         """Drop the rate limit so the next `select` really runs.
@@ -254,22 +201,16 @@ class ExplorationStrategy:
     # ------------------------------------------------------------- blacklist
 
     def block(self, f: Optional[Frontier], duration: int, step: int) -> None:
-        # Blocks carry their storey. Stored unconditionally: on a single floor
-        # every entry is floor 0, so the floor test below is a tautology and
-        # behaviour is unchanged -- no second code path to keep in sync.
         if f is not None:
-            self._blocked_pts.append((f.centroid_xy.copy(), step + duration, f.floor))
+            self._blocked_pts.append((f.centroid_xy.copy(), step + duration))
 
     def _blocked_ids(self, frontiers, step: int) -> set:
         self._blocked_pts = [b for b in self._blocked_pts if b[1] > step]
-        active = [(xy, floor) for xy, _, floor in self._blocked_pts]
+        active = [xy for xy, _ in self._blocked_pts]
         return {
             f.id
             for f in frontiers
-            if any(
-                floor == f.floor and np.linalg.norm(f.centroid_xy - xy) < 0.6
-                for xy, floor in active
-            )
+            if any(np.linalg.norm(f.centroid_xy - xy) < 0.6 for xy in active)
         }
 
     @staticmethod
@@ -280,7 +221,8 @@ class ExplorationStrategy:
         v = fwd[list(PLANE)]
         n = float(np.linalg.norm(v))
         return v / n if n > 1e-6 else np.array([1.0, 0.0])
-    def select(self, world: WorldView, floor_switch) -> Optional[ExplorationChoice]:
+
+    def select(self, world: WorldView) -> Optional[ExplorationChoice]:
         # Extraction + top-N path planning is expensive; while waiting the
         # agent turns in place, which grows the map anyway.
         if world.step - self._last_select_step < max(
@@ -288,11 +230,6 @@ class ExplorationStrategy:
         ):
             return None
         self._last_select_step = world.step
-        if self._floor_seen is None or int(world.floor_id) != int(self._floor_seen):
-            self._floor_seen, self._floor_arrived_step = int(world.floor_id), int(world.step)
-        if self.forced_floor is not None and int(self.forced_floor) == int(world.floor_id):
-            self.forced_floor = None       # arrived: the directive is spent
-            self.requested_floor = None
         # A surface is only searched once the agent has actually got there.
         # Marking it on the next selection round instead -- which fires every 5
         # steps -- spent belief on places the agent had merely set off towards,
@@ -309,36 +246,14 @@ class ExplorationStrategy:
                 return None  # still on the way: stay committed to this surface
             self.mark_searched(world.step, arrived=arrived)
         with self.profiler.timeit("frontier_extract"):
-            frontiers = self.frontier_extractor.extract(
-                world.costmap, world.agent_xy,
-                floor=world.floor_id,
-            )
-        # "Finished" is several EMPTY rounds in a row, not one: between rounds
-        # the idle agent turns in place and the grid grows, and one empty
-        # extraction is what a give-up looks like (its frontier is blocked
-        # for 50 steps). Measured on the robot (outputs/20260922_231133):
-        # 5 frontiers at step 34, a give-up at 43, none at 64 -- the agent
-        # asked for another storey -- and a frontier again from step 88.
-        if not frontiers:
-            same = self._empty_floor is not None and int(self._empty_floor) == int(world.floor_id)
-            self._empty_rounds = self._empty_rounds + 1 if same else 1
-            self._empty_floor = int(world.floor_id)
-        else:
-            self._empty_rounds, self._empty_floor = 0, None
-        self._exhausted_floor = (
-            int(world.floor_id) if self._empty_rounds >= EXHAUSTED_ROUNDS else None)
+            frontiers = self.frontier_extractor.extract(world.costmap, world.agent_xy)
         if not frontiers and not bool(self.cfg.search_posterior):
-            # Nothing left on this floor is the strongest possible "no near
-            # frontier", so the portal gate still gets its chance.
-            floor_switch(None)
             return None
         # Async scoring request (never blocks); use whatever scores exist now
         self.scorer.request(frontiers, world.scene_graph, world.target, world.keyframes)
         frontier_scores = dict(self.scorer.latest())
-        # Optional ASCENT/VLFM-style semantic value.  The image-text scorer
-        # paints only the active floor; applying it here keeps remote-floor
-        # candidates out of local geometry and leaves the default geometric
-        # path byte-for-byte unchanged when value_map is disabled.
+        # Optional ASCENT/VLFM-style semantic value. Leaves the default
+        # geometric path byte-for-byte unchanged when value_map is disabled.
         value_map = getattr(world, "value_map", None)
         if value_map is not None:
             value_weight = float(getattr(self.cfg, "value_weight", 1.0))
@@ -385,33 +300,6 @@ class ExplorationStrategy:
             self.block(by_id.get(fid), 50, world.step)
 
         surface = self._select_surface(world, best)
-        if self.requested_floor is not None:
-            requested = int(self.requested_floor)
-            try:
-                switched = floor_switch(None, requested)
-            except TypeError:
-                # Compatibility with small external strategies/tests that use
-                # the original one-argument callback.
-                switched = floor_switch(None)
-            if switched:
-                return None
-            if bool(getattr(self.cfg, "search_surface_when_floor_unreachable", False)):
-                # The storey we want exists in the posterior and NOT on the
-                # ground: `try_switch` found no portal to it from here. Measured
-                # on outputs/osg_authored_15, that is the usual case -- 405
-                # requests produced 12 directed attempts, so 97% of them found
-                # nothing to drive to.
-                #
-                # Left alone the round returns a frontier and `_select_surface`
-                # has already returned None, so a standing request switches the
-                # container posterior OFF for as long as it stands -- on the
-                # floor the agent is actually on, with the surfaces it can
-                # actually reach. The request is a wish about another storey; it
-                # should not also be a veto on searching this one.
-                self.stats["floor_unreachable_fallback"] = (
-                    self.stats.get("floor_unreachable_fallback", 0) + 1
-                )
-                surface = self._select_surface(world, best, stay_on_floor=True)
         if surface is not None:
             self.search_container = int(surface.ref_id)
             node = world.scene_graph.containers.get(int(surface.ref_id))
@@ -434,7 +322,6 @@ class ExplorationStrategy:
                         else None
                     ),
                     "room": self.search_room_id,
-                    "floor_key": int(surface.floor_key),
                     "room_bonus": round(
                         self._room_bonus(
                             float(self.cfg.search_same_room_bonus),
@@ -467,8 +354,7 @@ class ExplorationStrategy:
             if self._last_giveup_pt is not None:
                 relaxed_blocked = {
                     f.id for f in frontiers
-                    if f.floor == self._last_giveup_pt[1]
-                    and np.linalg.norm(f.centroid_xy - self._last_giveup_pt[0]) < 0.6
+                    if np.linalg.norm(f.centroid_xy - self._last_giveup_pt) < 0.6
                 }
             if len(relaxed_blocked) < len(frontiers):
                 best = select_frontier(
@@ -484,12 +370,6 @@ class ExplorationStrategy:
                     goal_prefer_free=self.goal_prefer_free,
                     cost_prefer_free=self.cost_prefer_free,
                 )
-        # Nothing near left on this floor? Consider leaving it. Checked BEFORE
-        # committing to a far frontier, because "the best thing here is 12 m
-        # away" is exactly ASCENT's condition for reasoning about storeys.
-        if floor_switch(None if best is None else best.path_cost):
-            return None
-
         if best is None or best.path_cost is None:
             self.stats["select_none"] += 1
             return None
@@ -542,10 +422,6 @@ class ExplorationStrategy:
         rng = float(self.cfg.search_glance_range_m)
         frame = world.frame
         for cid, node in containers.items():
-            if int(getattr(node, "floor_id", getattr(node, "floor", 0))) != int(
-                world.floor_id
-            ):
-                continue
             z = container_in_view(frame, node, rng)
             if z is None:
                 continue
@@ -566,8 +442,7 @@ class ExplorationStrategy:
             self._glanced.add(int(cid))
 
     def surface_beliefs(self, world: WorldView) -> Dict[int, float]:
-        """How much the search still believes in each container on this floor,
-        relative to the best of them (1.0), for a decision that is not a
+        """How much the search still believes in each container, relative to the best of them (1.0), for a decision that is not a
         selection round -- the close look asking which surface in view is worth
         its budget. Same prior, same survived factor as `_select_surface`, so
         the two cannot disagree about what a surface is worth."""
@@ -585,8 +460,8 @@ class ExplorationStrategy:
             plane=PLANE,
             affinity_source=self.affinity,
             present=self._ground(world),
+            floor_y=float(world.floor_y),
         )
-        cands = [c for c in cands if int(c.floor_key) == int(world.floor_id)]
         if not cands:
             return {}
         peak = max(float(c.prior) for c in cands)
@@ -594,7 +469,7 @@ class ExplorationStrategy:
             return {}
         return {int(c.ref_id): float(c.prior) / peak for c in cands}
 
-    def _select_surface(self, world: WorldView, best_frontier, stay_on_floor: bool = False):
+    def _select_surface(self, world: WorldView, best_frontier):
         """The best mapped surface, if it beats the best frontier on b*d/c.
 
         Both sides are the same index -- `select_frontier` already returns
@@ -620,120 +495,10 @@ class ExplorationStrategy:
             plane=PLANE,
             affinity_source=self.affinity,
             present=present,
+            floor_y=float(world.floor_y),
         )
         if not cands:
             return None
-        # Choose a storey from the posterior before doing any 2D geometry.
-        # Path cost is meaningful only within a floor; aggregate the remaining
-        # probability mass here and delegate vertical travel to FloorPolicy.
-        floor_mass: Dict[int, float] = {}
-        floor_n: Dict[int, int] = {}
-        for cand in cands:
-            floor_mass[cand.floor_key] = floor_mass.get(cand.floor_key, 0.0) + (
-                cand.prior * cand.detect_prob
-            )
-            floor_n[cand.floor_key] = floor_n.get(cand.floor_key, 0) + 1
-        # A SUM over surfaces is a count of furniture, not a belief about where
-        # the object is. Measured on 00808's prior map with the flat proximity
-        # prior this line ships with, for five different targets:
-        #
-        #     floor 0: 78 surfaces, sum 52.5, mean 0.673
-        #     floor 1: 33 surfaces, sum 22.3, mean 0.676
-        #
-        # The means agree to within half a percent -- the container priors carry
-        # essentially NO information about which storey, which is the same
-        # result docs/ARCHITECTURE.md already records for affinity ranking. The
-        # sum turns that tie into a 2.4x preference for the bigger floor, so an
-        # agent upstairs asks to go down every round whatever it is looking for.
-        #
-        # `mean` makes the score scale-free, and `floor_mass_margin` then
-        # requires another storey to be decisively better before the agent pays
-        # for the stairs. Together they let the posterior say "no opinion",
-        # which on this evidence is the honest answer -- leaving the storey to
-        # the mechanisms that do carry floor information: the stale anchor, and
-        # the LLM once that anchor has been tested.
-        rule = str(getattr(self.cfg, "floor_mass_rule", "sum"))
-        if rule == "mean":
-            score = {k: v / max(floor_n.get(k, 1), 1) for k, v in floor_mass.items()}
-        else:
-            score = dict(floor_mass)
-        eligible = {k: v for k, v in score.items()
-                    if int(k) not in self.disproved_floors or int(k) == int(world.floor_id)}
-        if eligible != score:
-            self.stats["floor_posterior_disproved_excluded"] = (
-                self.stats.get("floor_posterior_disproved_excluded", 0) + 1)
-        if not eligible:
-            # Every storey with any mass is disproved: there is nowhere the
-            # posterior may send the agent. Stay and explore.
-            eligible = {int(world.floor_id): 0.0}
-        score = eligible
-        settle = int(getattr(self.cfg, "empty_storey_settle_steps", 0) or 0)
-        if (
-            int(world.floor_id) not in score
-            and settle > 0
-            and int(world.step) - int(self._floor_arrived_step) < settle
-        ):
-            # THIS storey has no containers and the agent only just got here.
-            # That is "unmapped", not "the target is not here": containers are
-            # rebuilt from tracks at keyframes, and none has happened yet.
-            # Outside the window the shipped rule stands -- with nothing here,
-            # anywhere else is better (test_floor_anchor_order). See the
-            # config comment for the measurement.
-            self.stats["floor_posterior_empty_here"] = (
-                self.stats.get("floor_posterior_empty_here", 0) + 1)
-            score = {int(world.floor_id): 0.0}
-        selected_floor = max(score, key=lambda key: (score[key], -int(key)))
-        margin = float(getattr(self.cfg, "floor_mass_margin", 0.0))
-        if (
-            margin > 0.0
-            and int(selected_floor) != int(world.floor_id)
-            and float(score.get(int(world.floor_id), 0.0)) > 0.0
-            and float(score[selected_floor])
-            < float(score[int(world.floor_id)]) * margin
-        ):
-            self.stats["floor_mass_no_opinion"] = (
-                self.stats.get("floor_mass_no_opinion", 0) + 1
-            )
-            selected_floor = int(world.floor_id)
-        self.selected_search_floor = int(selected_floor)
-        self.stats["selected_search_floor"] = int(selected_floor)
-        if int(selected_floor) != int(world.floor_id) and self._anchor_untested(world):
-            # The map still says the object is on THIS floor and nothing has
-            # tested that. Leaving now abandons the one hypothesis the prior map
-            # actually supports, in favour of an argmax over how many surfaces
-            # each storey happens to have. Hold the request and search here.
-            self.stats["cross_floor_request_held"] = (
-                self.stats.get("cross_floor_request_held", 0) + 1
-            )
-            selected_floor = int(world.floor_id)
-        forced = getattr(self, "forced_floor", None)
-        if forced is not None and int(forced) != int(world.floor_id):
-            # Failed attempts have disproved this storey (agent.rearm). That
-            # outranks a posterior that abstains by design (`mean` + margin)
-            # and an anchor hold whose anchor has, by definition, been tested.
-            selected_floor = int(forced)
-            self.selected_search_floor = int(forced)
-            self.stats["selected_search_floor"] = int(forced)
-            self.stats["floor_forced_by_failed_attempts"] = (
-                self.stats.get("floor_forced_by_failed_attempts", 0) + 1)
-        if int(selected_floor) != int(world.floor_id) and not stay_on_floor:
-            self.requested_floor = int(selected_floor)
-            self.stats["cross_floor_search_requests"] = (
-                self.stats.get("cross_floor_search_requests", 0) + 1
-            )
-            self.search_log_events.append({
-                "step": int(world.step),
-                "selected_floor": int(selected_floor),
-                "current_floor": int(world.floor_id),
-                "floor_mass": {
-                    str(key): round(float(value), 5)
-                    for key, value in sorted(floor_mass.items())
-                },
-            })
-            return None
-        if int(selected_floor) == int(world.floor_id):
-            self.requested_floor = None
-        cands = [c for c in cands if int(c.floor_key) == int(world.floor_id)]
         # Drive to a pose you can STAND in, not to the middle of the furniture.
         # A container's centre is inside the desk; the follower ends wherever the
         # navmesh allows, arrival is never registered, and the surface is scored
@@ -757,7 +522,7 @@ class ExplorationStrategy:
         # once the nearby surfaces are retired.
         room_bonus = float(self.cfg.search_same_room_bonus)
         if room_bonus > 1.0 and world.scene_graph.rooms:
-            here = world.scene_graph.room_of_point(agent_xy, floor_key=world.floor_id)
+            here = world.scene_graph.room_of_point(agent_xy)
             if here is not None:
                 for c in cands:
                     node = world.scene_graph.containers.get(c.ref_id)
@@ -795,36 +560,6 @@ class ExplorationStrategy:
                 )
                 return None
         return surface
-
-    def _anchor_untested(self, world: WorldView) -> bool:
-        """Is a target-labelled track on THIS floor still believed and unvisited?
-
-        The condition under which leaving the storey is premature. "Untested"
-        means the agent has not been to that pose (`absence_arrivals == 0`) and
-        the belief is still above the bar candidates are proposed at -- exactly
-        the two signals the rest of the pipeline already uses, so the floor
-        question and the candidate question cannot disagree about one track.
-
-        False whenever the feature is off, when nothing target-labelled is
-        mapped on this floor, or when there is no presence filter to ask: in all
-        three the storey argmax is the only opinion available and it should
-        stand.
-        """
-        if not bool(getattr(self.cfg, "search_floor_requires_anchor_test", False)):
-            return False
-        layer = world.object_layer
-        min_presence = float(self._anchor_min_presence)
-        for track in layer.tracks(include_blacklisted=True):
-            if not same_label(getattr(track, "label", ""), world.target):
-                continue
-            if int(getattr(track, "floor_key", world.floor_id)) != int(world.floor_id):
-                continue
-            if int(getattr(track, "absence_arrivals", 0)) > 0:
-                continue
-            presence = getattr(track, "presence", None)
-            if presence is None or float(presence.p) >= min_presence:
-                return True
-        return False
 
     def _last_known_target_xy(self, world: WorldView):
         """Where the target was last believed to be -- while it is still believed.
@@ -909,10 +644,6 @@ class ExplorationStrategy:
             return None
         node = world.scene_graph.containers.get(self.search_container)
         if node is None:
-            return None
-        if int(getattr(node, "floor_id", getattr(node, "floor", 0))) != int(
-            world.floor_id
-        ):
             return None
         frame, agent_xy = world.frame, world.agent_xy
         if float(np.linalg.norm(agent_xy - world.goal_xy)) > float(
@@ -1075,21 +806,19 @@ class ExplorationStrategy:
         self.progress_ref_step = world.step
         self.progress_ref_xy = world.agent_xy.copy()
 
-    def maybe_give_up(self, world: WorldView, portal_ok: bool) -> bool:
+    def maybe_give_up(self, world: WorldView) -> bool:
         """No displacement for a while means an obstacle the map cannot see --
         below the obstacle band, glass, a sim collision. Abandon this frontier
         rather than push against it forever.
 
         Returns True if the pursuit was abandoned, in which case the caller goes
-        back to exploring. A portal pursuit is exempt and judged on vertical
-        progress instead: a switchback staircase barely moves in (x, z) while
-        climbing perfectly well.
+        back to exploring.
         """
         window = int(getattr(self.cfg, "giveup_after_steps", 15) or 15)
         min_m = float(getattr(self.cfg, "giveup_min_progress_m", 0.2))
         if world.step - self.progress_ref_step < window:
             return False
-        if portal_ok or float(np.linalg.norm(world.agent_xy - self.progress_ref_xy)) >= min_m:
+        if float(np.linalg.norm(world.agent_xy - self.progress_ref_xy)) >= min_m:
             self.note_progress(world)
             return False
         self.giveup_log.append((
@@ -1101,8 +830,7 @@ class ExplorationStrategy:
         self.block(self.current_frontier, 100, world.step)
         self.stats["frontier_give_up"] = self.stats.get("frontier_give_up", 0) + 1
         if self.current_frontier is not None:
-            self._last_giveup_pt = (self.current_frontier.centroid_xy.copy(),
-                                    self.current_frontier.floor)
+            self._last_giveup_pt = self.current_frontier.centroid_xy.copy()
         self.current_frontier = None
         self.note_progress(world)
         return True
@@ -1145,5 +873,5 @@ class ExplorationStrategy:
         # same unreachable stub. An ordinary arrival must NOT be marked this
         # way: it would suppress the fallback everywhere near a place the agent
         # had simply finished exploring.
-        self._last_giveup_pt = (frontier.centroid_xy.copy(), frontier.floor)
+        self._last_giveup_pt = frontier.centroid_xy.copy()
         self.stats["frontier_stub_block"] = self.stats.get("frontier_stub_block", 0) + 1

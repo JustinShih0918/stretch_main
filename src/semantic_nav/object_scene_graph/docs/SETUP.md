@@ -144,15 +144,14 @@ bash scripts/fetch_ascent_weights.sh        # -> relative_work/ascent/pretrained
 
 | file | size | used by | source |
 |---|---|---|---|
-| `groundingdino_swint_ogc.pth` | 662 MB | stair detector (:13184) | GroundingDINO v0.1.0-alpha release |
+| `groundingdino_swint_ogc.pth` | 662 MB | GroundingDINO (:13184) | GroundingDINO v0.1.0-alpha release |
 | `ram_plus_swin_large_14m.pth` | 2.9 GB | RAM++ tagger (:13185) | HF `xinyu1205/recognize-anything-plus-model` |
 | `dfine_x_obj2coco.pth` | 240 MB | D-FINE detector (:13186) | Peterande/storage dfinev1.0 |
 | `mobile_sam.pt` | 39 MB | mask per detection (:13183) | linked from `data/weights/` |
-| `rednet_semmap_mp3d_40.pth` | 626 MB | stair segmentation | linked from `data/weights/` |
 | `resnet50_places365.pth.tar` | 93 MB | room labels (in-process) | linked from `data/place365/` |
 | `pointnav_weights.pth` | 32 MB | the frozen mover | linked from `data/weights/` |
 
-The script links the four this repo already has and downloads the other three;
+The script links the three this repo already has and downloads the other three;
 run it again any time — it skips what is present. **BLIP-2** (the value map and
 commit gate, :13182) is not a file here: `lavis` pulls it from HF on the
 server's first start, which is why that server takes longest to come up.
@@ -167,7 +166,6 @@ bf16 server.
 ```bash
 python scripts/download_weights.py                 # detector + mobileclip
 python scripts/download_weights.py --pointnav      # the mover
-python scripts/download_weights.py --rednet        # stair segmentation
 python scripts/download_weights.py --clip          # value-map image-text model
 ```
 

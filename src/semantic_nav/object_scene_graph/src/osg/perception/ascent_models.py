@@ -1,5 +1,5 @@
-"""Clients for the rest of ASCENT's served perception: GroundingDINO (stairs)
-and RAM++ (per-step scene tags), plus the fail-loud contract they all share.
+"""Clients for the rest of ASCENT's served perception: RAM++ (per-step scene
+tags), plus the fail-loud contract they all share.
 
 ASCENT runs every model as a Flask process (`relative_work/ascent/model_api/`)
 and its policy calls them over HTTP; this file speaks those wire formats so
@@ -129,75 +129,6 @@ def probe_perception_servers(endpoints: Dict[str, str], timeout_s: float = 5.0,
             "`bash scripts/serve_perception.sh`:\n  " + "\n  ".join(dead)
         )
 
-
-class GroundingDinoStairDetector:
-    """The detector half of ASCENT's stair fusion.
-
-    ASCENT appends `" stair ."` to its GroundingDINO caption on every step
-    (`map_controller.py:700-704`), keeps boxes whose phrase is `stair` with
-    logit >= 0.60 (`:782-786`), segments each box with MobileSAM, and the
-    obstacle map ANDs the union of those masks with RedNet's stair class
-    (`obstacle_map.py:520-524`). OSG's port unioned RedNet in instead, for
-    recall -- and the trace diagnosis measured that union climbing 11
-    same-floor episodes into the ground. Strict fusion is the reference.
-    """
-
-    def __init__(
-        self,
-        url: str = "http://localhost:13184/gdino",
-        sam_url: str = "http://localhost:13183/mobile_sam",
-        caption: str = "stair .",
-        conf: float = 0.60,
-        timeout_s: float = 15.0,
-        strict: bool = False,
-    ) -> None:
-        self.url = url
-        self.sam_url = sam_url
-        self.caption = caption
-        self.conf = float(conf)
-        self.timeout_s = float(timeout_s)
-        self.strict = bool(strict)
-        self.counters: dict = {}
-
-    def boxes(self, rgb: np.ndarray, img_b64: Optional[str] = None) -> List[np.ndarray]:
-        """Pixel xyxy boxes of `stair` detections above `conf`."""
-        img = img_b64 or encode_rgb(rgb)
-        resp = post_json(self.url, {"image": img, "caption": self.caption},
-                         self.timeout_s, self.strict, self.counters)
-        if not resp or "boxes" not in resp:
-            if self.strict:
-                raise PerceptionUnavailable(f"{self.url}: malformed reply {resp!r}")
-            return []
-        h, w = rgb.shape[:2]
-        out = []
-        for box, logit, phrase in zip(resp["boxes"], resp["logits"], resp.get("phrases", [])):
-            if str(phrase).strip().lower() != "stair" or float(logit) < self.conf:
-                continue
-            out.append(np.asarray(box, float) * np.array([w, h, w, h], float))
-        return out
-
-    def mask(self, rgb: np.ndarray, img_b64: Optional[str] = None) -> Optional[np.ndarray]:
-        """Union of MobileSAM masks over the stair boxes, or None when none."""
-        img = img_b64 or encode_rgb(rgb)
-        h, w = rgb.shape[:2]
-        union = None
-        for box in self.boxes(rgb, img):
-            x0, y0, x1, y1 = [int(round(float(v))) for v in box]
-            resp = post_json(self.sam_url, {"image": img, "bbox": [x0, y0, x1, y1]},
-                             self.timeout_s, self.strict, self.counters)
-            if not resp or "cropped_mask" not in resp:
-                if self.strict:
-                    raise PerceptionUnavailable(f"{self.sam_url}: malformed reply")
-                continue
-            raw = np.frombuffer(base64.b64decode(resp["cropped_mask"]), dtype=np.uint8)
-            if raw.size != h * w:
-                if self.strict:
-                    raise PerceptionUnavailable(
-                        f"{self.sam_url}: mask has {raw.size} px, frame has {h * w}")
-                continue
-            m = raw.reshape(h, w).astype(bool)
-            union = m if union is None else (union | m)
-        return union
 
 
 class RamTagger:

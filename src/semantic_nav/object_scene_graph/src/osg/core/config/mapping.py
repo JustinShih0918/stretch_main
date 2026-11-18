@@ -25,7 +25,4 @@ class MappingConfig:
     # detection then grew from a 9-cell island and found nothing.
     footprint_clear_m: float = 0.0
     floor_reject_m: float = 0.0
-    multi_floor: bool = False
-    freeze_floor_in_climb: bool = False
-    freeze_floor_on_stairs: bool = False
 

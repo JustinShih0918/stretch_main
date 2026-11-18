@@ -1,36 +1,18 @@
-"""Generate the two fixed 50-episode A/B splits used by every stage.
+"""Generate the fixed 50-episode A/B split used by every stage.
 
-Why two splits, both 50 episodes:
-
-* ``dev50``     -- representative: episodes spread evenly over all val scenes.
-                   Used by the stages whose effect is scene-agnostic (value
-                   map, FP retraction, terminal rule, LLM re-ranking).
-* ``dev50_mf``  -- cross-floor only: episodes whose GOAL sits more than
-                   ``--floor-gap`` (default 1.0 m; storeys are ~2.5 m) above or
-                   below the START. Used by the multi-floor stages (S1-S3),
-                   which cannot affect any other episode.
-
-Selection is per EPISODE, not per scene, and that distinction is load-bearing:
-multi-storey houses are full of episodes whose goal is on the starting floor.
-Measured on HM3D v1 val, a scene-level "multi-floor" split of 50 episodes
-contained only 15 that actually require a floor change -- so it spent 70% of
-its samples on episodes the work under test provably cannot move. Selecting on
-the start-to-goal gap triples the statistical power for the same 50 episodes.
-
-Goal heights come from view-points (standable poses), not object centres -- a
-tall object's centre is not a floor.
+``dev50`` is representative: episodes spread evenly over all val scenes.
 
 Episode sampling is a *development-tool* choice and does not affect the
-evaluation protocol: both splits inherit the ascent-matched task/sim settings
+evaluation protocol: the split inherits the ascent-matched task/sim settings
 (success_distance 0.1, 500 steps, allow_sliding false, ...).
 
 Determinism: episodes are sorted by uid and sampled with a seeded RNG, so the
-same dataset always yields the same split. The splits must NOT be regenerated
+same dataset always yields the same split. The split must NOT be regenerated
 once stages start landing -- changing them breaks cross-stage comparability.
 
 Run inside the nav container (needs habitat + the dataset):
 
-    python scripts/make_dev_split.py                      # writes both splits
+    python scripts/make_dev_split.py                      # writes the split
     python scripts/make_dev_split.py eval=hm3d_val_v1_full --n 50
 """
 from __future__ import annotations
@@ -71,28 +53,6 @@ def load_episodes(cfg):
         hab_cfg.habitat.dataset.type, config=hab_cfg.habitat.dataset
     )
     return dataset.episodes
-
-
-def goal_floor_gap(episode) -> float:
-    """Height difference between the episode start and the nearest goal
-    view-point: how many storeys this episode actually requires the agent to
-    climb. Must stay identical to osg.eval.runner._goal_floor_gap_m.
-
-    This is the per-episode ground truth, and the right thing to select on. A
-    scene-level floor span is NOT a substitute: multi-storey houses are full of
-    episodes whose goal sits on the starting floor, so a scene-level split
-    wastes most of its samples on episodes the multi-floor work cannot affect
-    (measured on this dataset: only 15/50).
-    """
-    ys = [
-        float(vp.agent_state.position[1])
-        for goal in (episode.goals or [])
-        for vp in (getattr(goal, "view_points", None) or [])
-    ]
-    if not ys:
-        return 0.0
-    start_y = float(episode.start_position[1])
-    return min(abs(y - start_y) for y in ys)
 
 
 def sample_even(by_scene: dict, n: int, rng: np.random.Generator) -> list:
@@ -151,78 +111,33 @@ episode_ids:
     out.write_text(json.dumps(meta | {"episode_ids": uids}, indent=2))
 
 
-def build(cfg: DictConfig, n: int, floor_gap: float) -> None:
+def build(cfg: DictConfig, n: int) -> None:
     episodes = load_episodes(cfg)
     if not episodes:
         sys.exit("No episodes loaded -- is the dataset downloaded? See data/README.md")
 
-    gaps = {episode_uid(ep): goal_floor_gap(ep) for ep in episodes}
-    if not any(gaps.values()):
-        sys.exit(
-            "Every episode has a zero start-to-goal height gap; goal view-points "
-            "are probably missing. The episodes file may be an index without "
-            "per-scene content."
-        )
-
-    by_scene, by_scene_mf = defaultdict(list), defaultdict(list)
-    per_scene_cross = defaultdict(int)
+    by_scene = defaultdict(list)
     for ep in episodes:
-        scene = str(ep.scene_id).split("/")[-1]
-        uid = episode_uid(ep)
-        by_scene[scene].append(uid)
-        if gaps[uid] > floor_gap:
-            by_scene_mf[scene].append(uid)
-            per_scene_cross[scene] += 1
+        by_scene[str(ep.scene_id).split("/")[-1]].append(episode_uid(ep))
+    print(f"{len(episodes)} episodes over {len(by_scene)} scenes")
 
-    n_cross = sum(per_scene_cross.values())
-    print(f"{len(episodes)} episodes over {len(by_scene)} scenes; "
-          f"{n_cross} ({n_cross / len(episodes):.0%}) need a floor change "
-          f"(start-to-goal gap > {floor_gap} m)")
-    for scene in sorted(by_scene):
-        c = per_scene_cross.get(scene, 0)
-        print(f"  {'MF' if c else '  '} {c:4d}/{len(by_scene[scene]):<4d} cross-floor  {scene}")
-
-    common = {
-        "generated_by": "scripts/make_dev_split.py",
-        "seed": int(cfg.seed),
-        "floor_gap_threshold_m": floor_gap,
-        "n_cross_floor_in_split_source": n_cross,
-    }
     write_split(
         "dev50",
         sample_even(by_scene, n, np.random.default_rng(cfg.seed)),
-        common | {
+        {
+            "generated_by": "scripts/make_dev_split.py",
+            "seed": int(cfg.seed),
             "split_kind": "representative",
             "header": f"# Representative A/B split: {n} episodes spread over all "
                       f"{len(by_scene)} val scenes.",
         },
     )
-    if not by_scene_mf:
-        print("[warn] no cross-floor episodes found -- dev50_mf not written")
-        return
-    write_split(
-        "dev50_mf",
-        # Fresh RNG (not the one sample_even just consumed) so dev50_mf is
-        # reproducible on its own and unaffected by dev50's draw order.
-        sample_even(by_scene_mf, n, np.random.default_rng(cfg.seed)),
-        common | {
-            "split_kind": "cross_floor",
-            "header": f"# Cross-floor A/B split: {n} episodes whose GOAL sits more "
-                      f"than {floor_gap} m above/below the start, drawn from the "
-                      f"{len(by_scene_mf)} scenes that contain such episodes.\n"
-                      f"# Selected per EPISODE, not per scene: only ~{n_cross / len(episodes):.0%} "
-                      f"of episodes in multi-storey scenes actually require a floor change.",
-        },
-    )
-    print(f"\nWrote configs/eval/dev50.yaml and dev50_mf.yaml ({n} episodes each)")
+    print(f"\nWrote configs/eval/dev50.yaml ({n} episodes)")
 
 
 def main() -> None:
     ap = argparse.ArgumentParser(add_help=False)
-    ap.add_argument("--n", type=int, default=50, help="episodes per split")
-    ap.add_argument("--floor-gap", type=float, default=1.0,
-                    help="metres of start-to-goal height difference above which "
-                         "an episode counts as cross-floor")
+    ap.add_argument("--n", type=int, default=50, help="episodes in the split")
     ap.add_argument("-h", "--help", action="store_true")
     args, hydra_argv = ap.parse_known_args()
     if args.help:
@@ -233,7 +148,7 @@ def main() -> None:
 
     @hydra.main(config_path="../configs", config_name="config", version_base="1.3")
     def _run(cfg: DictConfig) -> None:
-        build(cfg, args.n, args.floor_gap)
+        build(cfg, args.n)
 
     _run()
 

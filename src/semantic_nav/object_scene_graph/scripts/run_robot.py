@@ -6,7 +6,7 @@ Two runs make an experiment, differing in one field:
     python scripts/run_robot.py +experiment=stretch3_search   # load it, find the thing
 
 That is the protocol the whole dynamic-scene line is built around
-(docs/history/DYNAMIC_SCENES.md): run 1 leaves a scene graph and per-storey occupancy;
+(docs/history/DYNAMIC_SCENES.md): run 1 leaves a scene graph and its occupancy map;
 run 2 starts believing it, and the object has moved. The difference on a robot
 is only that the world changes because somebody moved a chair rather than
 because a script re-authored a layout.
@@ -27,6 +27,8 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
+
+import numpy as np
 
 import hydra
 from omegaconf import DictConfig, OmegaConf
@@ -118,24 +120,26 @@ def main(cfg: DictConfig) -> None:
         print(f"[robot] /map published by: {', '.join(map_pubs) or 'nobody (no map yet?)'}")
     components = build_run_components(cfg, env=env)
     env.attach_driver(components["pointnav"])
-    target = env.target_category()
+    # "fire extinguisher #1": one instance of a class the scene graph tells
+    # apart (scene_graph.instance_labels, osg/objects/instances.py). The class
+    # is the target everywhere else; the index only narrows which object.
+    from osg.objects.instances import split_target
+
+    target, instance = split_target(env.target_category())
+    if instance:
+        cfg.agent.target_instance = instance
+    instance = int(cfg.agent.target_instance)
+    mission = f"{target} #{instance}" if instance else target
     map_path = Path(cfg.ros2.map_dir) / f"{cfg.ros2.map_tag}.json"
 
-    print(f"[robot] {map_mode} run, target={target!r}, map={map_path}")
+    print(f"[robot] {map_mode} run, target={mission!r}, map={map_path}")
     profiler = Profiler()
-    # Built BEFORE the first frame, so the floor callback is in place before
-    # `reset()` can poll one: a switch landing in that window would set the
-    # env's storey (and the height of every pose after it) while the agent was
-    # still filing everything under storey 0.
     agent = build_agent(
         cfg, components, target,
         keyframe_dir=str(out_dir / "keyframes" / f"{cfg.ros2.map_tag}")
         if cfg.eval.save_viz else None,
         profiler=profiler,
     )
-    # The operator's floor switch, from the topic through to the map and the
-    # scene graph (docs/ROS2.md). Needs floor.source=external to take effect.
-    env.on_floor_switch = agent.floors.request_floor
 
     frame = env.reset()
     episode = env.current_episode
@@ -149,11 +153,13 @@ def main(cfg: DictConfig) -> None:
             agent, load_map(map_path),
             max_log_odds=float(cfg.scene_graph.presence.reload_max_log_odds),
             initial_floor_y=float(frame.camera_position[1]) - float(cfg.agent.camera_height),
-            # The storey is declared, not measured: a height comparison here
-            # would be between two synthetic numbers (sim/ros2_env.py).
-            initial_floor_key=int(env.floor_key),
         )
-        print(f"[robot] restored {n_tracks} tracks on floor {env.floor_key}")
+        print(f"[robot] restored {n_tracks} tracks")
+    if getattr(agent, "instances", None) is not None:
+        for inst in agent.instances.instances():
+            track = agent.object_layer.get(inst.track_id)
+            where = None if track is None else _where(agent, track)
+            print(f"[robot] {inst.name} at {where}")
 
     # The simulator's debug video, live: rotated frame, detections, the
     # two-panel view, all on /osg/* for scripts/ros2/osg.rviz. Always on for a
@@ -162,7 +168,34 @@ def main(cfg: DictConfig) -> None:
 
     checkpoint_every = int(cfg.ros2.map_checkpoint_steps)
 
+    printed = {"instance_events": len(getattr(agent, "instance_events", None) or []),
+               "off_plane": 0}
+
     def _checkpoint(step: int) -> None:
+        # A robot on its side still answers every step: Isaac's Stretch clipped a
+        # wheelchair at step 69, went over backwards, and the run spent its other
+        # 230 steps "wedged" with the camera on the ceiling (outputs/20261113_191906).
+        # The camera leaving its standing height is the tell; end the run there.
+        if float(getattr(agent, "_off_plane_m", 0.0) or 0.0) > FELL_M:
+            printed["off_plane"] += 1
+            if printed["off_plane"] >= FELL_STEPS and getattr(env, "abort_reason", None) is None:
+                env.abort(f"the robot fell over at step {step} (its camera is "
+                          f"{agent._off_plane_m:.2f} m off its standing height)")
+                print(f"[robot] {env.abort_reason}: ending the run", flush=True)
+        else:
+            printed["off_plane"] = 0
+        # Instances indexed or moved since the last step ("fire extinguisher #1
+        # moved ..."), as they happen.
+        events = getattr(agent, "instance_events", None) or []
+        for ev in events[printed["instance_events"]:]:
+            if ev["event"] == "moved":
+                print(f"[robot] {ev['name']} moved: {ev['from_xy']} -> {ev['to_xy']} "
+                      f"({ev['distance_m']} m; track {ev['from_track']} -> {ev['to_track']})", flush=True)
+            else:
+                print(f"[robot] {ev['name']} {ev['event']} at {ev['xy']}"
+                      + (f" ({ev['why']}; track {ev['from_track']} -> {ev['track_id']})" if ev.get("why") else ""),
+                      flush=True)
+        printed["instance_events"] = len(events)
         # The map so far, at the path the search pass will read. A run that dies
         # at step 150 then leaves a step-140 map instead of none; a proper end
         # overwrites it with the final one below.
@@ -170,16 +203,65 @@ def main(cfg: DictConfig) -> None:
             save_map(map_path, agent, scene=str(cfg.ros2.map_tag))
             print(f"[robot] map checkpoint at step {step} -> {map_path}", flush=True)
 
-    debug = DebugStream(env, log_path=out_dir / "stream.jsonl", on_step=_checkpoint)
-    if bool(cfg.ros2.wait_for_switch):
-        # Resuming after a carry (config/ros2.py): the restored graph is
-        # already on RViz through `debug.write`; the operator's switch starts
-        # the run, and its first step applies the storey.
-        frame = env.wait_for_floor_switch(
-            on_frame=lambda f: debug.write(f, agent, target, components["detector"]))
+    # The condition inspection (inspection group, off unless a preset turns it
+    # on): the best views of the target are kept as the search goes by them,
+    # and judged once it has stopped there.
+    inspector = views = None
+    if bool(cfg.inspection.enabled):
+        from osg.inspection import ConditionInspector, TargetViewBuffer
+
+        inspector = ConditionInspector(cfg.inspection, target)
+        views = TargetViewBuffer(target, keep=int(cfg.inspection.keep_views),
+                                 border_px=int(cfg.inspection.border_px),
+                                 min_h_frac=float(cfg.inspection.min_bbox_h_frac))
+        _mission(env, {"stage": "searching", "target": mission, "map_mode": map_mode})
+
+    debug = DebugStream(env, log_path=out_dir / "stream.jsonl", on_step=_checkpoint,
+                        on_detections=None if views is None else views.observe)
+    looked: dict = {}
+
+    def _stop_check(_frame) -> bool:
+        """A STOP the run can still take back (`eval.attempts` > 1): is there a
+        {target} where it stopped? The look the inspection takes anyway -- face
+        it, a few frames, back off if too close -- is taken now, and if the
+        detector names none there the stop becomes a failed attempt: the agent
+        drops that track and searches on. Measured: a far-placement run stopped
+        at a shelf of red-labelled binders that only the region proposer had
+        called an extinguisher, found no view of one, and ended the mission
+        there (outputs/20261113_191403)."""
+        env.halt()
+        seen = _look_at_stop(cfg, env, agent, components["detector"], views, target,
+                             agent.step_count, stage="checking")
+        looked.clear()
+        looked.update(seen)
+        if seen["chosen"] or seen["track"] is None:
+            return True
+        print(f"[robot] stopped at {seen['name']} at {seen['where']}, but the detector names "
+              f"no {target} there: not it, searching on", flush=True)
+        _mission(env, {"stage": "resumed", "target": mission, "rejected": seen["name"],
+                       "where": seen["where"]})
+        return False
+
+    if inspector is not None and int(cfg.eval.attempts) > 1:
+        env.stop_check = _stop_check
     try:
         outcome = run_episode(cfg, env, agent, episode, target, frame,
                               components["detector"], debug)
+        if outcome.attempts_used > 1:
+            print(f"[robot] {outcome.attempts_used - 1} stop(s) taken back: no {target} there",
+                  flush=True)
+        if inspector is not None:
+            try:
+                _inspect(cfg, env, agent, components["detector"], inspector, views,
+                         target, outcome.steps, out_dir,
+                         on_graph=lambda: debug.publish_graph(agent, target), looked=looked)
+            except Exception as exc:  # noqa: BLE001 -- loud, but the map run keeps its map
+                import traceback
+
+                traceback.print_exc()
+                print(f"[robot] inspection CRASHED: {exc!r}", flush=True)
+                _mission(env, {"stage": "verdict", "condition": "unknown", "target": target,
+                               "error": f"inspection crashed: {exc!r}"})
     except KeyboardInterrupt as exc:
         print(f"\n[robot] interrupted ({exc or 'Ctrl-C'}) -- stopping the base")
         outcome = None
@@ -189,8 +271,7 @@ def main(cfg: DictConfig) -> None:
 
     driver = components["pointnav"]
     print(f"[robot] {getattr(driver, 'n_goals_sent', 0)} goals posted to Nav2, "
-          f"{getattr(driver, 'n_aborts', 0)} refused; "
-          f"floor switches: {env.floor_switches or 'none'}")
+          f"{getattr(driver, 'n_aborts', 0)} refused, {getattr(driver, 'n_escapes', 0)} wedged and backed out")
 
     if map_mode == "map":
         path = save_map(map_path, agent, scene=str(cfg.ros2.map_tag))
@@ -208,8 +289,16 @@ def main(cfg: DictConfig) -> None:
         scorer_before=(0, 0, None),
         verifier=verifier, verifier_before=(0, 0),
     )
+    if getattr(agent, "instances", None) is not None:
+        # Which track was which object at the end, and every index and move seen.
+        rec["instances"] = agent.instances.to_dict()["instances"]
+        rec["instance_events"] = list(agent.instance_events)
+        rec["target_instance"] = int(cfg.agent.target_instance)
     with open(out_dir / "episodes.jsonl", "a") as f:
         f.write(json.dumps(_json_safe(rec)) + "\n")
+    # Per-stage timings, as the simulator runner writes them, so
+    # `scripts/analyze_latency.py` reads a robot run too.
+    profiler.write_csv(str(out_dir / "timing.csv"))
     if cfg.eval.save_viz:
         save_topdown(
             str(out_dir / "viz" / f"{episode_tag(episode)}.png"),
@@ -217,6 +306,191 @@ def main(cfg: DictConfig) -> None:
             title=f"{cfg.ros2.map_tag} target={target} steps={outcome.steps}",
         )
     print(f"[robot] {outcome.steps} steps, {outcome.wall_time_s}s -> {out_dir}")
+
+
+MISSION_TOPIC = "/osg/mission"
+# The camera this far off its standing height for this many steps in a row is a
+# robot that fell over, not a head tilt (centimetres).
+FELL_M = 0.5
+FELL_STEPS = 2
+
+
+def _mission(env, payload: dict) -> None:
+    """Where the mission is (searching / inspecting / verdict / not_found), as
+    JSON on /osg/mission for a display. Best effort, like the debug stream."""
+    try:
+        env.transport.publish_text(MISSION_TOPIC, json.dumps(_json_safe(payload)))
+    except Exception as exc:  # noqa: BLE001 -- a display never ends a run
+        print(f"[robot] mission status not published ({exc!r})")
+
+
+def _where(agent, track) -> list:
+    from osg.eval.debug_stream import DebugStream
+
+    x, y, _ = DebugStream._ros(agent.object_layer.center_of(track))
+    return [round(x, 2), round(y, 2)]
+
+
+def _look_at_stop(cfg, env, agent, detector, views, target, steps, stage="inspecting") -> dict:
+    """Face what the run stopped at and look at it: which one it is, and the views
+    of it the inspection can use (none: the detector does not name a {target}
+    there). Announces `stage` on /osg/mission: "checking" while the stop can
+    still be taken back, "inspecting" once the VLM is next."""
+    from osg.eval.debug_stream import DebugStream
+    from osg.inspection import bearing_deg
+
+    where = None
+    track = agent.object_layer.get(agent._candidate_id) if agent._candidate_id is not None else None
+    if track is not None:
+        x, y, _ = DebugStream._ros(agent.object_layer.center_of(track))
+        where = [round(x, 2), round(y, 2)]
+    # Which one it is, when the class is told apart by instance. The registry
+    # is brought up to date first: the stop is often the keyframe that settles
+    # a move.
+    reg = getattr(agent, "instances", None)
+    name = target
+    if reg is not None and reg.covers(target) and track is not None:
+        agent.instance_events += reg.update(agent.object_layer, step=steps)
+        name = reg.name_of(track)
+    _mission(env, {"stage": stage, "target": name, "where": where,
+                   "model": str(cfg.inspection.model)})
+    if track is not None and bool(cfg.inspection.face_target):
+        turn = bearing_deg(env.observe().T_wc, agent.object_layer.center_of(track))
+        if abs(turn) >= float(cfg.inspection.face_min_deg):
+            print(f"[robot] turning {turn:+.0f} deg to face the {target}", flush=True)
+            env.transport.execute("turn_left" if turn > 0 else "turn_right", 0.0, abs(turn))
+    for k in range(int(cfg.inspection.final_frames)):
+        frame = env.observe()
+        views.observe(frame.rgb, detector.detect(frame.rgb), steps + 1 + k, frame=frame)
+    # With another of its class in the building, only the views of the one the
+    # robot stopped at: the best view of the run can be of the other one.
+    accept = None
+    if reg is not None and reg.covers(target) and track is not None:
+        match_m = float(cfg.scene_graph.instance_match_m)
+        # Within reach of the track it stopped at, and no nearer another
+        # instance's: two extinguishers can stand closer than `match_m`.
+        accept = lambda xyz: reg.belongs(xyz, track.id, agent.object_layer, match_m)  # noqa: E731
+    chosen = views.best(int(cfg.inspection.n_views), accept=accept)
+    if not chosen and track is not None:
+        # Nothing usable, and the stop overshot: at the sim's driving speed one
+        # step can cover 1.5 m, so the terminal stop fired at 0.95 m with the
+        # extinguisher's base below the frame and the detector unable to name it
+        # (outputs/20261113_015719). Back out to the stop distance, the way the
+        # robot came in, and look again.
+        from osg.mapping.costmap import PLANE
+
+        here = env.observe().camera_position[list(PLANE)]
+        gap = agent.object_layer.nearest_point_dist_xy(track, here, float(cfg.agent.terminal_percentile))
+        if gap is None:
+            gap = float(np.linalg.norm(agent.object_layer.center_of(track)[list(PLANE)] - here))
+        back = min(1.0, float(cfg.agent.terminal_stop_m) - float(gap))
+        if back > 0.15:
+            print(f"[robot] {gap:.2f} m is too close to see the whole {name}: backing up {back:.2f} m",
+                  flush=True)
+            env.transport.execute("move_backward", back, 0.0)
+            for k in range(int(cfg.inspection.final_frames)):
+                frame = env.observe()
+                views.observe(frame.rgb, detector.detect(frame.rgb),
+                              steps + 1 + int(cfg.inspection.final_frames) + k, frame=frame)
+            chosen = views.best(int(cfg.inspection.n_views), accept=accept)
+    return {"track": track, "track_id": None if track is None else int(track.id), "step": int(steps),
+            "where": where, "name": name, "reg": reg, "chosen": chosen}
+
+
+def _inspect(cfg, env, agent, detector, inspector, views, target, steps, out_dir,
+             on_graph=None, looked=None) -> None:
+    """The search is over. If it ended AT the target, judge the target's condition.
+
+    The views are the best the approach collected (osg/inspection/views.py)
+    plus a last look from the stop pose (`_look_at_stop`, already taken when the
+    run checked the stop: `looked`); the verdict, the views it was given and a
+    card of both go into the run directory and onto /osg/*.
+    """
+    import cv2
+
+    from osg.inspection import render_card
+
+    if getattr(getattr(agent, "state", None), "name", "") != "DONE":
+        want = int(cfg.agent.target_instance)
+        why = getattr(env, "abort_reason", None)
+        _mission(env, {"stage": "not_found", "target": f"{target} #{want}" if want else target,
+                       "reason": why})
+        print(f"[robot] inspection skipped: {why or f'the run did not stop at a {target}'}")
+        return
+    if (looked and looked.get("track_id") is not None
+            and looked.get("track_id") == agent._candidate_id and looked.get("step") == agent.step_count):
+        seen = looked
+        _mission(env, {"stage": "inspecting", "target": seen["name"], "where": seen["where"],
+                       "model": str(cfg.inspection.model)})
+    else:
+        seen = _look_at_stop(cfg, env, agent, detector, views, target, agent.step_count)
+    track, where, name, reg, chosen = (seen["track"], seen["where"], seen["name"], seen["reg"],
+                                       seen["chosen"])
+    want = int(cfg.agent.target_instance)
+    if (chosen and reg is not None and want and reg.covers(target) and track is not None
+            and reg.index_of(track.id) is None):
+        # The robot was sent for #k, #k is gone from where it was, and the detector
+        # has now named an extinguisher here that no instance explains (the track
+        # it came to may be the region proposer's, which the registry's own rules
+        # never bind): this is #k, moved.
+        event = reg.claim(target, want, track.id, agent.object_layer, step=steps,
+                          why="named by the detector at the stop")
+        if event is not None:
+            agent.instance_events.append(event)
+            name = reg.name_of(track)
+            print(f"[robot] {event['name']} moved: {event['from_xy']} -> {event['to_xy']} "
+                  f"({event['distance_m']} m; confirmed at the stop)", flush=True)
+            # The display announced "fire extinguisher ?": show it the move, and
+            # which one is being inspected.
+            if on_graph is not None:
+                on_graph()
+            _mission(env, {"stage": "inspecting", "target": name, "where": where,
+                           "model": str(cfg.inspection.model)})
+    if want and reg is not None and reg.covers(target) and track is not None:
+        if reg.index_of(track.id) is None and reg.same_as(track, target, want, agent.object_layer):
+            # A second track of the extinguisher #k was just found as (the region
+            # proposer's): it is #k. Say so to the display, which was told "?".
+            name = reg.get(target, want).name
+            _mission(env, {"stage": "inspecting", "target": name, "where": where,
+                           "model": str(cfg.inspection.model)})
+        elif reg.index_of(track.id) != want:
+            print(f"[robot] WARNING: stopped at {name}, the mission was {target} #{want}", flush=True)
+            if reg.index_of(track.id) is not None:
+                # Another instance, known as such: its verdict is not this mission's
+                # answer, and reporting it as one is the mistake the indices exist to
+                # prevent (#2 judged GOOD for the #1 mission, outputs/20261113_200152).
+                why = f"stopped at {name}, not {target} #{want}: no verdict for the mission"
+                _mission(env, {"stage": "not_found", "target": f"{target} #{want}", "reason": why})
+                print(f"[robot] inspection skipped: {why}", flush=True)
+                return
+    images = inspector.images(chosen)
+    for i, im in enumerate(images):
+        cv2.imwrite(str(out_dir / f"inspection_view{i}.jpg"), np.ascontiguousarray(im[..., ::-1]))
+    if images:
+        try:
+            env.transport.publish_image("/osg/inspection_view", images[0], "rgb8")
+        except Exception:  # noqa: BLE001 -- display only
+            pass
+    print(f"[robot] inspecting the {name} at {where}: {len(chosen)} view(s) from steps "
+          f"{[v.step for v in chosen]} ({views.n_seen} frames named it) -> {cfg.inspection.model}",
+          flush=True)
+    report = inspector.inspect(chosen)
+    record = dict(report.to_dict(), where=where, n_target_frames=views.n_seen, object=name)
+    with open(out_dir / "inspection.json", "w") as f:
+        json.dump(_json_safe(record), f, indent=2)
+    card = render_card(report, images[0] if images else None)
+    cv2.imwrite(str(out_dir / "inspection_card.jpg"), card)
+    try:
+        env.transport.publish_image("/osg/inspection", card, "bgr8")
+    except Exception:  # noqa: BLE001 -- display only
+        pass
+    _mission(env, dict(record, stage="verdict", reasoning=report.reasoning[-1200:]))
+    if report.error:
+        print(f"[robot] inspection FAILED: {report.error}", flush=True)
+    else:
+        print(f"[robot] inspection: {report.condition.upper()} ({report.confidence:.2f}) "
+              f"in {report.latency_s}s -- {'; '.join(report.issues) or 'no defects'} "
+              f"-- {report.summary}", flush=True)
 
 
 def _json_safe(value):

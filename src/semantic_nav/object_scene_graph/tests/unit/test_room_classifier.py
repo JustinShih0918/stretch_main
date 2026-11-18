@@ -142,15 +142,14 @@ def _agent_with(classifier):
 
 def _label(agent, votes):
     """Drive _label_rooms with hand-placed votes over a two-room segmentation."""
-    layer = agent.floors.current()
+    layer = agent.map
     grid = layer.costmap.grid
     labels = np.zeros(grid.shape, dtype=np.int32)
     mid = grid.shape[1] // 2
     labels[:, :mid] = 1
     labels[:, mid:] = 2
     layer.room_labels = labels
-    agent.scene_graph.rebuild_floor(labels, layer.costmap, agent.object_layer,
-                                    floor_key=layer.key)
+    agent.scene_graph.rebuild(labels, layer.costmap, agent.object_layer)
     agent._room_votes = [
         (layer.costmap.grid_to_world(np.array(rc, float)), name) for rc, name in votes
     ]
@@ -163,7 +162,7 @@ def test_labels_reach_the_scene_graph():
     writer -- the LLM scorer no measured arm enables -- so every area reached the
     ranker as "unknown room"."""
     agent = _agent_with(_StubClassifier(["bathroom"]))
-    grid = agent.floors.current().costmap.grid
+    grid = agent.map.costmap.grid
     mid = grid.shape[1] // 2
     rooms = _label(agent, [((10, mid // 2), "bathroom"), ((11, mid + 10), "kitchen")])
     assert {r.label for r in rooms.values()} == {"bathroom", "kitchen"}
@@ -173,7 +172,7 @@ def test_majority_vote_survives_one_bad_frame():
     """A frame taken through a doorway classifies the room beyond it; one such
     vote must not rename a room the agent has crossed repeatedly."""
     agent = _agent_with(_StubClassifier(["bedroom"]))
-    grid = agent.floors.current().costmap.grid
+    grid = agent.map.costmap.grid
     c = grid.shape[1] // 4
     votes = [((10 + i, c), "bedroom") for i in range(5)] + [((20, c), "garage")]
     rooms = _label(agent, votes)
@@ -183,12 +182,11 @@ def test_majority_vote_survives_one_bad_frame():
 
 def test_votes_outside_any_room_are_ignored():
     agent = _agent_with(_StubClassifier(["hall"]))
-    layer = agent.floors.current()
+    layer = agent.map
     labels = np.zeros(layer.costmap.grid.shape, dtype=np.int32)
     labels[5:15, 5:15] = 1
     layer.room_labels = labels
-    agent.scene_graph.rebuild_floor(labels, layer.costmap, agent.object_layer,
-                                    floor_key=layer.key)
+    agent.scene_graph.rebuild(labels, layer.costmap, agent.object_layer)
     agent._room_votes = [(layer.costmap.grid_to_world(np.array([50, 50], float)), "hall")]
     agent._label_rooms(layer)
     assert all(r.label is None for r in agent.scene_graph.rooms.values())

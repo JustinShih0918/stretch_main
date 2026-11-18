@@ -58,9 +58,6 @@ def main(argv=None) -> int:
     parser.add_argument("--rgb-out", default="outputs/ros2_check/frame.png",
                         help="where to save a converted RGB frame, so the "
                              "camera rotation can be settled by looking at it")
-    parser.add_argument("--no-floor-switch", action="store_true",
-                        help="skip the floor switch check (the fake robot must "
-                             "be started with --floor-switch-after)")
     parser.add_argument("--loopback", action="store_true",
                         help="run against the ROS-free fake robot in this "
                              "process, instead of a bridge and rclpy. Checks "
@@ -172,22 +169,6 @@ def main(argv=None) -> int:
     checks.check("turn_left turns the way the controller expects",
                  turned < -5.0, info=f"heading moved {turned:+.1f} degrees")
 
-    print("\n== the operator's floor switch ==")
-    if args.no_floor_switch:
-        print("  (skipped)")
-    else:
-        switched, frame = _wait_for_switch(env, timeout_s=20.0)
-        checks.check("the /osg/floor switch arrives", switched,
-                     why="no switch in 20 s: start the fake robot with "
-                         "--floor-switch-after, or publish one by hand")
-        if switched:
-            lifted = float(frame.camera_position[HEIGHT_AXIS])
-            expect = height + float(cfg.floor.virtual_storey_m)
-            checks.check(
-                "the storey becomes a height the pipeline can separate",
-                abs(lifted - expect) < 0.5,
-                info=f"{lifted:.2f} m, floor 0 was {height:.2f} m")
-
     env.close()
     return checks.report()
 
@@ -199,7 +180,7 @@ def _start_loopback() -> None:
     from osg.ros2.loopback import LoopbackRobot, parse_args, serve
     from osg.ros2.wire import parse_addr
 
-    robot_args = parse_args(["--floor-switch-after", "3"])
+    robot_args = parse_args([])
     robot = LoopbackRobot(robot_args)
     ready = threading.Event()
     threading.Thread(
@@ -232,15 +213,6 @@ def _drive_until_arrived(env, driver, frame, goal_xy, timeout_s: float):
         if step.reason == "policy_stop":
             return False, frame
         frame = env.step(step.action)
-    return False, frame
-
-
-def _wait_for_switch(env, timeout_s: float):
-    deadline = time.time() + timeout_s
-    while time.time() < deadline:
-        frame = env.step("turn_left")
-        if env.floor_key != 0:
-            return True, frame
     return False, frame
 
 

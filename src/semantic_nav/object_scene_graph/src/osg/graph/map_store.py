@@ -12,9 +12,11 @@ segmentation. The scene graph itself -- rooms, containers, object views -- is
 derived, so it is rebuilt on load rather than serialised; that way a change to
 the container rule cannot be silently frozen into an old snapshot.
 
-Schema v2 stores every floor independently, including stable floor keys,
-height order, stair evidence and connectivity. Schema v1 remains readable as
-the single floor with key 0.
+Schema v3 stores one occupancy layer (grid, origin, room labels, optional
+value map) and the height of the ground plane it was banded at. Schema v1
+(the same arrays, no floor height) and single-floor schema v2 snapshots (the
+same arrays under a `floor_<key>_` prefix) remain readable; a v2 snapshot
+holding more than one floor is refused.
 """
 from __future__ import annotations
 
@@ -24,11 +26,12 @@ from typing import Any, Dict, List, Optional
 
 import numpy as np
 
+from ..core.labels import normalize_label
 from ..objects.association import Observation, ObjectTrack
 from ..objects.ellipsoid import Ellipsoid
 from ..objects.presence import PresenceState
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 class MapStoreError(RuntimeError):
@@ -90,7 +93,6 @@ def _track_record(track: ObjectTrack) -> Dict[str, Any]:
     return {
         "id": int(track.id),
         "label": str(track.label),
-        "floor_key": int(getattr(track, "floor_key", 0)),
         "center": _f(ell.center),
         "axes": _f(ell.axes),
         "R": _f(ell.R),
@@ -152,7 +154,6 @@ def _track_from_record(rec: Dict[str, Any]) -> ObjectTrack:
         ),
     )
     track.best_score = float(rec.get("best_score", 0.0))
-    track.floor_key = int(rec.get("floor_key", 0))
     track.best_bbox_px = float(rec.get("best_bbox_px", 0.0))
     if rec.get("best_cam_xy") is not None:
         track.best_cam_xy = np.asarray(rec["best_cam_xy"], dtype=float)
@@ -187,73 +188,43 @@ def _track_from_record(rec: Dict[str, Any]) -> ObjectTrack:
 
 def save_map(path: Path, agent, *, scene: str = "", layout_id: str = "") -> Path:
     """Write the agent's map. `path` is the JSON; grids go beside it as .npz."""
-    stack = agent._floor_stack
+    map_layer = agent.map
+    costmap = map_layer.costmap
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    grids = {}
-    floors = []
-    for key, layer in sorted(stack._layers.items()):
-        if not hasattr(layer, "costmap"):
-            raise MapStoreError(f"floor {key} has no costmap")
-        costmap = layer.costmap
-        prefix = f"floor_{int(key)}_"
-        grids[prefix + "grid"] = costmap.grid
-        grids[prefix + "origin"] = costmap.origin
-        for name in ("height", "stair_mask"):
-            value = getattr(costmap, name, None)
+    grids = {"grid": costmap.grid, "origin": costmap.origin}
+    if map_layer.room_labels is not None:
+        grids["room_labels"] = map_layer.room_labels
+    value_map = map_layer.value_map
+    if value_map is not None:
+        # ValueMap2D owns arrays in the same grid frame as the costmap. They
+        # are optional, but when present they are evidence just like the room
+        # labels and must not disappear on a static-map reload.
+        for name in ("value", "conf"):
+            value = getattr(value_map, name, None)
             if value is not None:
-                grids[prefix + name] = value
-        for name in ("room_labels", "up_stair_hits", "down_stair_hits", "disabled_stair"):
-            value = getattr(layer, name, None)
-            if value is not None:
-                grids[prefix + name] = value
-        value_map = getattr(layer, "value_map", None)
-        if value_map is not None:
-            # ValueMap2D owns arrays in the same grid frame as this floor. They
-            # are optional, but when present they are evidence just like room
-            # and stair arrays and must not disappear on a static-map reload.
-            for name in ("value", "conf"):
-                value = getattr(value_map, name, None)
-                if value is not None:
-                    grids[prefix + name] = value
-        floors.append({
-            "key": int(key),
-            "height_y": float(getattr(layer, "floor_y", 0.0)),
-            "resolution": float(costmap.resolution),
-            "prefix": prefix,
-            "first_step": int(getattr(layer, "first_step", 0)),
-            "entry_xy": None if getattr(layer, "entry_xy", None) is None else _f(layer.entry_xy),
-            "explored": bool(getattr(layer, "explored", False)),
-            "visits": int(getattr(layer, "visits", 1)),
-            "value_map": value_map is not None,
-            "value_n_updates": int(getattr(value_map, "n_updates", 0))
-            if value_map is not None else 0,
-        })
+                grids[name] = value
     npz_path = path.with_suffix(".npz")
     np.savez_compressed(npz_path, **grids)
 
     tracks = list(agent.object_layer.tracks(include_blacklisted=True))
+    # Which track is "fire extinguisher #1" (objects/instances.py). Optional and
+    # additive: a reader that does not know the key ignores it, and a map
+    # without it is indexed afresh on load.
+    instances = getattr(agent, "instances", None)
+    extra = {} if instances is None else {"instances": instances.to_dict()}
     path.write_text(
         json.dumps(
             {
+                **extra,
                 "schema_version": SCHEMA_VERSION,
                 "scene": scene,
                 "layout_id": layout_id,
-                "resolution": float(floors[0]["resolution"] if floors else agent.costmap.resolution),
+                "resolution": float(costmap.resolution),
+                "floor_y": None if map_layer.floor_y is None else float(map_layer.floor_y),
+                "value_n_updates": int(getattr(value_map, "n_updates", 0))
+                if value_map is not None else 0,
                 "grids": npz_path.name,
-                "floors": floors,
-                "current_floor_key": int(getattr(stack, "current_id", 0)),
-                "connectivity": [
-                    {
-                        "from_floor": int(edge.from_floor),
-                        "to_floor": int(edge.to_floor),
-                        "entry_xy": None if edge.entry_xy is None else _f(edge.entry_xy),
-                        "exit_xy": None if edge.exit_xy is None else _f(edge.exit_xy),
-                        "step": int(edge.step),
-                        "n_traversals": int(edge.n_traversals),
-                    }
-                    for edge in getattr(stack, "stair_edges", [])
-                ],
                 "next_track_id": int(agent.object_layer._next_id),
                 "tracks": [_track_record(t) for t in tracks],
             },
@@ -262,6 +233,28 @@ def save_map(path: Path, agent, *, scene: str = "", layout_id: str = "") -> Path
         encoding="utf-8",
     )
     return path
+
+
+def _single_floor_v2(path, blob: Dict[str, Any], grids: Dict[str, Any]) -> None:
+    """Rewrite a one-floor schema-v2 blob in place as the v3 layout."""
+    floors = blob.get("floors")
+    if not isinstance(floors, list) or not floors:
+        raise MapStoreError(f"{path}: schema v2 snapshot contains no floors")
+    if len(floors) != 1:
+        raise MapStoreError(
+            f"{path}: schema v2 snapshot holds {len(floors)} floors; this copy "
+            "supports single-floor maps only"
+        )
+    try:
+        prefix = str(floors[0]["prefix"])
+        blob["floor_y"] = float(floors[0]["height_y"])
+        blob["resolution"] = float(floors[0].get("resolution", blob.get("resolution", 0.05)))
+        blob["value_n_updates"] = int(floors[0].get("value_n_updates", 0))
+    except (KeyError, TypeError, ValueError) as exc:
+        raise MapStoreError(f"{path}: corrupt floor metadata") from exc
+    for key in list(grids):
+        if key.startswith(prefix):
+            grids[key[len(prefix):]] = grids.pop(key)
 
 
 def load_map(path: Path) -> Dict[str, Any]:
@@ -273,7 +266,7 @@ def load_map(path: Path) -> Dict[str, Any]:
     except (json.JSONDecodeError, TypeError, ValueError) as exc:
         raise MapStoreError(f"{path}: corrupt snapshot metadata") from exc
     version = int(blob.get("schema_version", -1))
-    if version not in (1, SCHEMA_VERSION):
+    if version not in (1, 2, SCHEMA_VERSION):
         raise MapStoreError(
             f"{path}: unsupported snapshot schema {blob.get('schema_version')}"
         )
@@ -285,22 +278,10 @@ def load_map(path: Path) -> Dict[str, Any]:
                 grids = {k: data[k] for k in data.files}
         except (OSError, ValueError) as exc:
             raise MapStoreError(f"{path}: cannot read grid archive {grids_name}") from exc
-    if version == SCHEMA_VERSION:
-        floors = blob.get("floors")
-        if not isinstance(floors, list) or not floors:
-            raise MapStoreError(f"{path}: schema v2 snapshot contains no floors")
-        try:
-            prefixes = [str(floor["prefix"]) for floor in floors]
-            keys = [int(floor["key"]) for floor in floors]
-        except (KeyError, TypeError, ValueError) as exc:
-            raise MapStoreError(f"{path}: corrupt floor metadata") from exc
-        if len(keys) != len(set(keys)):
-            raise MapStoreError(f"{path}: duplicate stable floor keys")
-        for prefix in prefixes:
-            if prefix + "grid" not in grids or prefix + "origin" not in grids:
-                raise MapStoreError(f"{path}: missing arrays for floor prefix {prefix}")
-    elif "grid" not in grids or "origin" not in grids:
-        raise MapStoreError(f"{path}: schema v1 snapshot has no occupancy grid")
+    if version == 2:
+        _single_floor_v2(path, blob, grids)
+    if "grid" not in grids or "origin" not in grids:
+        raise MapStoreError(f"{path}: snapshot has no occupancy grid")
     blob["_grids"] = grids
     return blob
 
@@ -314,7 +295,6 @@ def apply_map(
     *,
     max_log_odds: float = 1.5,
     initial_floor_y: Optional[float] = None,
-    initial_floor_key: Optional[int] = None,
     restore_occupancy: bool = True,
 ) -> int:
     """Load a snapshot into a freshly constructed agent. Returns track count.
@@ -362,70 +342,45 @@ def apply_map(
     layer._next_id = int(blob.get("next_track_id", max(layer._tracks, default=-1) + 1))
 
     grids = blob.get("_grids", {})
-    version = int(blob.get("schema_version", 1))
+    map_layer = agent.map
+    costmap = map_layer.costmap
+    # The ground plane the costmap is banded at: the one the snapshot was built
+    # on, so both passes put the same points in the same obstacle band. A v1
+    # snapshot did not record it, and the episode's own first frame stands in.
+    stored_y = blob.get("floor_y")
+    if stored_y is not None:
+        map_layer.floor_y = float(stored_y)
+    elif initial_floor_y is not None:
+        map_layer.floor_y = float(initial_floor_y)
 
-    def restore_grid(costmap, prefix: str, room_owner) -> None:
-        # SCENE GRAPH ONLY. The storey still gets its height, its key and its
-        # place in the stack -- the object tracks hang off those -- but its
-        # occupancy is left empty for another map to fill. That is how the
-        # ASCENT obstacle map becomes the SOLE occupancy this run plans over
-        # (ycb.map_in_occupancy=false + ycb.obstacle_map_in). The room labels
-        # go with it: they index the grid that is not being restored, and a
-        # segmentation is rebuilt from whatever occupancy does arrive.
-        if not restore_occupancy:
-            return
+    # SCENE GRAPH ONLY when `restore_occupancy` is off: the tracks are restored
+    # and the occupancy is left for this run to rebuild. The room labels go with
+    # it, since they index the grid that is not being restored.
+    if restore_occupancy:
         snap_res = float(blob.get("resolution", costmap.resolution))
-        if version >= 2:
-            floor_meta = next(f for f in blob["floors"] if f["prefix"] == prefix)
-            snap_res = float(floor_meta["resolution"])
         if abs(snap_res - float(costmap.resolution)) > 1e-9:
             raise MapStoreError(
                 f"snapshot resolution {snap_res} != this costmap's {costmap.resolution}; "
                 "both passes must share mapping.resolution_m"
             )
-        def get(name):
-            return grids.get(prefix + name)
-        grid = get("grid")
-        if grid is not None:
-            costmap.grid = np.array(grid, dtype=costmap.grid.dtype)
-        origin = get("origin")
-        if origin is not None:
-            costmap.origin = np.asarray(origin, dtype=float)
-        if costmap.height is not None:
-            height = get("height")
-            costmap.height = (
-                np.array(height, dtype=np.float32) if height is not None
-                else np.full(costmap.grid.shape, np.nan, dtype=np.float32)
-            )
-        stair_mask = get("stair_mask")
-        if stair_mask is not None:
-            costmap.stair_mask = np.array(stair_mask, dtype=bool)
-        # `grid` was just replaced at the snapshot's extent. Any parallel layer
-        # the snapshot did not carry is still the constructor's shape, and a
-        # restored height is a REAL reading, so nothing is synthetic here.
-        costmap.conform_layers()
-        for name, dtype in (
-            ("room_labels", np.int32), ("up_stair_hits", np.int16),
-            ("down_stair_hits", np.int16), ("disabled_stair", bool),
-        ):
-            value = get(name)
-            if value is not None:
-                setattr(room_owner, name, np.array(value, dtype=dtype))
+        costmap.grid = np.array(grids["grid"], dtype=costmap.grid.dtype)
+        costmap.origin = np.asarray(grids["origin"], dtype=float)
+        if grids.get("room_labels") is not None:
+            map_layer.room_labels = np.array(grids["room_labels"], dtype=np.int32)
         # Restore semantic value evidence when the freshly constructed agent
         # has a value map. If a caller supplied a minimal agent without one,
         # create the lightweight map from the snapshot arrays (no model is
-        # loaded here); this keeps v2 snapshots lossless without requiring a
+        # loaded here); this keeps snapshots lossless without requiring a
         # CLIP dependency for ordinary map consumers.
-        value = get("value")
-        conf = get("conf")
+        value, conf = grids.get("value"), grids.get("conf")
         if value is not None or conf is not None:
-            value_map = getattr(room_owner, "value_map", None)
+            value_map = map_layer.value_map
             if value_map is None and value is not None and conf is not None:
                 try:
                     from ..mapping.value_map import ValueMap2D
 
                     value_map = ValueMap2D(costmap)
-                    room_owner.value_map = value_map
+                    map_layer.value_map = value_map
                 except Exception:  # pragma: no cover - optional dependency path
                     value_map = None
             if value_map is not None:
@@ -433,109 +388,25 @@ def apply_map(
                     value_map.value = np.asarray(value, dtype=np.float32).copy()
                 if conf is not None:
                     value_map.conf = np.asarray(conf, dtype=np.float32).copy()
-                if version >= 2:
-                    meta = next(
-                        f for f in blob["floors"] if f["prefix"] == prefix
-                    )
-                    value_map.n_updates = int(meta.get("value_n_updates", 0))
+                value_map.n_updates = int(blob.get("value_n_updates", 0))
 
-    stack = agent._floor_stack
-    if version == 1:
-        costmap = agent.costmap
-        # v1 used unprefixed array names and is defined as stable floor 0.
-        restore_grid(costmap, "", stack.current)
-        if hasattr(stack, "current_id"):
-            stack.current_id = 0
-        if hasattr(stack.current, "floor_y") and initial_floor_y is not None:
-            stack.current.floor_y = float(initial_floor_y)
-    else:
-        floor_meta = list(blob.get("floors") or [])
-        if not floor_meta:
-            raise MapStoreError("schema v2 snapshot contains no floors")
-        if hasattr(stack, "layer") and callable(stack.layer):
-            stack._layers = {}
-            for meta in floor_meta:
-                key = int(meta["key"])
-                floor_layer = stack.layer(key)
-                floor_layer.floor_y = float(meta["height_y"])
-                floor_layer.first_step = int(meta.get("first_step", 0))
-                floor_layer.entry_xy = (
-                    None if meta.get("entry_xy") is None
-                    else np.asarray(meta["entry_xy"], dtype=float)
-                )
-                floor_layer.explored = bool(meta.get("explored", False))
-                floor_layer.visits = int(meta.get("visits", 1))
-                restore_grid(floor_layer.costmap, str(meta["prefix"]), floor_layer)
-        else:
-            if len(floor_meta) != 1 or int(floor_meta[0]["key"]) != 0:
-                raise MapStoreError("target agent cannot restore multiple floors")
-            restore_grid(agent.costmap, str(floor_meta[0]["prefix"]), stack.current)
-        # Select by the episode's first observed floor height, never by the
-        # floor that happened to be active when the snapshot was written.
-        #
-        # `initial_floor_key` overrides that, and exists for the robot: with
-        # `floor.source=external` the storey is declared, not measured, and the
-        # declaration must win over a height comparison made against a pose
-        # whose vertical is synthetic (sim/ros2_env.py). A key that is not in
-        # the snapshot falls through to the height rule rather than failing --
-        # starting run 2 on a storey run 1 never mapped is a legitimate thing
-        # to do, and it should begin with an empty map, not an exception.
-        by_key = {int(f["key"]): f for f in floor_meta}
-        if initial_floor_key is not None and int(initial_floor_key) in by_key:
-            chosen = by_key[int(initial_floor_key)]
-        elif initial_floor_y is not None:
-            chosen = min(
-                floor_meta,
-                key=lambda f: abs(float(f["height_y"]) - float(initial_floor_y)),
-            )
-        else:
-            chosen = min(floor_meta, key=lambda f: float(f["height_y"]))
-        if hasattr(stack, "current_id"):
-            stack.current_id = int(chosen["key"])
-        if hasattr(stack, "stair_edges"):
-            from ..mapping.floor_stack import StairEdge
-            stack.stair_edges = [
-                StairEdge(
-                    from_floor=int(edge["from_floor"]), to_floor=int(edge["to_floor"]),
-                    entry_xy=None if edge.get("entry_xy") is None else np.asarray(edge["entry_xy"], float),
-                    exit_xy=None if edge.get("exit_xy") is None else np.asarray(edge["exit_xy"], float),
-                    step=int(edge.get("step", 0)), n_traversals=int(edge.get("n_traversals", 1)),
-                )
-                for edge in blob.get("connectivity", [])
-            ]
-
-    # FloorPolicy owns both the persistent map stack and the online height
-    # estimator. Restore them as one state: otherwise the first live frame
-    # bootstraps estimator floor 0 and silently detaches a restored stable key
-    # such as 4 or 9 from the storey it names.
-    floor_policy = getattr(agent, "floors", None)
-    estimator = getattr(floor_policy, "estimator", None)
-    if estimator is not None:
-        if version == 1:
-            height = float(initial_floor_y if initial_floor_y is not None else 0.0)
-            heights = {0: height}
-        else:
-            heights = {
-                int(meta["key"]): float(meta["height_y"])
-                for meta in floor_meta
-            }
-        estimator._levels = dict(heights)
-        estimator._samples = {key: [height] for key, height in heights.items()}
-        estimator._next_id = max(heights, default=-1) + 1
-        estimator.current = int(getattr(stack, "current_id", 0))
-        floor_policy._floor_y = float(heights[estimator.current])
-
-    costmap = agent.costmap
+    # Instances: restored as saved, or -- a map saved before they existed --
+    # indexed now, in creation order. Links between tracks of those classes are
+    # dropped: an older map may have joined two extinguishers into one object.
+    instances = getattr(agent, "instances", None)
+    if instances is not None:
+        skip = getattr(layer, "unlinked_labels", set()) or set()
+        for track in layer._tracks.values():
+            if normalize_label(track.label) in skip:
+                track.linked_ids = set()
+        if not (blob.get("instances") and instances.load_dict(blob["instances"], layer)):
+            instances.bootstrap(layer)
 
     # Derived structure is rebuilt, never restored: a snapshot must not freeze
     # yesterday's container rule into today's run.
-    if version >= 2 and hasattr(stack, "items"):
-        for key, floor_layer in stack.items():
-            if floor_layer.room_labels is not None:
-                agent.scene_graph.rebuild_floor(
-                    floor_layer.room_labels, floor_layer.costmap, layer,
-                    floor_key=key, floor_height=floor_layer.floor_y,
-                )
-    elif agent._room_labels is not None:
-        agent.scene_graph.rebuild(agent._room_labels, costmap, layer, floors=None)
+    if map_layer.room_labels is not None:
+        agent.scene_graph.rebuild(
+            map_layer.room_labels, costmap, layer,
+            floor_y=float(map_layer.floor_y or 0.0),
+        )
     return len(layer._tracks)

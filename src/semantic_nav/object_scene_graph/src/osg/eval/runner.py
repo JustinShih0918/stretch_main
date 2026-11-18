@@ -27,30 +27,14 @@ from .metrics import (
     aggregate,
     dynamic_summary,
     per_category,
-    per_floor_class,
-    per_relocation,
 )
 from .prior_map import save_map_for_scene
-from .obstacle_map_viz import save_obstacle_map_pngs
 from .record import (
     build_episode_record,
     detector_identity,
     episode_tag,
 )
 from .visualize import save_topdown
-
-
-def _goal_floor_gap_m(episode):
-    """Ground-truth vertical gap from the start to the nearest goal view."""
-    ys = [
-        float(vp.agent_state.position[1])
-        for goal in (episode.goals or [])
-        for vp in (getattr(goal, "view_points", None) or [])
-    ]
-    if not ys:
-        return None
-    start_y = float(episode.start_position[1])
-    return min(abs(y - start_y) for y in ys)
 
 
 def _episode_uid(episode) -> str:
@@ -86,26 +70,9 @@ def _algorithm_fingerprint(cfg) -> dict:
     out.update({
         "detector_weights": str(cfg.detector.weights),
         "detector_imgsz": int(cfg.detector.imgsz),
-        "multi_floor": bool(cfg.mapping.multi_floor),
         "room_classifier": str(cfg.scene_graph.room_classifier),
         "room_erode_iters": int(cfg.scene_graph.room_erode_iters),
         "fp_retraction": bool(cfg.scene_graph.fp_retraction),
-        # FloorConfig is not otherwise fingerprinted. These three are the
-        # load-bearing multi-storey switches an A/B here varies, and a flag that
-        # cannot be seen in the algorithm diff is a flag an arm can change
-        # silently -- the failure that let earlier runs report results about
-        # mechanisms that had never run.
-        "cross_floor": bool(cfg.floor.cross_floor),
-        "floor_stairs": bool(cfg.floor.stairs),
-        "use_prior_stairs": bool(getattr(cfg.floor, "use_prior_stairs", False)),
-        "prefer_prior_stairs": bool(getattr(cfg.floor, "prefer_prior_stairs", False)),
-        "prior_stairs_override_gate": bool(
-            getattr(cfg.floor, "prior_stairs_override_gate", False)),
-        "portal_failure_memory": bool(getattr(cfg.floor, "portal_failure_memory", False)),
-        "climb_targets": str(getattr(cfg.floor, "climb_targets", "portals")),
-        "hold_pursuit": bool(getattr(cfg.floor, "hold_pursuit", False)),
-        "dwell_on_arrival": bool(getattr(cfg.floor, "dwell_on_arrival", False)),
-        "no_level_on_flight": bool(getattr(cfg.floor, "no_level_on_flight", False)),
     })
     return out
 
@@ -130,65 +97,32 @@ def run_eval(cfg) -> dict:
             # "approach_close_clearance_m" "approach_close_source"
             # "approach_retarget_max" "approach_scan_turns"
             # "approach_stop_at_best_m" "approach_to_viewpoint"
-            # "area_thresh_m2" "ascent_max_obstacle_h" "ascent_min_obstacle_h"
-            # "climb_carrot" "climb_carrot_m"
-            # "verify_on_stop" "verify_stop_view"
-            # "blip_gate_threshold" "passive_stair_entry" "initialize_turns"
-            # "downstair_detector" "value_use_max_confidence" "value_strict"
-            # "ram_url" "ram_tags" "llm_multi_floor"
+            # "value_strict"
+            # "ram_url" "ram_tags"
             # "close_look_before_absence" "close_look_by_belief"
             # "close_look_face_turns" "close_look_hold_steps"
             # "close_look_max_per_episode" "close_look_max_steps"
             # "close_look_min_belief" "close_look_opportunistic"
             # "close_look_ring_m" "close_look_trigger_range_m"
             # "continuity_weight" "detector_imgsz" "detector_weights"
-            # "down_look_every" "escape_window" "extractor" "floor_ask_every"
-            # "floor_llm" "floor_llm_boost" "floor_min_steps" "fp_retraction"
+            # "escape_window" "extractor"
+            # "fp_retraction"
             # "frontier_commit" "frontier_cost_free_cell" "frontier_desc"
             # "frontier_desc_match_m" "frontier_goal_free_cell"
             # "frontier_min_cells" "frontier_reachability_gate"
             # "frontier_stick_rule"
             # "info_gain_weight" "knowledge_prior" "knowledge_weight"
-            # "los_visibility_penalty" "multi_floor" "navigation" "navmesh_3d_goals"
+            # "los_visibility_penalty" "navigation"
             # "nearby_distance_m" "pointnav_approach_creep_m" "pointnav_arrival_m"
             # "pointnav_depth_shape" "pointnav_stop_means_blocked"
             # "pointnav_creep_stall_eps" "pointnav_creep_stall_steps"
-            # "osg_world_model"
             # "pointnav_stop_radius" "pointnav_weights" "policy" "ranker"
             # "ranker_every_steps" "ranker_topk" "reachable_via_viewpoint"
-            # "rednet_stairs" "reselect_every" "room_classifier" "room_erode_iters"
+            # "reselect_every" "room_classifier" "room_erode_iters"
             # "search_arrival_m" "search_detect_prob"
             # "search_drop_proximity_after_absence" "search_face_turns"
-            # "search_floor_requires_anchor_test" "floor_evidence_by_presence"
-            # "search_surface_when_floor_unreachable"
-            # "floor_mass_rule" "floor_mass_margin"
-            # "cross_floor" "floor_stairs" "use_prior_stairs" "prefer_prior_stairs"
-            # "prior_stairs_override_gate" "portal_failure_memory" "climb_targets" "hold_pursuit" "dwell_on_arrival" "no_level_on_flight"
-            # "climb_relink_flights" "flight_relink_span_m"
-            # "climb_enabled" "stair_evidence_every_kf" "down_look_every"
-            # "climb_cell_carrot" "climb_blocked_turn_after" "climb_max_steps"
-            # "climb_flight_carrot" "flight_min_span_m" "flight_min_cells"
             # "explore_after_failed_attempt_steps"
-            # "flights_prefer_stair_mask"
-            # "climb_direction_from_flight"
-            # "floor_disproved_after_failed_attempts" "protect_floor_switch"
-            # "request_new_storey_when_exhausted" "request_new_storey_after_steps"
-            # "protect_floor_switch_range_m" "protect_floor_switch_min_score"
-            # "climb_carrot_min_ahead_m"
-            # "climb_to_target_storey_tol_m"
-            # "flight_span_from_levels"
-            # "down_look_near_stairs_m"
-            # "obstacle_map_union"
-            # "seed_storeys_from_obstacle_map" "storey_seed_tol_m"
-            # "climb_carrot_hold_m"
             # "profile_sync"
-            # "climb_turn_deadband_deg" "climb_turn_release_deg"
-            # "max_failed_switches_per_storey" "switch_ban_steps"
-            # "climb_turn_stuck_eps_m" "climb_turn_suppress_max"
-            # "climb_align_first_deg" "climb_carrot_forward_only"
-            # "climb_carrot_relax_min_ahead" "climb_carrot_follow_path"
-            # "climb_carrot_path_max_offset_m"
-            # "empty_storey_settle_steps"
             # "search_frontier_weight" "search_glance_detect_prob"
             # "search_glance_floor" "search_glance_range_m" "search_max_steps"
             # "search_posterior" "search_proximity_floor" "search_proximity_len_m"
@@ -206,8 +140,8 @@ def run_eval(cfg) -> dict:
             # unnamed_keyframes, use_for_absence, every_keyframe, commits,
             # commit_min_obs, commit_tau
             # "select_every"
-            # "selector" "stair_explored_rule" "stair_min_cells" "stair_prior"
-            # "stair_up_mode" "terminal_percentile" "terminal_requires_detection"
+            # "selector"
+            # "terminal_percentile" "terminal_requires_detection"
             # "terminal_rule" "terminal_stop_m" "unreachable_restrike_m"
             # "use_habitat_navmesh" "value_argmax" "value_map" "value_model"
             # "value_weight" "verify_abandon_below_p" "verify_absence_categories_max"
@@ -219,7 +153,7 @@ def run_eval(cfg) -> dict:
             # "verify_detector_absence_recall" "verify_min_bbox_px"
             # "verify_min_obs" "verify_min_score" "verify_rank_candidates_by_presence"
             # "verify_commit_max_above_storey_m" "verify_commit_high_min_obs"
-            # "verify_reject_cooldown_steps" "verify_ring_radius_extent_aware"
+            # "verify_ring_radius_extent_aware"
             # "verify_retire_stale_twins_after_absence" "verify_stop_at_stale_anchor_once"
             # "verify_stale_stop_at_nearest_free" "verify_failed_attempt_disables_place"
             # "verify_relook_after_stale_stop"
@@ -336,10 +270,6 @@ def run_eval(cfg) -> dict:
     )
     with open(out_dir / "summary.json", "w") as f:
         json.dump(summary, f, indent=2)
-    # The prior map with the targets drawn on it, one per scene. Only a run
-    # that READ an obstacle map has anything to draw.
-    for path in save_obstacle_map_pngs(cfg, out_dir):
-        print(f"obstacle map figure: {path}")
     profiler_all.write_csv(str(out_dir / "timing.csv"))
     scorer.shutdown()
     env.close()
@@ -367,8 +297,6 @@ def _summarise(cfg, env, results, identity, profiler_all, algorithm=None) -> dic
         "metrics": aggregate(results),
         "dynamic": dynamic_summary(results),
         "per_category": per_category(results),
-        "per_floor_class": per_floor_class(results),
-        "per_relocation": per_relocation(results),
         "timing": profiler_all.report(),
         "pipeline_fps": round(profiler_all.fps("control_loop"), 2),
     }

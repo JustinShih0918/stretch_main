@@ -10,8 +10,8 @@
 #
 # What it proves: frames arrive and convert into the pipeline's world; a goal
 # the pipeline picks reaches NavigateToPose in ROS coordinates; driving there
-# lands where the pipeline asked; discrete actions move the base the right way;
-# and the operator's floor switch arrives. See docs/ROS2.md.
+# lands where the pipeline asked; and discrete actions move the base the right
+# way. See docs/ROS2.md.
 set -eo pipefail
 cd "$(dirname "$0")/../.."
 
@@ -32,7 +32,7 @@ tmux kill-session -t "$SESSION" 2>/dev/null || true
 tmux new-session -d -s "$SESSION"
 mkdir -p outputs/ros2_check
 tmux new-window -t "$SESSION" -n fake_robot \
-    "bash scripts/ros2/fake_robot.sh --floor-switch-after 6 2>&1 | tee outputs/ros2_check/fake_robot.log"
+    "bash scripts/ros2/fake_robot.sh 2>&1 | tee outputs/ros2_check/fake_robot.log"
 sleep 2
 tmux new-window -t "$SESSION" -n bridge \
     "bash scripts/ros2/bridge.sh 2>&1 | tee outputs/ros2_check/bridge.log"

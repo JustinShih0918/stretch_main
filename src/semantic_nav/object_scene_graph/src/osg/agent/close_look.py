@@ -107,17 +107,13 @@ class CloseLookPolicy:
         nav = self.nav
         if nav.state not in (State.EXPLORE, State.GOTO_FRONTIER):
             return False
-        if getattr(nav.floors, "pursuing", False):
-            return False  # a portal pursuit is not interrupted for a table
         if not self.can_start():
             return False
         sg = nav.scene_graph
         containers = getattr(sg, "containers", {}) or {}
         if not containers:
             return False
-        floor_id = int(nav.floors.current_id)
-        floor_node = (getattr(sg, "floors", {}) or {}).get(floor_id)
-        floor_y = float(getattr(floor_node, "height_y", 0.0))
+        floor_y = float(nav.map.floor_y or 0.0)
         rng = float(self.cfg.close_look_trigger_range_m)
         skip = getattr(nav.exploration, "search_container", None)
         inspected = getattr(nav.exploration, "inspected", set())
@@ -131,8 +127,6 @@ class CloseLookPolicy:
                 continue
             if skip is not None and cid == int(skip):
                 continue  # the search is already driving there to inspect it
-            if int(getattr(node, "floor_id", getattr(node, "floor", 0))) != floor_id:
-                continue
             if not affords(nav.target, float(node.top_h) - floor_y, float(node.area_m2)):
                 continue
             z = container_in_view(frame, node, rng)
@@ -228,8 +222,6 @@ class CloseLookPolicy:
         nav._goal_xy = self.goal_xy.copy()
         nav._current_path = None
         nav.approach.path_goal = None
-        if resume == "explore":
-            nav._goal_floor_y_cache = None  # own floor; a stale portal height must not snap it
         nav.state = State.CLOSE_LOOK
         self.log.append({
             "step": self.started_step,
@@ -365,7 +357,7 @@ class CloseLookPolicy:
             # The object is there, and the track has been refined by the frames
             # the look produced: aim the approach at it again.
             nav.stats["close_look_reapproach"] = nav.stats.get("close_look_reapproach", 0) + 1
-            nav._start_approach(centre[list(PLANE)], floor_y=nav.floors.goal_floor_y(centre))
+            nav._start_approach(centre[list(PLANE)])
             return nav._do_approach(frame)
         abandon = nav._absence_at_arrival(frame, self.absence_reason or "close_look",
                                           from_look=True)
@@ -376,5 +368,5 @@ class CloseLookPolicy:
         # it had reached, not from here. `looked` holds the track's key, so the
         # second silent arrival goes straight to the sensor as it always did.
         nav.stats["close_look_stop_kept"] = nav.stats.get("close_look_stop_kept", 0) + 1
-        nav._start_approach(centre[list(PLANE)], floor_y=nav.floors.goal_floor_y(centre))
+        nav._start_approach(centre[list(PLANE)])
         return nav._do_approach(frame)

@@ -9,16 +9,9 @@
 # assumes a simulator:
 #
 #   the mover is Nav2 -- the robot has its own navigator, its own footprint
-#   and its own recovery behaviours, and nothing here plans better than that;
+#   and its own recovery behaviours, and nothing here plans better than that.
 #
-#   the storey is declared, not measured. `map` is 2D, so the estimator's
-#   height trace does not exist; the operator publishes /osg/floor instead
-#   (floor.source=external, docs/ROS2.md);
-#
-#   nothing climbs. The stair machinery the unified preset turns on assumes
-#   the agent can walk up a staircase it detected; the Stretch cannot, and a
-#   portal pursuit with no way to complete it just burns the step budget.
-#   Floors change because an operator says so, and by no other route.
+# One storey: the map, the scene graph and the search are all single-floor.
 #
 # Verify against the real robot before trusting a run: the `ros2.*` topics,
 # `ros2.rotate_deg`, `agent.camera_height` and `eval.hfov_deg` (docs/ROS2.md).
@@ -33,8 +26,8 @@ agent:
   navigation: nav2
   policy: nav_agent
   # The D435i on the Stretch's head, at its default tilt. VERIFY ON ROBOT:
-  # this is the distance from the floor to the optical frame, and every floor
-  # decision and obstacle band is measured from it.
+  # this is the distance from the floor to the optical frame, and the
+  # obstacle band is measured from it.
   camera_height: 1.3
   agent_radius: 0.18          # the Stretch's footprint, not the sim agent's
   # A step is a decision, not a distance, once Nav2 drives continuously; these
@@ -50,19 +43,7 @@ agent:
   # Nav2 owns the last metre: it has the footprint and a goal tolerance, and
   # the blind creep exists only because PointNav's stop radius does not.
   pointnav_approach_creep_m: 0.0
-  # Not a simulator: there is no navmesh to snap a goal onto, and no 3D goal.
-  navmesh_3d_goals: false
   navmesh_snap_on_agent_island: false
-  # Nothing climbs.
-  climb_enabled: false
-  down_look_every: 0
-  # A storey the agent has finished -- no frontier left, or the budget below
-  # spent on it -- is the operator's cue to carry it to one nobody has mapped
-  # (the search pass may restore a one-storey map): the agent names the lowest
-  # unvisited key, RViz and the console say "wants floor N", and publishing
-  # /osg/floor N is the arrival. 0 below is no per-storey step budget.
-  request_new_storey_when_exhausted: true
-  request_new_storey_after_steps: 0
   # The escape window watches the agent's OWN action history for a stall it
   # should break out of. With Nav2 driving, that history is a placeholder
   # repeated once per tick (planning/nav2_driver.py), so the window fires on a
@@ -80,26 +61,7 @@ mapping:
   # inflation margin (0.07) and a little.
   footprint_clear_m: 0.30
 
-floor:
-  source: external
-  enabled: true
-  estimate_only: false
-  per_floor_costmap: true
-  # The two storeys are separated by the switch alone, so no mechanism that
-  # infers a storey or walks between them is wanted.
-  cross_floor: false
-  stairs: false
-  use_prior_stairs: false
-  prior_stairs_override_gate: false
-  no_level_on_flight: false
-  hold_pursuit: false
-  switch_requires_second_level: false
-
 exploration:
-  # The floor LLM proposes climbing to another storey. The operator decides
-  # storeys here.
-  floor_llm: false
-  search_floor_requires_anchor_test: false
   # MEASURED ON THE ROBOT, 2026-09-23 (outputs/20260922_234724): the give-up
   # rule's 15 steps is ~15 s here, less than Nav2 takes to plan and run one
   # recovery at a doorway; goals it had accepted were cancelled after 4-18 s
@@ -179,7 +141,3 @@ eval:
 
 ros2:
   map_mode: map
-  # RViz shows the storey the agent is on; the floor it left clears at the
-  # switch (the two-floor demo is watched live, and a stacked graph reads as
-  # "the old objects are still there").
-  viz_other_storeys: false

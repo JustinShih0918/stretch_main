@@ -22,7 +22,7 @@ from .costmap import Costmap2D
 
 
 class RoomIdCounter:
-    """Monotone room-id source shared by every floor's segmenter."""
+    """Monotone room-id source."""
 
     def __init__(self, start: int = 1) -> None:
         self.value = int(start)
@@ -43,19 +43,13 @@ class VoronoiRoomSegmenter:
         door_width_m: float = 1.2,        # kept for construction compat (unused)
         min_room_cells: int = 60,
         erode_iters: int = 12,            # old room_segmentation.py erode_iteration
-        id_counter: Optional["RoomIdCounter"] = None,
     ) -> None:
         self.min_room_radius_m = min_room_radius_m
         self.door_width_m = door_width_m
         self.min_room_cells = min_room_cells
         self.erode_iters = erode_iters
         self._prev_labels: Optional[np.ndarray] = None
-        # Room ids must be unique across the WHOLE building, not per segmenter:
-        # SceneGraph.rooms is one flat dict and the LLM room-label cache is
-        # keyed by id, so two floors each minting "room 1" would collide. One
-        # segmenter per floor (which is what stops _stabilize_ids matching a
-        # room to the one above it) therefore shares a counter.
-        self._ids = id_counter if id_counter is not None else RoomIdCounter()
+        self._ids = RoomIdCounter()
 
     def segment(self, costmap: Costmap2D) -> np.ndarray:
         """Returns (H, W) int32 room-id map, 0 = no room."""

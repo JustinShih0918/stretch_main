@@ -20,7 +20,6 @@ get() {   # $1 name, $2 url
 
 echo "already in this repo:"
 link mobile_sam.pt                data/weights/mobile_sam.pt
-link rednet_semmap_mp3d_40.pth    data/weights/rednet_semmap_mp3d_40.pth
 link resnet50_places365.pth.tar   data/place365/resnet50_places365.pth.tar
 link pointnav_weights.pth         data/weights/pointnav_weights.pth
 

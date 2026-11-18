@@ -14,8 +14,7 @@ defaults:
 #
 # 21 of the 100 need a floor change (start-to-goal height gap > 1.0 m, taken
 # from goals_by_category rather than the per-episode `goals` list, which is
-# empty in v1). multi_floor and the stair machinery must be ON for this split
-# to measure what it is for.
+# empty in v1). This single-floor copy cannot reach those goals.
 split: val
 dataset_version: v1
 episodes_path: data/datasets/objectnav/hm3d/v1/{split}/{split}.json.gz

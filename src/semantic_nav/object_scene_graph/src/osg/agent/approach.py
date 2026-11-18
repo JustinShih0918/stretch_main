@@ -99,6 +99,8 @@ class ApproachPolicy:
         # knob fired but changed nothing is legible as exactly that.
         self.retargets = 0
         self.retarget_log: list = []
+        # `_at_standoff_unseen` takes its reading once per approach.
+        self.standoff_checked = False
 
     def step(self, frame: FrameData) -> str:
         """Walk toward the verified object while it stays visible.
@@ -231,6 +233,18 @@ class ApproachPolicy:
             self.nav.state = State.DONE
             self.stop_reason = "deadline"
             return STOP_ACTION
+        if self._at_standoff_unseen(agent_xy):
+            # Close enough that it would be in view, and it has not been: take
+            # the reading here instead of driving on to where it was.
+            self.standoff_checked = True
+            self.nav.stats["approach_standoff_unseen"] = (
+                self.nav.stats.get("approach_standoff_unseen", 0) + 1)
+            look = self.nav.close_look.before_absence(frame, "standoff_unseen")
+            if look is not None:
+                return look
+            abandon = self.nav._absence_at_arrival(frame, "standoff_unseen")
+            if abandon is not None:
+                return abandon
         self.steps_left -= 1
         self.last_follow_none_reason = None
         action = self.follow_to(frame, self.nav._goal_xy)
@@ -657,7 +671,7 @@ class ApproachPolicy:
             fn = getattr(self.nav, "_nearest_navigable_fn", None)
             if fn is None:
                 return None
-            goal = fn(obj_xy, self.nav._goal_floor_y_cache)
+            goal = fn(obj_xy, None)
         if goal is None:
             return None
         goal = np.asarray(goal, dtype=float).ravel()[:2]
@@ -701,18 +715,15 @@ class ApproachPolicy:
         self,
         obj_xy: np.ndarray,
         agent_xy: Optional[np.ndarray] = None,
-        floor_y: Optional[float] = None,
         obj_radius_m: float = 0.0,
     ) -> None:
         # Horizontal extent of the track being approached, held for the whole
         # approach so retargets re-aim on the same ladder.
         self.obj_radius_m = float(obj_radius_m)
-        # Height to snap the navmesh goal at for the rest of this approach.
-        # None keeps the legacy "use the agent's own height" behaviour.
-        self.nav._goal_floor_y_cache = floor_y
         self._aim(obj_xy, agent_xy)
         self.retargets = 0
         self.retarget_log = []
+        self.standoff_checked = False
         self.scan_turns_left = int(self.nav.cfg.agent.approach_scan_turns)
         self.scan_expected = 0
         self.nav.state = State.APPROACH
@@ -793,7 +804,7 @@ class ApproachPolicy:
                         self.nav.stats.get("approach_arrived_by_distance", 0) + 1
                     )
                     return None
-            return self.nav._nav_fn(goal_xy, self.nav._goal_floor_y_cache)
+            return self.nav._nav_fn(goal_xy, None)
         need_replan = (
             self.nav._current_path is None
             or self.path_goal is None
@@ -823,6 +834,27 @@ class ApproachPolicy:
             # short of the true goal.
             self.last_follow_none_reason = "controller_arrived"
         return action
+
+    def _at_standoff_unseen(self, agent_xy: np.ndarray) -> bool:
+        """At `terminal_stop_m` from an instance-class track that this approach
+        has not once seen (objects/instances.py).
+
+        With Nav2 driving, the approach goal is the object's own centre and the
+        stop is the target's depth reaching `terminal_stop_m`. When the object
+        has been moved there is no depth to stop on, and the robot drove on to
+        where it had stood -- 6 cm from a wall -- pushed into the wall and fell
+        over (Isaac, outputs/20261113_013913: base_link's up axis horizontal;
+        the run spent its last 140 steps commanding a spin). Stopping at the
+        distance it would have stopped at anyway, to look, changes nothing
+        when the object is there: the depth stop fires first."""
+        reg = getattr(self.nav, "instances", None)
+        if (self.standoff_checked or reg is None or not reg.covers(self.nav.target)
+                or self.last_good_xy is not None or self.nav._target_obj_xy is None):
+            return False
+        stop_m = float(getattr(self.nav.cfg.agent, "terminal_stop_m", 0.0) or 0.0)
+        if stop_m <= 0.0:
+            return False
+        return float(np.linalg.norm(agent_xy - self.nav._target_obj_xy)) <= stop_m
 
     def _standoff_goal(self, obj_xy: np.ndarray, agent_xy: np.ndarray) -> np.ndarray:
         """Navigable approach goal: a standoff point at approach_standoff_m from

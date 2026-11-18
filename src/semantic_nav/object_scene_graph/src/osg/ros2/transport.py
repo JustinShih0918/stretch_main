@@ -7,7 +7,7 @@ the whole pipeline in the CPU suite (tests/unit/test_ros2_env.py).
 
 Frames come back as the raw bridge payload -- ROS units, ROS frame -- because
 `Ros2Env` is where a payload becomes a `FrameData`, and it needs the config to
-do it (rotation, depth scale, the virtual storey offset).
+do it (rotation, depth scale).
 """
 from __future__ import annotations
 
@@ -134,10 +134,9 @@ class Transport:
         self._call("publish_image", topic=str(topic), image=np.ascontiguousarray(image),
                    encoding=str(encoding))
 
-    def pop_floor_switch(self) -> Optional[int]:
-        """The operator's floor switch, if one arrived since the last call."""
-        floor = self._call("pop_floor_switch").get("floor")
-        return None if floor is None else int(floor)
+    def publish_text(self, topic: str, text: str) -> None:
+        """Hand a status line (JSON, usually) to the bridge. See bridge publish_text."""
+        self._call("publish_text", topic=str(topic), text=str(text))
 
     def last_goal(self) -> Optional[dict]:
         """What the bridge last handed to Nav2. For the pipeline check only."""

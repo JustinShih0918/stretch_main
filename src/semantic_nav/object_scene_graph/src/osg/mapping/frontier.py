@@ -28,11 +28,6 @@ class Frontier:
     size: int
     path_cost: Optional[float] = None
     score: Optional[float] = None
-    # Which storey this frontier is on. Defaulted, so single-floor callers and
-    # every existing test are unaffected. Needed because centroid_xy is only a
-    # ground-plane point: without it, a frontier upstairs and one directly
-    # below are indistinguishable to the blacklist's distance test.
-    floor: int = 0
     kind: str = "explore"
 
 
@@ -55,7 +50,6 @@ class FrontierExtractor:
         self,
         costmap: Costmap2D,
         robot_xy: Optional[np.ndarray] = None,
-        floor: int = 0,
     ) -> List[Frontier]:
         grid = costmap.grid
         free = grid == FREE
@@ -116,7 +110,6 @@ class FrontierExtractor:
                     centroid_xy=costmap.grid_to_world(np.array([sr, sc], dtype=float)),
                     cells=rc,
                     size=rc.shape[0],
-                    floor=floor,
                 )
             )
             self._next_id += 1

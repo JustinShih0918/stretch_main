@@ -134,6 +134,31 @@ Recording `rotate_deg` changed a pinned default, so both goldens were regenerate
 the two Stretch ones: `configs/config.yaml` puts the `ros2` group in *every* composition, so its
 value is part of every hash, though no simulator arm reads it.
 
+### Measuring latency
+
+The review asked for real-world latency, and no Thor number exists yet: the simulator's
+(`outputs/mfv2/osg_s42`, RTX 4090 shared with two other evals and the model servers) is a
+*contended* 1.74 Hz, median step 463 ms, region proposals 33% and the object layer 25% of it.
+Every robot run writes the same profiler output as a simulator run, so the measurement is a
+normal search run on a quiet device and one script:
+
+```bash
+# nothing else on the Thor's GPU (no simulator, no second pipeline)
+python scripts/run_robot.py +experiment=stretch3_search ros2.map_tag=lab ros2.target=cup
+python scripts/analyze_latency.py outputs/<that run>          # the table
+# attribution run: charge queued CUDA work to the stage that queued it (slower; do not
+# quote its rate, quote its shares)
+python scripts/run_robot.py +experiment=stretch3_search ros2.map_tag=lab ros2.target=cup \
+    eval.profile_sync=true
+```
+
+`analyze_latency.py` prints per stage the calls per control step, mean / p50 / p90 / max ms
+and the share of control-loop time, then the control rate (mean, p50, p90), then the
+**synchronous** model calls separately. Report those as they are: the arrival-time absence
+reading asks the VLM inside the step (27 s mean on NIM in simulation, 2 calls in 12
+episodes), which is a stall, not a rate. The frontier ranker and floor LLM are asynchronous
+and never block a step; their latency is the reply time, in `episodes.jsonl` (`llm_calls`).
+
 ### Watching it: two windows
 
 The bridge is the only ROS process on the Thor, so it is the only place a viewer can run. Both
@@ -152,7 +177,7 @@ They open on the Thor's own screen, side by side, and each shows one thing:
 | window | what | how |
 |---|---|---|
 | **camera** | the rotated frame the pipeline consumes, with the detector's boxes, masks and labels on it, the target in red — the simulator's debug video, live | `scripts/ros2/image_window.py` on `/osg/detections`, a 560×1000 window scaled to the portrait frame (set `OSG_CAMERA_TOPIC=/osg/rgb` for the plain frame; `--view camera-rqt` for `rqt_image_view`, which opens as a small strip) |
-| **map** | the map the robot is building (`/map`, latched), the pipeline's own costmap for the storey it is on (`/osg/costmap`, the grid the frontiers are chosen from, drawn over it in costmap colours), its scan and pose, Nav2's plan, the goal the bridge last handed to Nav2 (`/osg/goal`, red arrow), and the scene graph as markers: objects coloured by presence belief, the target's gate numbers as its label, the chosen frontier, and the status line with the storey the agent WANTS | `rviz2` with `scripts/ros2/osg_map.rviz`, top-down |
+| **map** | the map the robot is building (`/map`, latched), the pipeline's own costmap (`/osg/costmap`, the grid the frontiers are chosen from, drawn over it in costmap colours), its scan and pose, Nav2's plan, the goal the bridge last handed to Nav2 (`/osg/goal`, red arrow), and the scene graph as markers: objects coloured by presence belief, the target's gate numbers as its label, the chosen frontier, and a status line | `rviz2` with `scripts/ros2/osg_map.rviz`, top-down |
 
 Closing the map window ends the container and the camera window with it. Verified on the Thor's screen with a recorded frame and a test map fed through the bridge (2026-09-22). The old
 everything-in-one view (`scripts/ros2/osg.rviz`: costmaps, plans, three image panels, raw
@@ -167,8 +192,8 @@ the pipeline has no rclpy:
 | `/osg/rgb` | the **rotated** frame the pipeline actually consumes — the raw camera topics are the room on its side |
 | `/osg/detections` | that frame with the detector's boxes, masks and labels — drawn by the same `overlay_segmentation` the simulator's debug video uses |
 | `/osg/debug` | the simulator video's two-panel picture, [detections \| top-down costmap with trajectory, path and chosen frontier] — only in the `full` view now |
-| `/osg/scene_graph` | the scene graph as markers, in `map`; storeys stack in z by `floor.virtual_storey_m` |
-| `/osg/costmap` | the pipeline's costmap for the current storey as a latched `OccupancyGrid` (unknown / free / obstacle), lifted by the same storey offset |
+| `/osg/scene_graph` | the scene graph as markers, in `map` |
+| `/osg/costmap` | the pipeline's costmap as a latched `OccupancyGrid` (unknown / free / obstacle) |
 
 The images come from `src/osg/eval/debug_stream.py`, which `run_robot.py` always attaches: it
 is `DebugVideo` with the bridge in place of an mp4, re-running the detector for visualisation
@@ -177,11 +202,11 @@ effort by construction — a bridge that cannot take the images is logged once a
 on. The bridge confines it to `/osg/*`.
 
 The same stream also appends one JSON line per step to **`outputs/<run>/stream.jsonl`**, flushed
-as it is written: step, state, storey, the wanted storey, agent and goal positions, the target
+as it is written: step, state, agent and goal positions, the target
 tracks' gate numbers exactly as the RViz label shows them, and — whenever they gain an entry —
 the agent's own diagnostic logs from the episode record (`state_log`, `frontier_select_log`,
 `candidate_reject_log`, `goal_commit_log`, `giveup_log`, the approach logs, `presence_events`,
-`floor_log`, and `approach_diag` when it changes). So the question the record answers afterwards
+and `approach_diag` when it changes). So the question the record answers afterwards
 ("why that frontier, why not the ball") is answerable during the run: `tail -f` it, or
 `grep candidate_reject stream.jsonl`. Nothing about a run waits for it to end any more:
 
@@ -269,11 +294,8 @@ exists only while slam_toolbox runs:
   on the floor), or save the session at the end of the mapping pass
   (`ros2 service call /slam_toolbox/serialize_map slam_toolbox/srv/SerializePoseGraph "{filename: /path/lab}"`)
   and bring slam_toolbox back in `localization` mode on it.
-- **Two storeys.** A 2D SLAM cannot hold two floors in one map: carried to the other storey it
-  would draw the new floor over the old. Relaunch it there (a new `map`, origin at the
-  put-down spot) and publish `/osg/floor` as before; the pipeline keeps the storeys apart as
-  separate layers, so their `map` origins need not agree with each other — only, per storey,
-  between the two passes (previous point).
+- **One storey.** The pipeline is single-floor, and so is a 2D SLAM map: keep both passes on
+  the storey they started on.
 - Loop closures move the map by centimetres, not metres; the `POSE JUMP` line (threshold 1 m)
   stays quiet for them.
 
@@ -305,99 +327,24 @@ not defaults — the simulator arms keep theirs. The cost is phantom tracks from
 detection; the height-plausibility rule and presence still apply, and the map window shows
 every track with its gate numbers.
 
-### Two storeys: the operator's protocol
+### The two passes
 
-Nothing climbs (`stretch3_map` turns the stair machinery off), so a second storey is reached
-the way a Stretch reaches one in real life: someone carries it, or rides the lift with it.
-The pipeline needs to be **told**, because Nav2's `map` is 2D and reports both storeys at the
-same height — `/osg/floor` is the height sensor (`docs/ROS2.md`, *Two floors, one switch*).
-The whole two-floor experiment is still the same two commands; the storey switch is a third
-command, `scripts/ros2/switch_floor.sh`, run from the host (it re-enters the bridge container
-itself) or from any ROS shell on the same domain:
+The experiment is two commands on one storey:
 
 ```bash
-bash scripts/ros2/switch_floor.sh 1 lab_upstairs     # after the carry: that map, localised, /osg/floor 1
-bash scripts/ros2/switch_floor.sh 1 --check-only     # just: is the robot inside its current map?
-bash scripts/ros2/switch_floor.sh 1 --via none       # a virtual storey on the same physical floor
-```
-
-It does, in order, the three things that used to be typed one at a time — and the order is
-what matters: (1) the robot's navigation map becomes the named one, `<map_name>.yaml` through
-Nav2's `map_server` (`/map_server/load_map`) or `<map_name>.db` through RTAB-Map
-(`/rtabmap/load_database`, then localization mode), whichever the robot runs (`--via` forces
-one; the name resolves under `--maps-dir`, a directory **on the robot**, default
-`/home/hello-robot/ament_ws`);
-(2) it waits until `map->base_link` lies on a free cell **inside** that map — measured
-2026-09-22: a goal posted while the robot sat outside the grid was accepted by Nav2 and held
-for 68 s without a wheel turning, because the planner had no start cell (`--initial-pose "X Y
-YAW_DEG"` seeds AMCL when the localiser needs a hint after a carry); (3) only then does it
-publish `/osg/floor N`, and it confirms the message was heard on the domain. The raw form is
-still `ros2 topic pub --once /osg/floor std_msgs/Int32 "{data: 1}"` from the bridge container.
-
-**Mapping pass, both floors, one run.** Start on floor 0 with the target placed on floor 1:
-
-```bash
-python scripts/run_robot.py +experiment=stretch3_map ros2.map_tag=lab ros2.target=cup
-```
-
-Let it explore floor 0 until it has nothing left there. That state is visible: no new frontier
-or goal appears in RViz and the status line stops changing, because when a storey is exhausted
-`select` returns nothing and the agent **idles rather than ending the run** (`nav_agent.py`,
-`if choice is None: return`). The timing is therefore not delicate — carry the robot up
-whenever floor 0 looks done, then publish `{data: 1}`. The switch lifts the pose by
-`floor.virtual_storey_m` (3 m), so floor 1 gets its own grid, frontiers and room labels instead
-of being pasted over floor 0. It explores floor 1, finds the cup, STOPs, and `save_map` writes a
-schema-v2 snapshot with **both storeys** and the cup on floor 1. Do not run the mapping pass
-twice: a second `map_mode=map` run does not load the first and would overwrite `lab.json`.
-
-**Search pass.** Move the cup (to floor 0, say). The snapshot is restored with
-`initial_floor_key = <the declared storey>`, and `reset()` deliberately **drains** any switch
-published before the run started — so start the run on the floor you are on, and publish the
-switch only *after* `[robot] restored N tracks on floor 0` has printed if that floor is not 0:
-
-```bash
+python scripts/run_robot.py +experiment=stretch3_map    ros2.map_tag=lab ros2.target=cup
+# move the cup
 python scripts/run_robot.py +experiment=stretch3_search ros2.map_tag=lab ros2.target=cup
 ```
 
-The restored belief says *cup, floor 1*. The search posterior aggregates its mass per storey
-(`floor_mass_rule: mean`, with `floor_mass_margin`), and when another storey is decisively
-better the strategy records a wish — `exploration.requested_floor` — and hands it to
-`FloorPolicy`, which on the Stretch has no way to act on it, so the agent keeps searching the
-storey it is on. That wish is what the operator acts on. It is surfaced two ways: the RViz
-status line turns into **`>>> WANTS FLOOR 1: carry the robot, then ros2 topic pub …`**, and
-`run_robot.py` prints the same line once. Carry it, publish the switch, and the search continues
-on floor 1 with floor 1's restored map — where absence-as-evidence does its work when the cup
-is not where the map said.
+When the mapping pass has nothing left to explore, `select` returns nothing and the agent
+idles rather than ending the run; stop it once the map looks done. Do not run the mapping pass
+twice: a second `map_mode=map` run does not load the first and would overwrite `lab.json`.
+The search pass restores the snapshot believing the cup is where it was, and the presence
+filter, the identity channel and absence-as-evidence do their work when it is not.
 
-**Search pass from a one-storey map.** The mapping pass need not cover both floors. When run 1
-mapped floor 0 only and the target is then carried upstairs, run 2 restores a map with no
-storey 1 in it, and neither request above can name one: the posterior scores storeys that
-have surfaces, and the disproved rule asks for the nearest *known* level. So on the Stretch
-presets (`agent.request_new_storey_when_exhausted`, on in `stretch3_map`) a storey the agent
-has **finished** — no frontier left on it, or `agent.request_new_storey_after_steps` spent on
-it (0 is no budget), or disproved by failed attempts with nowhere known to go — makes it ask
-for the lowest storey key nobody has stood on: the same **`>>> WANTS FLOOR 1`** cue, in RViz
-and once on the console. Carry it up, give RTAB-Map a fresh session, publish `{data: 1}`, and
-it explores floor 1 from a clean grid and a scene graph with nothing filed on that storey. The
-same rule on floor 1 would ask for floor 2 — the pipeline does not know how many storeys the
-building has; the operator does, and `agent.max_steps` (400) is the budget across both.
-
-**Where it waits.** Give the staircase's position at launch, in the robot's `map` frame:
-
-```bash
-python scripts/run_robot.py +experiment=stretch3_search ros2.map_tag=lab ros2.target=cup ros2.stairs_xy=[3.2,-1.5]
-```
-
-With it, the request drives the robot to the stairs (Nav2, like any goal) and holds the base
-there — `wait`, not the exploring turn — until `/osg/floor` arrives; the RViz status line
-says `driving to` / `waiting at the stairs (x, y)`. Without it, it waits where the request
-found it. Read the coordinates off RViz (`Publish Point`) or `tf2_echo map base_link` with
-the robot parked at the foot of the stairs.
-
-Two things on the robot side that this repo cannot fix for you: RTAB-Map's 2D map will also
-overprint the two storeys unless it is given a fresh session per floor (Nav2 then plans on a
-map with both floors' walls); and the raw camera streams in RViz stay the room on its side —
-use the `/osg/*` ones.
+`ros2.waypoint_xy` (with `ros2.waypoint_yaw_deg`) makes the run's first exploration goal an
+operator-chosen pose in the robot's `map` frame; say so when the run is reported.
 
 ### Before the robot is in the room
 
@@ -412,7 +359,7 @@ Then, with the bridge container up and the fake robot running in it, the ROS pat
 
 ```bash
 docker exec -it osg-bridge bash -c 'source /opt/ros/humble/setup.bash && ros2 topic list'
-docker exec -it osg-bridge bash scripts/ros2/fake_robot.sh --floor-switch-after 6
+docker exec -it osg-bridge bash scripts/ros2/fake_robot.sh
 docker exec -it osg-thor   python scripts/check_ros2_pipeline.py
 ```
 

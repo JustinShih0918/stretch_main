@@ -2,7 +2,7 @@
 
 The point is to answer "is the plumbing right?" with no robot in the room and
 no Habitat either: topics, TF, the action contract, the coordinate conversions,
-and the floor switch, all exercised end to end by
+all exercised end to end by
 `scripts/check_ros2_pipeline.py`.
 
 The room is a real box rendered by ray casting, not a constant depth image,
@@ -109,7 +109,6 @@ class FakeRobot:
         from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
         from rclpy.node import Node
         from sensor_msgs.msg import CameraInfo, Image
-        from std_msgs.msg import Int32
         from tf2_ros import TransformBroadcaster
 
         self.args = args
@@ -125,8 +124,6 @@ class FakeRobot:
         self._lock = threading.Lock()
         self._twist = np.zeros(2)  # (linear x, angular z)
         self._goal = None
-        self._started = time.time()
-        self._floor_sent = False
 
         # The same rule as the bridge (bridge_node.is_compressed_topic): a
         # topic named `.../compressed` or `.../compressedDepth` carries
@@ -142,7 +139,6 @@ class FakeRobot:
         self._depth_pub = self.node.create_publisher(
             CompressedImage if self._depth_compressed else Image, args.depth_topic, 10)
         self._info_pub = self.node.create_publisher(CameraInfo, args.camera_info_topic, 10)
-        self._floor_pub = self.node.create_publisher(Int32, args.floor_topic, 10)
         # The tick and cmd_vel go in SEPARATE callback groups, and that is what
         # makes `execute()` testable at all. Left in the node's one default
         # (mutually exclusive) group, they cannot run at the same time however
@@ -160,7 +156,7 @@ class FakeRobot:
         self.node.create_subscription(Twist, args.cmd_vel_topic, self._on_twist, 10,
                                       callback_group=self._cmd_group)
         self._tf = TransformBroadcaster(self.node)
-        self._Image, self._CameraInfo, self._Int32 = Image, CameraInfo, Int32
+        self._Image, self._CameraInfo = Image, CameraInfo
         self._rclpy = rclpy
 
         self._make_servers()
@@ -262,13 +258,6 @@ class FakeRobot:
         depth = render_depth(self.width, self.height, self.K, T)
         self._publish_tf(stamp, T)
         self._publish_images(stamp, depth)
-        if (self.args.floor_switch_after > 0 and not self._floor_sent
-                and now - self._started >= self.args.floor_switch_after):
-            self._floor_sent = True
-            msg = self._Int32()
-            msg.data = 1
-            self._floor_pub.publish(msg)
-            self.node.get_logger().info("published floor switch -> 1")
 
     def _publish_tf(self, stamp, T) -> None:
         from geometry_msgs.msg import TransformStamped
@@ -365,7 +354,6 @@ def parse_args(argv=None):
     p.add_argument("--depth-topic", default="/camera/aligned_depth_to_color/image_raw")
     p.add_argument("--camera-info-topic", default="/camera/color/camera_info")
     p.add_argument("--cmd-vel-topic", default="/stretch/cmd_vel")
-    p.add_argument("--floor-topic", default="/osg/floor")
     p.add_argument("--nav-action", default="navigate_to_pose")
     p.add_argument("--head-traj-action",
                    default="/stretch_controller/follow_joint_trajectory")
@@ -385,8 +373,6 @@ def parse_args(argv=None):
     p.add_argument("--goal-tolerance-m", type=float, default=0.2)
     p.add_argument("--abort-goals", action="store_true",
                    help="refuse every goal, to exercise the blocked path")
-    p.add_argument("--floor-switch-after", type=float, default=0.0,
-                   help="seconds after start to publish a switch to floor 1")
     return p.parse_args(argv)
 
 

@@ -11,7 +11,15 @@ the architecture and the workflows that need more than one file to understand.
 `VENDORED.md`). Upstream's `docker/` was removed. Everything runs **inside stretch_main's sim
 container** (`docker/sim`), where `/workspace` is a symlink to this directory. The conda envs
 are installed there by `scripts/scene_graph_demo/install_osg_envs.sh` (repo root), and
-`PYTHONPATH=src` must be set yourself:
+`PYTHONPATH=src` must be set yourself.
+
+**This copy is single-floor.** Upstream's multi-floor support (storey estimation, per-storey
+maps, stairs, portals, climbing, the floor LLM, the operator's `/osg/floor` switch) and the
+ASCENT transcription (`src/navigation/`, the `ascent`/`ascentnav` policies) were removed;
+`VENDORED.md` lists what went. Docs under `docs/` and `docs/history/` that describe them are a
+record of upstream, not of this tree.
+
+To enter the container:
 
 ```bash
 docker compose -f docker/sim/compose.yaml run --rm stretch3-ws        # from stretch_main's root
@@ -30,13 +38,13 @@ For CPU-only work: `pip install -e '.[dev]'`.
 ## Commands
 
 ```bash
-pytest tests/unit -q                                   # 1535 tests, ~50 s, no GPU or data
-pytest tests/unit/test_floors.py -q                    # one file
-pytest tests/unit/test_floors.py::test_name -q         # one test
+pytest tests/unit -q                                   # ~800 tests, ~20 s, no GPU or data
+pytest tests/unit/test_map_store.py -q                 # one file
+pytest tests/unit/test_map_store.py::test_name -q      # one test
 pytest -m sim                                          # tests/integration; needs Habitat + HM3D
 python tests/unit/test_config_snapshot.py              # REGENERATE the config golden (see below)
 
-python scripts/run_eval.py                             # the default arm (S71), 100 episodes, ~3.5 h
+python scripts/run_eval.py                             # the default arm, 100 episodes, ~3.5 h
 python scripts/run_eval.py eval.num_episodes=3         # smoke
 python scripts/run_eval.py +experiment=<preset>        # compose a whole preset
 python scripts/run_eval.py detector=yoloe_small llm=ollama verification=off   # override groups
@@ -46,29 +54,24 @@ python scripts/smoke_ollama.py                         # LLM round-trip
 
 A run **refuses to start** if a model server or ollama it needs is down (`PerceptionUnavailable`,
 raised by `probe_served_models` before Habitat loads), and a server that goes quiet mid-run raises
-rather than returning a neutral value. This is deliberate: a silent 0 from BLIP-2 under ASCENT's
-commit gate is an agent that never STOPs, and a 0% run looks like a bad algorithm rather than a
-dead server. Do not "fix" this by falling back to a default score.
+rather than returning a neutral value. This is deliberate: a silent 0 from a served model changes
+what the agent does, and a 0% run looks like a bad algorithm rather than a dead server. Do not "fix" this by falling back to a default score.
 
 ## Architecture
 
-### Two agent stacks, not one
+### One agent
 
-- `src/osg/` — the project's own pipeline: open-vocab perception → a `floor → room → container →
-  object` 3D scene graph → frontier exploration → approach + verify.
-- `src/navigation/` — a line-by-line **transcription** of ASCENT's control flow (`Ascent_Policy.act`
-  + `Map_Controller`) plus its vendored maps, running in OSG's harness. It is the current default
-  arm, and it is an attributed alternative policy, *not* a replacement for OSG's dynamic hierarchy.
-  Its rules cite the reference line they came from; `src/navigation/README.md` carries the F1–F14
-  fidelity notes. Changing behaviour here means breaking the transcription — do it knowingly, and
-  the `test_ascentnav_*.py` tests will tell you.
+`src/osg/` is the pipeline: open-vocab perception → a `room → container → object` 3D scene
+graph over one occupancy map → frontier exploration → approach + verify. `nav_agent` is the
+only policy; the ASCENT-derived pieces it still uses (the `ascent` frontier selector and
+ranker, the served BLIP-2 / D-FINE / MobileSAM / GroundingDINO / RAM++ clients in
+`perception/ascent_models.py` and `image_text.py`) stay.
 
-Three orthogonal axes select what actually runs:
+Two axes select what actually runs:
 
 | axis | flag | options |
 |---|---|---|
 | mover | `agent.navigation` | `costmap` (own A*/Voronoi planner), `pointnav` (frozen depth + point-goal policy), `navmesh` (Habitat `ShortestPathFollower`), `nav2` (publish the goal, let a Nav2 stack drive) |
-| policy | `agent.policy` | `nav_agent` (OSG FSM + dynamic world model), `ascent`, `ascentnav` |
 | benchmark | `eval.mode` | `objectnav` (HM3D), `ycb_authored` (authored dynamic layouts), `dualmap_protocol` (DualMap's released benchmark and scoring rule), `ros2` (a real robot; see below) |
 
 **`navmesh` is privileged navigation** — it is the only mover given simulator geometry
@@ -84,9 +87,9 @@ pipeline publishes the metric goal it already computes and stops steering; senso
 back the other way. Two facts shape that layer and neither is negotiable: Humble's `rclpy` is
 built for Python 3.10 while both conda envs here are 3.9, so the ROS node is a separate
 process reached over a socket (`src/osg/ros2/`, importable under both interpreters); and
-Nav2's `map` is 2D, so the storey is **declared by the operator** (`/osg/floor`,
-`floor.source=external`) rather than estimated from a height that does not exist. Check the
-whole path with no robot present: `bash scripts/ros2/check_pipeline.sh`.
+Nav2's `map` is 2D, which this single-floor pipeline matches: one storey per run. Check the
+whole path with no robot present: `bash scripts/ros2/check_pipeline.sh` (or `--loopback`
+for no ROS at all).
 
 The deployment is a **Jetson AGX Thor** beside the robot, and it is a SECOND image pair, not
 an override of the x86 one: `docker/compose.thor.yaml` builds `Dockerfile.thor` (L4T, the
@@ -106,7 +109,7 @@ search posterior over mapped surfaces (`exploration/search_belief.py`). `docs/AR
 explains each and why its constants are what they are.
 
 Dataflow: `perception` → `objects` (ellipsoid layer: dual-quadric projection, association,
-Wasserstein refine) → `mapping` (per-floor costmaps, floor estimation, frontiers, portals) →
+Wasserstein refine) → `mapping` (one costmap in `map_layer.py`, room segmentation, frontiers) →
 `graph` (hierarchy + priors + LLM serialization) → `exploration` → `planning` → `verification` →
 `agent` (FSM) → `sim` / `eval`.
 
@@ -159,18 +162,17 @@ it. Two golden files pin this:
   `verification=off` for any A/B meant to prove two configs equivalent.
 - **Claiming a result:** the repo's currency is measured behaviour, not plausible reasoning. At
   n=100 SR moves ±3 points on noise, so a change should move one of the paired trace metrics
-  (`scripts/compare_ascent_osg.py` prints them) and not just SR. `docs/` holds the reference
+  (`scripts/compare_runs.py` walks them) and not just SR. `docs/` holds the reference
   set; `docs/history/` the logs and frozen results — `docs/history/AB_RESULTS.md` is the results
-  log, `docs/history/INVESTIGATION.md`, `docs/history/MULTI_FLOOR.md`, `docs/UNIFIED_PIPELINE.md`
-  carry why the pipeline is shaped as it is. Read the relevant one before re-litigating a
+  log, `docs/history/INVESTIGATION.md` and `docs/UNIFIED_PIPELINE.md` carry why the pipeline
+  is shaped as it is. Read the relevant one before re-litigating a
   decision; `docs/README.md` indexes all of them and marks the superseded ones.
 - **The paper:** `docs/PAPER.md` is the ICRA 2027 submission in full. Its Appendix A maps every
   equation to the module implementing it, and Appendix B traces every reported number to the run
   that produced it — including the three rows that no run under `outputs/` currently reproduces.
   The paper calls the system **MD-SG**; the code calls it **OSG** everywhere.
 - **Diagnostics before guesses:** `scripts/analyze_*.py` decompose a run's `episodes.jsonl` —
-  `analyze_stages.py` (explore vs approach failure), `analyze_floors.py` (SR by floor class,
-  floor-estimator audit), `analyze_localization.py` / `analyze_trackloc.py` (stop pose vs GT),
+  `analyze_stages.py` (explore vs approach failure), `analyze_localization.py` / `analyze_trackloc.py` (stop pose vs GT),
   `analyze_approach.py` (why the terminal approach failed).
 - **Generated, not source:** `outputs/`, downloads under `data/`, `relative_work/` (the ASCENT
   checkout and its recorded reference runs) and `assets/` (the real-robot recordings) are all

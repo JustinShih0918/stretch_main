@@ -74,7 +74,3 @@ agent:
   # Per-step selection with an A* gate over the top-N would be unaffordable, and
   # the gate is measured null anyway (S30 run C).
   frontier_reachability_gate: false
-  # S31 / S33: null alone, retested here on top of a working explorer.
-  climb_carrot: true
-  rednet_stairs: true
-  stair_up_mode: rednet

@@ -16,5 +16,3 @@ defaults:
   - override /verification: nim
   - override /eval: hm3d_val_mini
 
-mapping:
-  multi_floor: false

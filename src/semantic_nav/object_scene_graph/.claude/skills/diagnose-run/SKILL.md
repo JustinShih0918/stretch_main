@@ -1,6 +1,6 @@
 ---
 name: diagnose-run
-description: Explain a finished evaluation run, or the difference between two, with the repo's analyzers instead of guesses — where episodes fail (exploration vs approach), localization vs navigation error, floor-structure splits, behaviour traces, and paired A/B or ASCENT-vs-OSG comparisons. Use after a run under outputs/ finishes, when SR changed and you need to say why, or before claiming an improvement.
+description: Explain a finished evaluation run, or the difference between two, with the repo's analyzers instead of guesses — where episodes fail (exploration vs approach), localization vs navigation error, behaviour traces, and paired A/B comparisons. Use after a run under outputs/ finishes, when SR changed and you need to say why, or before claiming an improvement.
 ---
 
 # Diagnosing a run
@@ -33,14 +33,12 @@ something that is not there"; trackloc says whether the mapped track or the driv
 approach says why the controller stopped (planner had no path vs false arrival). HM3D ObjectNav
 runs need the dataset at `data/datasets/objectnav/hm3d/v1/val` (`--episodes` to override).
 
-## 2b. Multi-floor and behaviour
+## 2b. Behaviour
 
 ```bash
-python scripts/analyze_floors.py outputs/<run>        # SR by floor_class, floor-estimator audit
 python scripts/analyse_behaviour.py outputs/<run> [outputs/<other>]   # needs eval.behaviour_log=true
 ```
 
-`analyze_floors.py` takes per-scene ground truth from `scripts/scene_floors.py`.
 `analyse_behaviour.py` answers reach / sight / framing / motion and buckets every failure.
 
 ## 2c. The dynamic (moved-object) benchmarks
@@ -59,17 +57,11 @@ no arrival.
 ## 3. A/B — always paired, never two headline numbers
 
 ```bash
-python scripts/compare_runs.py outputs/<baseline> outputs/<treatment> [--split multi|single] [--flips]
-python scripts/compare_ascent_osg.py data/reference/ascent_behaviour_100 outputs/<run>
+python scripts/compare_runs.py outputs/<baseline> outputs/<treatment> [--flips]
 ```
 
 `compare_runs.py` walks both runs down the same decision funnel episode by episode (`--flips`
-lists the episodes that changed outcome). `compare_ascent_osg.py` pairs an OSG run against
-native ASCENT's recorded 100 episodes and prints the trace metrics that carried the S71
-diagnosis (SAW episodes, never-saw STOP/timeout, climb steps on same-floor episodes, earliest
-STOP, P(success | committed)); the run needs `eval.behaviour_log=true`. That ASCENT trace
-(`data/reference/ascent_behaviour_100`) is **not in this checkout** — check it exists before
-promising this comparison; without it, pair against an earlier OSG run with `compare_runs.py`.
+lists the episodes that changed outcome).
 
 Both arms of an A/B must share the episode set and use `verification=off` (see `run-eval`).
 

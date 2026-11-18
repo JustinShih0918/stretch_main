@@ -23,7 +23,7 @@ from .dualmap import DualMapProtocolConfig
 from .eval import EvalConfig
 from .exploration import ExplorationConfig
 from .feature_memory import FeatureMemoryConfig
-from .floor import FloorConfig
+from .inspection import InspectionConfig
 from .llm import LLMConfig
 from .mapping import MappingConfig
 from .region_proposal import RegionProposalConfig
@@ -34,8 +34,8 @@ from .ycb import YCB_TARGET_LABELS, YCBAuthoredConfig
 
 __all__ = [
     "AgentConfig", "DetectorConfig", "DualMapProtocolConfig", "EvalConfig",
-    "ExplorationConfig", "FeatureMemoryConfig",
-    "FloorConfig", "LLMConfig", "MappingConfig", "OSGConfig", "PresenceConfig",
+    "ExplorationConfig", "FeatureMemoryConfig", "InspectionConfig",
+    "LLMConfig", "MappingConfig", "OSGConfig", "PresenceConfig",
     "RegionProposalConfig", "Ros2Config",
     "SceneGraphConfig", "VerificationConfig", "YCBAuthoredConfig",
     "DEFAULT_VOCABULARY", "YCB_TARGET_LABELS", "NAVIGATION_MODES",
@@ -48,7 +48,7 @@ __all__ = [
 # PRIVILEGED -- the navigator plans on a map it was given -- so its SR/SPL is
 # not comparable with the sensor-only movers.
 NAVIGATION_MODES = ("costmap", "navmesh", "pointnav", "nav2")
-POLICY_MODES = ("nav_agent", "ascent", "ascentnav")
+POLICY_MODES = ("nav_agent",)
 
 
 def resolve_navigation(agent_cfg) -> str:
@@ -94,11 +94,11 @@ class OSGConfig:
     llm: LLMConfig = field(default_factory=LLMConfig)
     verification: VerificationConfig = field(default_factory=VerificationConfig)
     mapping: MappingConfig = field(default_factory=MappingConfig)
-    floor: FloorConfig = field(default_factory=FloorConfig)
     eval: EvalConfig = field(default_factory=EvalConfig)
     ycb: YCBAuthoredConfig = field(default_factory=YCBAuthoredConfig)
     dualmap: DualMapProtocolConfig = field(default_factory=DualMapProtocolConfig)
     ros2: Ros2Config = field(default_factory=Ros2Config)
+    inspection: InspectionConfig = field(default_factory=InspectionConfig)
     seed: int = 42
     output_dir: str = "outputs/${now:%Y%m%d_%H%M%S}"
 
@@ -115,8 +115,8 @@ def register_configs() -> None:
     cs.store(group="llm", name="base_ollama", node=LLMConfig)
     cs.store(group="verification", name="base_on", node=VerificationConfig)
     cs.store(group="mapping", name="base_default", node=MappingConfig)
-    cs.store(group="floor", name="base_default", node=FloorConfig)
     cs.store(group="eval", name="base_hm3d", node=EvalConfig)
     cs.store(group="ycb", name="base_authored", node=YCBAuthoredConfig)
     cs.store(group="dualmap", name="base_protocol", node=DualMapProtocolConfig)
     cs.store(group="ros2", name="base_stretch3", node=Ros2Config)
+    cs.store(group="inspection", name="base_off", node=InspectionConfig)

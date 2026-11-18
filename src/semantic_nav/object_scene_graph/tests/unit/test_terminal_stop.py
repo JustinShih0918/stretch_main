@@ -260,3 +260,41 @@ def test_cloud_target_is_recorded_on_the_navmesh_path(intrinsics):
     agent._start_approach(np.array([0.0, 3.0]))  # no agent_xy, as navmesh does
     assert agent._target_cloud_xy is not None
     assert float(np.linalg.norm(agent._target_cloud_xy - agent._agent_xy)) == pytest.approx(2.0)
+
+
+# ------------------------------------------------- beyond the depth range
+
+
+def _mostly_out_of_range(intrinsics, valid_frac):
+    """A frame where only the top `valid_frac` of the chair's mask has depth:
+    the rest of it is past the sensor's range, which reads 0."""
+    frame = _frame(intrinsics, depth=3.0)
+    det = _det()
+    ys, _ = np.nonzero(det.mask)
+    cut = ys.min() + int(round(valid_frac * (ys.max() - ys.min() + 1)))
+    depth = frame.depth.copy()
+    depth[cut:, :] = 0.0
+    frame.depth = depth
+    return frame, det
+
+
+def test_a_mask_mostly_beyond_depth_range_places_no_track(intrinsics):
+    frame, det = _mostly_out_of_range(intrinsics, 0.2)
+    layer = ObjectLayer(min_det_score=0.0, min_det_bbox_px=0.0, min_valid_depth_frac=0.5)
+    layer.update(frame, [det])
+    assert layer.tracks() == []
+    assert layer.funnel["obs_beyond_range"] == 1
+
+
+def test_the_depth_range_gate_is_off_by_default(intrinsics):
+    frame, det = _mostly_out_of_range(intrinsics, 0.2)
+    layer = ObjectLayer(min_det_score=0.0, min_det_bbox_px=0.0)
+    layer.update(frame, [det])
+    assert len(layer.tracks()) == 1
+
+
+def test_a_mask_mostly_in_range_still_places_its_track(intrinsics):
+    frame, det = _mostly_out_of_range(intrinsics, 0.8)
+    layer = ObjectLayer(min_det_score=0.0, min_det_bbox_px=0.0, min_valid_depth_frac=0.5)
+    layer.update(frame, [det])
+    assert len(layer.tracks()) == 1

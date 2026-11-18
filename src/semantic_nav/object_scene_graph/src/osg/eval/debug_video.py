@@ -40,13 +40,6 @@ class DebugVideo:
 
     def write(self, frame, agent, target: str, detector) -> None:
         cv2 = self._cv2
-        # An agent that draws its own maps renders itself -- `AscentNavAgent`
-        # holds ASCENT's obstacle/value maps, which the costmap path below
-        # cannot show.
-        if hasattr(agent, "debug_panel"):
-            panel = agent.debug_panel(frame)
-            self._writer((panel.shape[1], panel.shape[0])).write(panel)
-            return
         agent_xy = frame.camera_position[self._plane]
         self._traj.append(agent_xy)
         dets = detector.detect(frame.rgb)  # viz-only; does not update object layer

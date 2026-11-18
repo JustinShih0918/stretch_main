@@ -1,5 +1,10 @@
 # Methodology
 
+> **Single-floor copy.** Multi-floor support (storey estimation, per-storey maps, stairs,
+> climbing, the `/osg/floor` switch) and the ASCENT transcription (`src/navigation/`,
+> `ascentnav`) were removed from this vendored copy; see [VENDORED.md](../VENDORED.md). What follows describes
+> the upstream system, including those parts.
+
 How this repo measures ObjectNav, what the default pipeline does on each step,
 and every way it differs from native ASCENT. Written from the code and the
 recorded runs; where a claim could be checked mechanically it was, and the

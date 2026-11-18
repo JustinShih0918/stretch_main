@@ -6,26 +6,20 @@ answer on a real robot. That is why the ROS layer needed no parallel control
 loop: the same `run_episode`, the same `NavAgent`, the same scene graph, with
 this class where habitat used to be.
 
-Two things are genuinely different and both live here.
+One thing is genuinely different and it lives here.
 
 THE BASE HAS ONE OWNER. In habitat every tick is one discrete action, so the
 question never comes up. Here the FSM sometimes issues its own action (the
-opening 360-degree scan, the escape window, a look_down near stairs) while Nav2
+opening 360-degree scan, the escape window, a close look) while Nav2
 may still be driving toward a goal. `step` asks the driver which of them acted
 this tick, and cancels the outstanding goal before executing anything the FSM
 decided -- otherwise the two fight over the wheels and neither arrives.
-
-THE VERTICAL IS SYNTHETIC. Nav2's `map` is 2D: both storeys report the same z,
-while `floor_of_height`, the costmap's obstacle band and the LLM prompt's floor
-ordering all separate storeys by height. So the operator's floor switch IS the
-height sensor -- the pose is lifted by `key * floor.virtual_storey_m` -- and
-every height consumer downstream sees the geometry it was calibrated on.
 """
 from __future__ import annotations
 
 import time
 from types import SimpleNamespace
-from typing import Callable, Optional
+from typing import Optional
 
 import numpy as np
 
@@ -46,37 +40,16 @@ class Ros2Env:
         self.transport = transport if transport is not None else Transport(
             cfg.ros2, connect_timeout_s=float(cfg.ros2.connect_timeout_s))
         self.driver = None
-        # Called with the new storey key when the operator switches floors.
-        # `scripts/run_robot.py` points this at `agent.floors.request_floor`.
-        self.on_floor_switch: Optional[Callable[[int], None]] = None
-        self.floor_key = 0
-        self.floor_switches: list = []
         self._last_seq = -1
         self._frame_id = 0
         self._steps = 0
         self._stopped = False
         self._last_payload: Optional[dict] = None
+        # Set by the run, not the env: whether a STOP found what it was sent
+        # for (`attempt_scored`), and why the run was ended early (`abort`).
+        self.stop_check = None
+        self.abort_reason: Optional[str] = None
         self._episode_id = f"{self.ros.map_tag}_{int(time.time())}"
-
-    def wait_for_floor_switch(self, on_frame=None) -> FrameData:
-        """Hold before the first step until the operator declares a storey.
-
-        Fresh frames keep coming (so RViz shows the restored graph and the
-        camera), the switch topic is polled on each, no command reaches the
-        base and no step is counted. For resuming a demo whose search pass
-        died after the carry: the run restores the map on floor 0, the person
-        publishes /osg/floor 1, and the storey lift happens on the first step
-        -- on screen, as it would have. Returns the frame the switch arrived on.
-        """
-        print(f"[robot] holding on floor {self.floor_key}: waiting for /osg/floor "
-              f"(bash scripts/ros2/switch_floor.sh N ...)", flush=True)
-        while not self.floor_switches:
-            time.sleep(float(self.ros.step_period_s))
-            frame = self._next_frame(fresh=True)
-            if on_frame is not None:
-                on_frame(frame)
-        print(f"[robot] floor {self.floor_key} declared; starting", flush=True)
-        return frame
 
     def attach_driver(self, driver) -> None:
         """The mover, so `step` can ask who owns the base this tick."""
@@ -89,14 +62,8 @@ class Ros2Env:
         self._frame_id = 0
         self._steps = 0
         self._stopped = False
+        self.abort_reason = None
         self._last_seq = -1
-        # A second run on the same env starts on the ground floor, not on the
-        # storey the previous one happened to end on.
-        self.floor_key = 0
-        self.floor_switches = []
-        # Drain a switch left over from before the run started, so run 2 does
-        # not begin by switching to the floor run 1 ended on.
-        self.transport.pop_floor_switch()
         return self._next_frame(fresh=True)
 
     def step(self, action: str) -> FrameData:
@@ -133,11 +100,6 @@ class Ros2Env:
         # The FSM is steering. Take the base back first.
         if goal_active:
             self._cancel()
-        if action == "wait":
-            # Standing at the stairs for the carry (agent/state.py WAIT_ACTION):
-            # no wheel command, one tick's pause, and a fresh look.
-            time.sleep(float(self.ros.step_period_s))
-            return self._next_frame(fresh=True)
         if action in _LOOKS:
             self.transport.look(_LOOKS[action] * float(self.ros.look_step_deg))
         else:
@@ -146,6 +108,12 @@ class Ros2Env:
         # Strictly newer than the frame the decision was made on: acting on a
         # view from before the base moved is the failure that looks like a bad
         # planner.
+        return self._next_frame(fresh=True)
+
+    def observe(self) -> FrameData:
+        """A fresh frame without acting: what the camera sees now. For looking
+        again once the episode is over (the inspection's last look,
+        scripts/run_robot.py); the base does not move."""
         return self._next_frame(fresh=True)
 
     @property
@@ -185,12 +153,33 @@ class Ros2Env:
         which does not exist here. False means a multi-attempt protocol would
         keep searching; with `eval.attempts=1` (the robot presets) the STOP
         simply ends the run and the operator judges it.
+
+        A run may install `stop_check(frame) -> bool`, which answers from what
+        the robot can see at the stop (scripts/run_robot.py: does the detector
+        name the target there?); it is asked instead.
         """
+        check = self.stop_check
+        if callable(check):
+            return bool(check(frame))
         return False
+
+    def halt(self) -> None:
+        """Cancel the Nav2 goal without ending the episode: the FSM is about to
+        use the base itself (a look at a STOP the run may take back)."""
+        self._cancel()
+
+    def abort(self, reason: str) -> None:
+        """End the episode now, for a reason no STOP explains (the robot fell
+        over): `episode_over` turns true and `abort_reason` says why."""
+        self.abort_reason = str(reason)
+        self._stopped = True
+        try:
+            self._cancel()
+        except Exception:  # noqa: BLE001 -- ending the run is the point
+            pass
 
     def episode_metadata(self) -> dict:
         return {"map_tag": str(self.ros.map_tag), "map_mode": str(self.ros.map_mode),
-                "floor_switches": list(self.floor_switches),
                 "target": str(self.ros.target)}
 
     def close(self) -> None:
@@ -216,32 +205,18 @@ class Ros2Env:
                     after_seq=self._last_seq if fresh else -1, timeout_s=timeout)
                 break
             except BridgeUnavailable:
-                # No frame is the camera or `map -> camera` gone. On the
-                # Stretch that is also what a carry to the other storey
-                # looks like -- slam_toolbox relaunched there -- so wait it
-                # out, saying so, before calling the run dead.
+                # No frame is the camera or `map -> camera` gone, which a
+                # relaunched localisation stack also looks like for a while,
+                # so wait it out, saying so, before calling the run dead.
                 waited += timeout
                 if waited >= patience:
                     raise
                 print(f"[robot] no camera frame for {waited:.0f}s (camera or map->camera TF "
-                      f"missing; carrying?) -- waiting up to {patience:.0f}s", flush=True)
+                      f"missing) -- waiting up to {patience:.0f}s", flush=True)
         if waited:
             print(f"[robot] frames are back after {waited:.0f}s", flush=True)
         self._last_seq = int(payload.get("seq", self._last_seq + 1))
-        self._poll_floor_switch()
         return self._to_frame(payload)
-
-    def _poll_floor_switch(self) -> None:
-        key = self.transport.pop_floor_switch()
-        if key is None or int(key) == self.floor_key:
-            return
-        self.floor_key = int(key)
-        self.floor_switches.append((self._steps, self.floor_key))
-        # The map under the pursuit is about to change, so the goal chosen on
-        # the old storey is no longer meaningful.
-        self._cancel()
-        if self.on_floor_switch is not None:
-            self.on_floor_switch(self.floor_key)
 
     def _to_frame(self, payload: dict) -> FrameData:
         self._last_payload = payload
@@ -254,9 +229,6 @@ class Ros2Env:
         T_wc = F.ros_pose_to_pipeline(payload["T_map_cam"])
         rgb, depth, intr, T_wc = F.rotate_frame(
             rgb, depth, intr, T_wc, float(self.ros.rotate_deg))
-        # The switch is the height sensor: see the module docstring.
-        T_wc = T_wc.copy()
-        T_wc[1, 3] += self.floor_key * float(self.cfg.floor.virtual_storey_m)
         self._frame_id += 1
         return FrameData(
             frame_id=self._frame_id, rgb=rgb, depth=depth, T_wc=T_wc,

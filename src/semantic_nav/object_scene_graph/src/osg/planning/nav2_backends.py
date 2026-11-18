@@ -47,8 +47,7 @@ class SimNav2Backend:
     def poll(self) -> BackendStatus:
         if self._goal is None:
             return BackendStatus("idle")
-        # No floor height: this mover is same-storey (see Nav2Driver). None
-        # means "the agent's own floor", which is what a same-storey goal wants.
+        # No goal height: None means "at the agent's own height".
         action = self.env.action_to_goal(self._goal, None)
         rho = float(np.linalg.norm(self._goal - self._agent_xy))
         if action is not None:

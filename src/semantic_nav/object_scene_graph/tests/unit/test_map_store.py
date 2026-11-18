@@ -13,39 +13,30 @@ import pytest
 
 from osg.graph.map_store import MapStoreError, apply_map, load_map, save_map
 from osg.mapping.costmap import FREE, OCCUPIED, UNKNOWN, Costmap2D
+from osg.mapping.map_layer import MapLayer
 from osg.mapping.value_map import ValueMap2D
 from osg.objects.association import Observation, ObjectTrack
 from osg.objects.ellipsoid import Ellipsoid
 from osg.objects.object_layer import ObjectLayer
 
 
-class _Layer:
-    """Minimal stand-in for the FloorStack seam the agent exposes."""
-
-    def __init__(self, costmap, room_labels=None):
-        self.costmap = costmap
-        self.room_labels = room_labels
-        self._layers = {0: self}
-        self.current = self
-
-
 class _Agent:
     def __init__(self, object_layer, costmap, room_labels=None, scene_graph=None):
         self.object_layer = object_layer
-        self._floor_stack = _Layer(costmap, room_labels)
+        self.map = MapLayer(costmap=costmap, segmenter=None, room_labels=room_labels)
         self.scene_graph = scene_graph or _NullGraph()
 
     @property
     def costmap(self):
-        return self._floor_stack.costmap
+        return self.map.costmap
 
     @property
     def _room_labels(self):
-        return self._floor_stack.room_labels
+        return self.map.room_labels
 
     @_room_labels.setter
     def _room_labels(self, value):
-        self._floor_stack.room_labels = value
+        self.map.room_labels = value
 
 
 class _NullGraph:
@@ -189,34 +180,32 @@ def test_scene_graph_is_rebuilt_not_restored(tmp_path):
 # ------------------------------------------------------------------ guards
 
 
-def test_multi_floor_save_keeps_every_floor(tmp_path):
+def test_the_floor_height_survives_so_both_passes_band_alike(tmp_path):
     src = agent_with([track(1)])
-    upper = _Layer(Costmap2D(resolution=0.05))
-    upper.floor_y = 2.8
-    upper.costmap.grid[7, 9] = OCCUPIED
-    src._floor_stack._layers[1] = upper
+    src.map.floor_y = 0.12
     save_map(tmp_path / "m.json", src, scene="s1")
     blob = load_map(tmp_path / "m.json")
-    assert blob["schema_version"] == 2
-    assert [f["key"] for f in blob["floors"]] == [0, 1]
-    assert blob["_grids"]["floor_1_grid"][7, 9] == OCCUPIED
+    assert blob["schema_version"] == 3
+    dst = agent_with([])
+    apply_map(dst, blob, initial_floor_y=0.9)
+    assert dst.map.floor_y == pytest.approx(0.12)
 
 
 def test_optional_value_map_evidence_survives_roundtrip(tmp_path):
     src = agent_with([track(1)])
-    src._floor_stack.value_map = ValueMap2D(src.costmap)
-    src._floor_stack.value_map.value[4, 5] = 0.73
-    src._floor_stack.value_map.conf[4, 5] = 0.91
-    src._floor_stack.value_map.n_updates = 7
+    src.map.value_map = ValueMap2D(src.costmap)
+    src.map.value_map.value[4, 5] = 0.73
+    src.map.value_map.conf[4, 5] = 0.91
+    src.map.value_map.n_updates = 7
     out = roundtrip(src, tmp_path)
-    vm = out._floor_stack.value_map
+    vm = out.map.value_map
     assert vm is not None
     assert vm.value[4, 5] == pytest.approx(0.73)
     assert vm.conf[4, 5] == pytest.approx(0.91)
     assert vm.n_updates == 7
 
 
-def test_schema_v1_still_loads_as_floor_zero(tmp_path):
+def test_schema_v1_still_loads(tmp_path):
     import json
 
     src = agent_with([track(1)])
@@ -229,60 +218,48 @@ def test_schema_v1_still_loads_as_floor_zero(tmp_path):
         "tracks": [],
     }))
     dst = agent_with([])
-    apply_map(dst, load_map(tmp_path / "legacy.json"))
+    apply_map(dst, load_map(tmp_path / "legacy.json"), initial_floor_y=0.3)
     assert dst.costmap.grid.shape == src.costmap.grid.shape
+    # v1 recorded no floor height: the episode's own first frame stands in.
+    assert dst.map.floor_y == pytest.approx(0.3)
 
 
-def test_schema_v2_roundtrip_restores_all_floors_and_selects_start_height(tmp_path):
-    from osg.agent.nav_agent import NavAgent
-    from osg.exploration.async_scorer import AsyncScorer
-    from osg.exploration.scorer import NullScorer
-    from osg.mapping.floor_stack import StairEdge
-    from osg.perception.detector import StubDetector
+def _v2_blob(tmp_path, floors, grids):
+    import json
 
-    from .test_nav_agent import make_cfg
+    np.savez_compressed(tmp_path / "v2.npz", **grids)
+    (tmp_path / "v2.json").write_text(json.dumps({
+        "schema_version": 2, "resolution": 0.05, "grids": "v2.npz",
+        "floors": floors, "tracks": [],
+    }))
+    return tmp_path / "v2.json"
 
-    cfg = make_cfg()
-    cfg.floor.enabled = True
-    cfg.floor.estimate_only = False
-    cfg.floor.per_floor_costmap = True
-    cfg.floor.cross_floor = True
 
-    def make_agent():
-        return NavAgent(cfg, StubDetector(), AsyncScorer(NullScorer()), None, "mug")
+def test_a_single_floor_v2_snapshot_still_loads(tmp_path):
+    cm = Costmap2D(resolution=0.05)
+    cm.grid[7, 8] = OCCUPIED
+    path = _v2_blob(
+        tmp_path,
+        [{"key": 4, "height_y": 0.2, "resolution": 0.05, "prefix": "floor_4_"}],
+        {"floor_4_grid": cm.grid, "floor_4_origin": cm.origin},
+    )
+    dst = agent_with([])
+    apply_map(dst, load_map(path))
+    assert dst.costmap.grid[7, 8] == OCCUPIED
+    assert dst.map.floor_y == pytest.approx(0.2)
 
-    src = make_agent()
-    src._floor_stack._layers = {}
-    lower = src._floor_stack.layer(4)
-    upper = src._floor_stack.layer(9)
-    lower.floor_y, upper.floor_y = 0.0, 2.8
-    lower.costmap.grid[3, 4] = FREE
-    upper.costmap.grid[7, 8] = OCCUPIED
-    lower.room_labels = np.ones(lower.costmap.grid.shape, dtype=np.int32)
-    upper.room_labels = np.full(upper.costmap.grid.shape, 2, dtype=np.int32)
-    upper.up_stair_hits = np.ones(upper.costmap.grid.shape, dtype=np.int16)
-    src._floor_stack.current_id = 9  # saved current must not decide loaded current
-    src._floor_stack.stair_edges = [
-        StairEdge(4, 9, np.array([1.0, 2.0]), np.array([1.2, 2.2]), step=42)
-    ]
-    low_track, high_track = track(4), track(9, center=(1.0, 3.5, 2.0))
-    low_track.floor_key, high_track.floor_key = 4, 9
-    src.object_layer._tracks = {4: low_track, 9: high_track}
-    src.object_layer._next_id = 10
 
-    save_map(tmp_path / "v2.json", src, scene="house")
-    dst = make_agent()
-    apply_map(dst, load_map(tmp_path / "v2.json"), initial_floor_y=0.1)
-
-    assert set(dst._floor_stack) == {4, 9}
-    assert dst._floor_stack.current_id == 4
-    assert dst.floors.estimator.current == 4
-    assert dst.floors.estimator.levels == {4: 0.0, 9: 2.8}
-    assert dst._floor_stack.by_key(9).costmap.grid[7, 8] == OCCUPIED
-    assert dst._floor_stack.by_key(9).up_stair_hits[7, 8] == 1
-    assert {(t.id, t.floor_key) for t in dst.object_layer.tracks()} == {(4, 4), (9, 9)}
-    assert len(dst._floor_stack.stair_edges) == 1
-    assert {node.floor_id for node in dst.scene_graph.objects} == {4, 9}
+def test_a_multi_floor_v2_snapshot_is_refused(tmp_path):
+    cm = Costmap2D(resolution=0.05)
+    path = _v2_blob(
+        tmp_path,
+        [{"key": 0, "height_y": 0.0, "resolution": 0.05, "prefix": "floor_0_"},
+         {"key": 1, "height_y": 2.8, "resolution": 0.05, "prefix": "floor_1_"}],
+        {"floor_0_grid": cm.grid, "floor_0_origin": cm.origin,
+         "floor_1_grid": cm.grid, "floor_1_origin": cm.origin},
+    )
+    with pytest.raises(MapStoreError, match="single-floor"):
+        load_map(path)
 
 
 def test_corrupt_snapshot_and_missing_v2_arrays_fail_loudly(tmp_path):
@@ -299,7 +276,7 @@ def test_corrupt_snapshot_and_missing_v2_arrays_fail_loudly(tmp_path):
         "floors": [{"key": 4, "height_y": 0.0, "resolution": 0.05,
                     "prefix": "floor_4_"}],
     }))
-    with pytest.raises(MapStoreError, match="missing arrays"):
+    with pytest.raises(MapStoreError, match="no occupancy grid"):
         load_map(tmp_path / "empty.json")
 
 
@@ -496,10 +473,7 @@ def test_a_track_with_no_crop_still_round_trips(tmp_path):
 
 def test_scene_graph_only_keeps_tracks_but_not_occupancy(tmp_path):
     """`map_in_occupancy=false`: the objects survive, the occupancy does not,
-    so another map can be the sole thing the planner reads.
-
-    This is the arm where ASCENT's obstacle map -- not the pass that built the
-    scene graph -- supplies every cell (`ycb.obstacle_map_in`).
+    and this run rebuilds its own.
     """
     agent = agent_with([track(1), track(2, label="bowl")])
     agent.costmap.grid[10:20, 10:20] = 0

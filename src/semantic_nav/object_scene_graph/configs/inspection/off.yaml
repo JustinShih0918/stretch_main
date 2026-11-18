@@ -1,0 +1,5 @@
+defaults:
+  - base_off
+
+# No condition inspection after the search: the run ends at the STOP, as every
+# benchmark arm does.

@@ -135,11 +135,9 @@ class HabitatObjectNavEnv:
     def _goal3d(self, goal, floor_y=None) -> np.ndarray:
         """Lift a goal to a 3D navmesh query point.
 
-        A 3-vector passes through. A 2-vector gets a height: `floor_y` when the
-        caller knows which storey the goal is on, otherwise the agent's own
-        height -- the historical behaviour, which silently forces every goal
-        onto the agent's current floor. That substitution is why cross-floor
-        targets read as unreachable (see docs/history/MULTI_FLOOR.md).
+        A 3-vector passes through. A 2-vector gets a height: `floor_y` when
+        given, otherwise the agent's own height, which snaps the goal onto the
+        agent's current floor.
         """
         g = np.asarray(goal, dtype=float).ravel()
         if g.size == 3:

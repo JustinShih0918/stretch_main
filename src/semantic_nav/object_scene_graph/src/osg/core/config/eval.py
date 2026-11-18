@@ -60,13 +60,6 @@ class EvalConfig:
     # 36 MB raw and 9.5 MB at CRF 30, and 30 MB is where file sharing stops.
     # Lower is better quality and bigger; 0 disables the re-encode.
     debug_video_crf: int = 30
-    # Draw the prior obstacle map with each episode's target on it, once per
-    # scene, into `viz/obstacle_map_<scene>.png`. Only runs that read
-    # `ycb.obstacle_map_in` have anything to draw, so this is a no-op
-    # elsewhere. On by default: the cross-anchor failures are geometric, and
-    # the first of these figures answered three questions the numbers had not
-    # (docs/history/CROSS_ANCHOR_OBSTACLE_MAP.md).
-    obstacle_map_png: bool = True
     # Per-step behaviour log in episodes.jsonl, WITHOUT the debug videos.
     # `debug_frames` writes an mp4 per episode, which is minutes of encoding and
     # tens of MB on a 100-episode run; the analysis in

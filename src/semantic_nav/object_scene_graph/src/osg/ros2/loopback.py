@@ -12,7 +12,7 @@ images reach the pipeline. So a check that passes here and fails against the
 real bridge has localised the fault to the ROS half, which is the entire reason
 for having both.
 
-    python -m osg.ros2.loopback --floor-switch-after 5
+    python -m osg.ros2.loopback
 """
 from __future__ import annotations
 
@@ -29,7 +29,7 @@ from .wire import parse_addr, serve_once
 
 
 class LoopbackRobot:
-    """A base that drives, a camera that renders, and a floor switch."""
+    """A base that drives and a camera that renders."""
 
     def __init__(self, args) -> None:
         self.args = args
@@ -44,11 +44,8 @@ class LoopbackRobot:
         self._goal: Optional[np.ndarray] = None
         self._goal_id = 0
         self._state = "idle"
-        self._floor: Optional[int] = None
         self._seq = 0
         self.last_goal: Optional[dict] = None
-        self._started = time.time()
-        self._floor_sent = False
         self.tilt_deg = 0.0
 
     # -------------------------------------------------------------- the world
@@ -90,7 +87,6 @@ class LoopbackRobot:
         wait because its frames arrive on their own schedule.
         """
         self._advance()
-        self._maybe_switch_floor()
         with self._lock:
             T = self._camera_matrix()
             self._seq += 1
@@ -139,9 +135,10 @@ class LoopbackRobot:
         # is the one property a second fake exists to cross-check.
         self.cancel()
         with self._lock:
-            if action == "move_forward":
+            if action in ("move_forward", "move_backward"):
+                sign = 1.0 if action == "move_forward" else -1.0
                 self.pose[:2] += np.array([math.cos(self.pose[2]),
-                                           math.sin(self.pose[2])]) * float(forward_m)
+                                           math.sin(self.pose[2])]) * sign * float(forward_m)
                 self._clamp()
                 achieved = float(forward_m)
             elif action in ("turn_left", "turn_right"):
@@ -156,19 +153,6 @@ class LoopbackRobot:
         self.tilt_deg += float(tilt_delta_deg)
         return {"tilt_deg": self.tilt_deg}
 
-    def _maybe_switch_floor(self) -> None:
-        if (self.args.floor_switch_after > 0 and not self._floor_sent
-                and time.time() - self._started >= self.args.floor_switch_after):
-            self._floor_sent = True
-            with self._lock:
-                self._floor = 1
-
-    def pop_floor_switch(self) -> dict:
-        self._maybe_switch_floor()
-        with self._lock:
-            floor, self._floor = self._floor, None
-        return {"floor": floor}
-
     def get_last_goal(self):
         return self.last_goal
 
@@ -177,10 +161,11 @@ class LoopbackRobot:
             "ping": self.ping, "get_frame": self.get_frame,
             "send_goal": self.send_goal, "nav_status": self.nav_status,
             "cancel": self.cancel, "execute": self.execute, "look": self.look,
-            "pop_floor_switch": self.pop_floor_switch, "last_goal": self.get_last_goal,
+            "last_goal": self.get_last_goal,
                     "publish_image": lambda topic, image, encoding="bgr8": {"published": True},
             "publish_markers": lambda topic, markers, frame_id="map": {"published": len(markers)},
             "publish_grid": lambda topic, grid, origin_xy, resolution, frame_id="map", z=0.0: {"published": True},
+            "publish_text": lambda topic, text: {"published": True},
         }
 
 
@@ -213,7 +198,6 @@ def parse_args(argv=None):
     p.add_argument("--nav-speed", type=float, default=1.5)
     p.add_argument("--goal-tolerance-m", type=float, default=0.2)
     p.add_argument("--abort-goals", action="store_true")
-    p.add_argument("--floor-switch-after", type=float, default=0.0)
     return p.parse_args(argv)
 
 

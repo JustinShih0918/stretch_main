@@ -1,0 +1,11 @@
+defaults:
+  - base_off
+
+# Condition inspection after the search, by NVIDIA's hosted Nemotron 3.5 Super
+# VL on build.nvidia.com (OpenAI-compatible). Needs NVIDIA_API_KEY in the
+# environment; a key is per account, and `missing` makes the call fail loudly
+# rather than run unauthenticated.
+enabled: true
+base_url: https://integrate.api.nvidia.com/v1
+model: nvidia/nemotron-3.5-super-vl-120b-a12b
+api_key: ${oc.env:NVIDIA_API_KEY,missing}

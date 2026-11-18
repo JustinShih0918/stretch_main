@@ -8,7 +8,7 @@ surface something could be put on), and presence (is the object still there).
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Tuple
+from typing import List, Tuple
 
 
 @dataclass
@@ -202,20 +202,60 @@ class SceneGraphConfig:
     target_every_step: bool = False
     cloud_stride: int = 4
     cloud_cap: int = 2000
+    # Skip a detection when less than this fraction of its mask has a depth
+    # reading (0 = keep every one, as before). Depth past the sensor's range
+    # reads 0, so a far object's mask is mostly empty and what depth it does
+    # carry is the edge of something nearer: stretch_main's extinguisher demo
+    # saw a 0.66 m extinguisher 8 m off over a reception desk, and the track
+    # landed on the desk corner 7.6 m short of it, where the run stopped
+    # (2026-11-10).
+    min_valid_depth_frac: float = 0.0
+    # Classes whose objects are told apart one by one -- "fire extinguisher #1",
+    # "#2" (objects/instances.py): each confirmed object gets an index, the index
+    # follows the object when it is moved (a missing instance claims the one
+    # unexplained object of its label), tracks of these classes are never
+    # linked into one object, and a mission may name one (`agent.target_instance`).
+    # Empty = off: no registry is built and nothing changes.
+    instance_labels: List[str] = field(default_factory=list)
+    # A second track this close to an instance's, never detected in the same
+    # frame as it, is another ellipsoid of the same object. Below the width of
+    # the objects it is meant for: two extinguishers cannot stand closer than
+    # ~0.35 m centre to centre.
+    instance_fragment_m: float = 0.4
+    # While the robot is committed to one instance, a detection of its label
+    # counts as THAT object (approach stop, absence reading, close look, the
+    # inspection's views) only within this distance of its track and no nearer
+    # to another instance's track. Wide enough for the gap between a track's
+    # centre and the front surface depth reads (~0.15 m) plus estimate error.
+    instance_match_m: float = 1.0
+    # A detection of such a class joins one of its tracks only if depth puts it
+    # within this distance of the track's centre on the ground (nearest pair
+    # first); otherwise it starts a new track, which the instance registry then
+    # explains. In the image, an extinguisher put down beside another took the
+    # other's track (outputs/20261113_013326). Under the ~0.4 m width of the
+    # objects plus the centre-to-front-surface offset depth reads.
+    instance_assoc_gate_m: float = 0.45
+    # A track of such a class centred higher than this above the floor is not
+    # one (never indexed, claimed, or a candidate), for a class that stands on
+    # the floor. The hospital's red "FIRE EXTINGUISHER" wall signs were named
+    # fire extinguishers from across the lobby, tracks centred 1.36-1.51 m up
+    # against 0.20-0.45 m for every real one, and a missing #1 claimed one as
+    # its new place (outputs/20261113_184240). 0 disables.
+    instance_max_height_m: float = 0.0
     room_classifier: str = "none"  # none | place365
-    # Container (anchor) layer -- floor -> room -> container -> object
+    # Container (anchor) layer -- room -> container -> object
     # (docs/history/DYNAMIC_SCENES.md). A track qualifies as a support surface when its
     # label is in graph.containers.CONTAINER_CATEGORIES AND its world top height
     # falls in this band with at least this much ground footprint. The geometry
     # half is what a DualMap-style word list alone cannot do: reject the
     # mis-segmented sliver labelled "table", and the "shelf" whose top lands
     # at 1.9 m where nothing is ever put down.
-    # Measure a container's top from its OWN floor rather than from y=0.
-    # `container_top_h_m` is a band above the floor; `top_height` returns an
-    # absolute world height. They coincide on the ground floor and diverge on
-    # every storey above it, where the band then rejects everything -- 00808's
-    # upper floor holds 367 mapped tracks and produced zero containers. Off by
-    # default because it changes which surfaces exist on a multi-storey map.
+    # Measure a container's top from the floor the agent stands on (the
+    # latched ground plane) rather than from y=0. `container_top_h_m` is a
+    # band above the floor; `top_height` returns an absolute world height, and
+    # the two coincide only when the floor sits at y=0 -- 00829's sits at
+    # 0.136 (docs/UNIFIED_PIPELINE.md). Off by default because it changes which
+    # surfaces exist.
     containers_floor_relative: bool = False
     container_top_h_m: Tuple[float, float] = (0.2, 1.4)
     container_min_area_m2: float = 0.06

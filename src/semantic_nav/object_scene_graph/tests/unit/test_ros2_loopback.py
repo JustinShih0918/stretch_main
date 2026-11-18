@@ -150,22 +150,6 @@ def test_the_discrete_actions_move_the_base_the_way_the_controller_expects(robot
     assert moved == pytest.approx(env.cfg.agent.forward_m, abs=0.02)
 
 
-def test_the_floor_switch_travels_the_whole_way(robot_env):
-    env, robot = robot_env
-    frame = env.reset()
-    seen = []
-    env.on_floor_switch = seen.append
-    ground = frame.camera_position[HEIGHT_AXIS]
-
-    with robot._lock:
-        robot._floor = 1  # what `/osg/floor` sets on the real bridge
-    frame = env.step("turn_left")
-
-    assert seen == [1] and env.floor_key == 1
-    assert frame.camera_position[HEIGHT_AXIS] == pytest.approx(
-        ground + env.cfg.floor.virtual_storey_m)
-
-
 # ------------------------------------------- the two fakes must not drift apart
 
 

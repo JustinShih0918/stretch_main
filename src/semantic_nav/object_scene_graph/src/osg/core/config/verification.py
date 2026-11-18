@@ -14,9 +14,6 @@ from typing import List
 @dataclass
 class VerificationConfig:
     enabled: bool = True
-    # ASCENT treats a rejection as retryable; zero preserves the legacy
-    # permanent rejection behavior used by existing dynamic presets.
-    reject_cooldown_steps: int = 0
     # Arriving at a committed target without ever seeing it is an OBSERVATION,
     # not just a failed trip (docs/history/DYNAMIC_SCENES.md, C5). Applying it as
     # negative evidence is what stops a stale map sending the agent back to the
@@ -137,9 +134,9 @@ class VerificationConfig:
     # that becomes reachable later can come back.
     unreachable_is_absorbing: bool = True
     min_obs: int = 3
-    # A track far ABOVE the storey the agent stands on needs a second look
+    # A track far ABOVE the floor the agent stands on needs a second look
     # before it may take an attempt. 0.0 disables it, which is the shipped
-    # behaviour; the multi-floor arm sets it.
+    # behaviour.
     #
     # Measured on 00800 (outputs/mf5_pass2_p1500): the toy-airplane episode
     # spent both of its early attempts, by step 95, on tracks whose centres sat

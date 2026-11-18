@@ -1,6 +1,6 @@
 """Container (anchor) membership and the support relation.
 
-The scene graph was `floor -> room -> object`: every object hung off a room
+The scene graph was `room -> object`: every object hung off a room
 centroid, so there was nowhere to record that the mug is on *that* table. Both
 halves of the dynamic-scene work need exactly that edge -- the presence filter
 asks "should I be seeing this object at its mapped pose", and the search

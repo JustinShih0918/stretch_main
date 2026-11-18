@@ -19,10 +19,6 @@
 #                         selections (constants.py:234-236)
 #   frontier LLM          forced choice among top-3, {"Index","Reason"}
 #                         (llm_planner.py:409-487; ascent_policy.py topk: 3)
-#   floor LLM             asked every >=60 steps once >=100 steps on this floor
-#                         (llm_planner.py:217; constants.py:237-238)
-#   floor exhausted       when no explore frontiers remain, NOT on a step count
-#                         (ascent_policy.py:655)
 #   room typing           Places365 top-5 -> 10 reference rooms
 #                         (map_controller.py:816-830; utils.py:209-229)
 #   value prompt          "Seems like there is a {target} ahead."
@@ -35,18 +31,10 @@ defaults:
   - ascent_matched
   - override /exploration: value
 
-mapping:
-  # ASCENT keeps one obstacle/value/object map per storey and this split is 21%
-  # cross-floor; without this the stair machinery has nowhere to put a floor.
-  multi_floor: true
-
 scene_graph:
   room_classifier: place365
 
 exploration:
-  # -- extraction ---------------------------------------------------------
-  area_thresh_m2: 1.5
-
   # -- ranking: this is the path_cost removal --------------------------------
   # `utility` computes score / path_cost (selector.py:145). ASCENT never divides
   # by distance: it takes the value argmax and lets distance in exactly once, as
@@ -60,21 +48,14 @@ exploration:
   ranker: ascent
   ranker_topk: 3
   ranker_every_steps: 20
-  floor_llm: true
-  floor_ask_every: 60
-  floor_min_steps: 100
-  floor_llm_boost: 5.0
 
-  # -- stairs --------------------------------------------------------------
-  stair_prior: 0.6
-  stair_explored_rule: no_frontiers
 
   # -- value map -----------------------------------------------------------
   value_map: true
   value_weight: 4.0
   # OFF: this is the numeric multiplier applied OUTSIDE the model. ASCENT has no
   # such term -- it states the same priors as text inside the prompt, which the
-  # ranker and floor planner both do and which they load independently of this
+  # ranker does and which it loads independently of this
   # flag. Leaving it on would apply the prior twice.
   knowledge_prior: false
 

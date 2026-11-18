@@ -13,7 +13,7 @@ import json
 import numpy as np
 import pytest
 
-from osg.exploration.knowledge_prior import FloorPrior, KnowledgeGraph
+from osg.exploration.knowledge_prior import KnowledgeGraph
 
 ROOMS = {
     "toilet": {"bathroom": 0.97, "bedroom": 0.02, "kitchen": 0.01},
@@ -81,27 +81,3 @@ def test_loads_the_generated_priors_if_present():
     kg = KnowledgeGraph(json.loads(path.read_text()))
     assert max(kg.room_probabilities("toilet"), key=kg.room_probabilities("toilet").get) == "bathroom"
     assert max(kg.room_probabilities("bed"), key=kg.room_probabilities("bed").get) == "bedroom"
-
-
-# ----------------------------------------------------------------- floor prior
-
-
-def test_floor_prior_is_zero_indexed_and_normalised():
-    fp = FloorPrior({"bed": {"3": {"1": 22.2, "2": 29.6, "3": 48.1}}})
-    d = fp.probabilities("bed", 3)
-    assert pytest.approx(sum(d.values())) == 1.0
-    assert max(d, key=d.get) == 2, "table floors are 1-based, FloorStack order is 0-based"
-
-
-def test_floor_prior_clamps_to_the_largest_table_entry():
-    """A 6-storey scene should still get the shape of the distribution rather
-    than nothing at all."""
-    fp = FloorPrior({"bed": {"3": {"1": 20.0, "2": 30.0, "3": 50.0}}})
-    assert fp.probabilities("bed", 6) == fp.probabilities("bed", 3)
-
-
-def test_floor_prior_unknown_category():
-    assert FloorPrior({}).probabilities("bed", 2) == {}
-
-
-# ---------------------------------------------------------------- score cache

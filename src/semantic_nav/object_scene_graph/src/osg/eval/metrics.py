@@ -34,35 +34,6 @@ def per_category(episode_results: List[dict]) -> Dict[str, Dict[str, float]]:
     return {cat: aggregate(rs) for cat, rs in sorted(by_cat.items())}
 
 
-def per_floor_class(episode_results: List[dict]) -> Dict[str, Dict[str, float]]:
-    """SR/SPL split by whether the goal is on the agent's starting floor.
-
-    Multi-floor scenes are the dominant remaining SR loss (see
-    docs/history/MULTI_FLOOR.md); without this split a run reports one number that
-    averages two very different regimes. `floor_class` is written per episode
-    by eval/floors.py.
-    """
-    by_fc: Dict[str, List[dict]] = {}
-    for r in episode_results:
-        by_fc.setdefault(r.get("floor_class", "unknown"), []).append(r)
-    return {fc: aggregate(rs) for fc, rs in sorted(by_fc.items())}
-
-
-def per_relocation(episode_results: List[dict]) -> Dict[str, Dict[str, float]]:
-    """Overlapping SR/SPL groups for dynamic relocation across storeys."""
-    relocated = [r for r in episode_results if r.get("relocation_direction")]
-    same = [r for r in relocated if r.get("relocation_direction") == "same_floor"]
-    upward = [r for r in relocated if r.get("relocation_direction") == "upward"]
-    downward = [r for r in relocated if r.get("relocation_direction") == "downward"]
-    groups = {
-        "same_floor": same,
-        "cross_floor": upward + downward,
-        "upward": upward,
-        "downward": downward,
-    }
-    return {name: aggregate(rows) for name, rows in groups.items() if rows}
-
-
 def per_scene(episode_results: List[dict]) -> Dict[str, Dict[str, float]]:
     by_scene: Dict[str, List[dict]] = {}
     for r in episode_results:

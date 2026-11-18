@@ -152,23 +152,3 @@ Input:
     ]
 }}"""
 
-FLOOR_DECISION_SYSTEM = ASCENT_RANK_SYSTEM
-FLOOR_DECISION_EXAMPLE = """Example Input: {"Goal": "bed", "Floor Descriptions": ["Floor 1", "Floor 2"]}
-Example Response: {"Index": "2", "Reason": "The bedroom is most likely upstairs."}"""
-FLOOR_DECISION_USER = """You need to select the optimal floor based on prior probabilistic data and environmental context.
-You need to answer the question in the following JSON format:
-{example}
-Now answer question:
-Input:
-{{
-    "Goal": "{target}",
-    "Prior Probabilities between Floor and Goal Object": [
-{floor_priors}
-    ],
-    "Prior Probabilities between Room Type and Goal Object": [
-{room_priors}
-    ],
-    "Floor Descriptions": [
-{floors}
-    ]
-}}"""
