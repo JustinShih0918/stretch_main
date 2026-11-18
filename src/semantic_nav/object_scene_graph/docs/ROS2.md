@@ -198,7 +198,7 @@ This list is `src/osg/core/config/ros2.py`.
 | Head tilt action and joint name | `ros2.head_traj_action`, `head_tilt_joint`, `look_step_deg` |
 | Nav2's action name, goal frame, and how long it flails on an unreachable goal before aborting | `ros2.nav_action`, `goal_frame`, `nav_timeout_s` |
 | DDS: CycloneDDS, host networking, a matching domain | `docker/compose.ros2.yaml`, `ROS_DOMAIN_ID`; `ros2 topic list` from the bridge shell |
-| DDS pinned to the **wired** NIC at both ends, with the peer list and buffers sized for camera frames | `CYCLONEDDS_CONFIG`, `CYCLONEDDS_URI`, `CYCLONEDDS_IFACE` in `docker/.env` — see below |
+| DDS pinned to the **wired** NIC at both ends, with the peer list and buffers sized for camera frames | `CYCLONEDDS_CONFIG`, `CYCLONEDDS_URI`, `CYCLONEDDS_IFACE` in stretch_main's `docker/thor/.env` — see below |
 | Floor-to-optical-frame height, and the FOV after rotation | `agent.camera_height`, `eval.hfov_deg`, `eval.rgb_width/height` |
 
 ## CycloneDDS on the link to the robot
@@ -230,9 +230,9 @@ What the file buys:
   incompatibility and is only this cap.
 - **Buffers sized for image traffic** (`SocketReceiveBufferSize` 10 MB, `WhcHigh` 4 MB). This
   needs `net.core.rmem_max` raised on the **host**, because `network_mode: host` means the
-  host's value applies; `docker/.env.example` has the one-liner.
+  host's value applies; stretch_main's `docker/thor/.env.example` has the one-liner.
 
-Three variables in `docker/.env` drive it, and `CYCLONEDDS_IFACE` is the only one that is
+Three variables in `docker/thor/.env` drive it, and `CYCLONEDDS_IFACE` is the only one that is
 per-machine — **this** machine's wired NIC, not the robot's (`ip -brief addr`). The Thor's is
 `enP2p1s0`.
 
@@ -267,7 +267,7 @@ vendor from its GID and `run_robot.py` refuses to start against a Fast-DDS robot
 | `src/osg/ros2/fake_robot.py` | the synthetic robot, over ROS |
 | `src/osg/eval/debug_stream.py` | the simulator's debug view and the scene graph, pushed through the bridge to RViz (`/osg/*`) |
 | `scripts/ros2/rviz.sh`, `scripts/ros2/image_window.py`, `scripts/ros2/osg_map.rviz`, `scripts/ros2/osg.rviz` | the operator's two windows (camera: `image_window.py` on `/osg/detections`; map: rviz2 on `osg_map.rviz`) and the old everything-in-one view; on the Thor, the `rviz` compose service |
-| `docker/stretch/nav2_params_slam.yaml` | the robot's Nav2 params with its slam_toolbox block, for `navigation.launch.py use_slam:=True` (docs/THOR.md, *Mapping with slam_toolbox*) |
+| `docker/deploy/nav2_params_slam.yaml` (stretch_main) | the robot's Nav2 params with its slam_toolbox block, for `navigation.launch.py use_slam:=True` (docs/THOR.md, *Mapping with slam_toolbox*) |
 | `src/osg/ros2/loopback.py` | the same robot with the ROS taken out |
 | `src/osg/planning/nav2_driver.py` | the mover: `goal_xy -> NavStep` |
 | `src/osg/planning/nav2_backends.py` | the robot's navigator, and habitat's |

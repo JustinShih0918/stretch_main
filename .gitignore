@@ -9,3 +9,5 @@ videos/
 # Poly Haven fire extinguisher (~110 MB with the generated parts and textures),
 # fetched and built by isaacsim/assets/fetch_fire_extinguisher.sh
 isaacsim/assets/fire_extinguisher/
+# Per-machine compose settings (UIDs, NIC names); docker/thor/.env.example is the template
+docker/thor/.env

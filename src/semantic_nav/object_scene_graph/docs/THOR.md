@@ -1,5 +1,11 @@
 # Deploying on a Jetson AGX Thor, beside a Stretch 3
 
+> **In stretch_main** the Thor images live at the repo root, not in this directory:
+> `docker/thor/` (`Dockerfile.thor`, `Dockerfile.bridge`, `compose.yaml`, `.env.example`), the
+> robot's SLAM params at `docker/deploy/nav2_params_slam.yaml`, and the DDS file both ends
+> mount at `docker/cyclonedds-eth.xml`. Run the compose commands below from stretch_main's root.
+> The same compose has the operator's control panel (`panel`, `control_panel/README.md`).
+
 `docs/ROS2.md` describes the layer; this describes where it runs. Three
 participants, and the split between them is the whole design:
 
@@ -58,10 +64,10 @@ Needs the submodule, same as x86 — the perception servers are built from it:
 
 ```bash
 git submodule update --init --recursive
-cp docker/.env.example docker/.env      # set UID/GID, and the Jetson block
+cp docker/thor/.env.example docker/thor/.env   # set UID/GID, and the Jetson block
 
-docker compose -f docker/compose.thor.yaml --env-file docker/.env build
-docker compose -f docker/compose.thor.yaml --env-file docker/.env up -d
+docker compose -f docker/thor/compose.yaml --env-file docker/thor/.env build
+docker compose -f docker/thor/compose.yaml --env-file docker/thor/.env up -d
 docker exec -it osg-thor bash
 ```
 
@@ -167,9 +173,9 @@ the bridge proper stays small) and one on-demand compose service, started with `
 than `up` because it is a window:
 
 ```bash
-docker compose -f docker/compose.thor.yaml --env-file docker/.env run --rm rviz               # both windows
-docker compose -f docker/compose.thor.yaml --env-file docker/.env run --rm rviz --view map    # one of them
-docker compose -f docker/compose.thor.yaml --env-file docker/.env run --rm rviz --view camera
+docker compose -f docker/thor/compose.yaml --env-file docker/thor/.env run --rm rviz               # both windows
+docker compose -f docker/thor/compose.yaml --env-file docker/thor/.env run --rm rviz --view map    # one of them
+docker compose -f docker/thor/compose.yaml --env-file docker/thor/.env run --rm rviz --view camera
 ```
 
 They open on the Thor's own screen, side by side, and each shows one thing:
@@ -219,7 +225,7 @@ and `approach_diag` when it changes). So the question the record answers afterwa
 Only `episodes.jsonl` still needs the run to reach its STOP — an interrupted run has no outcome
 to score — and `stream.jsonl` holds everything it would have said about the path there.
 
-Three things the setup relies on, all overridable in `docker/.env`: the Thor's GNOME session is
+Three things the setup relies on, all overridable in `docker/thor/.env`: the Thor's GNOME session is
 X11 on **`:1`** (`ls /tmp/.X11-unix`), it belongs to uid 1000 — the uid the container runs as —
 so its GDM cookie (`/run/user/1000/gdm/Xauthority`) authorises the window without `xhost`, and
 rendering is software GL (llvmpipe), which is plenty for a debug view (19 fps with the full
@@ -230,7 +236,7 @@ Four ways this has actually failed, each looking like "RViz shows nothing":
 
 - **`DISPLAY` pointing at the machine you ssh'd in from.** `:0` is your laptop; the Thor has no
   `:0`. The container exits at once and `run --rm` deletes it, so nothing is left to read. The
-  launcher now names this. Keep `DISPLAY=:1` in `docker/.env`.
+  launcher now names this. Keep `DISPLAY=:1` in `docker/thor/.env`.
 - **The Thor's screen locked itself** — GNOME locks after 5 idle minutes, and a lock screen is
   "nothing" on the monitor and over RDP alike. For a robot Thor, turn it off:
   `gsettings set org.gnome.desktop.session idle-delay 0` and
@@ -269,7 +275,7 @@ The robot's own stack already has it. `stretch_nav2`'s `navigation.launch.py` ta
 bring-up. One thing to add: with the stock `nav2_params.yaml` that starts slam_toolbox on its
 *default* parameters, i.e. the unfiltered `/scan`, while the Stretch's lidar launch also runs a
 laser filter that removes the robot's own mast and publishes `/scan_filtered` — which is what
-the costmaps read. `docker/stretch/nav2_params_slam.yaml` is `stretch_nav2`'s Nav2 params plus
+the costmaps read. `docker/deploy/nav2_params_slam.yaml` is `stretch_nav2`'s Nav2 params plus
 its own `slam_toolbox` block (`mapper_params_online_async.yaml`, `scan_topic: /scan_filtered`),
 which is the condition under which `nav2_bringup`'s `slam_launch.py` passes the file through.
 Copy it to the robot and launch, from `stretch_main`'s deploy compose (`nav` service) or any
@@ -365,7 +371,7 @@ docker exec -it osg-thor   python scripts/check_ros2_pipeline.py
 
 ## Set these for your unit
 
-The image is parameterised because none of it can be checked from here. `docker/.env`:
+The image is parameterised because none of it can be checked from here. `docker/thor/.env`:
 
 | build arg | what it is | how to find it |
 |---|---|---|
@@ -376,7 +382,7 @@ The image is parameterised because none of it can be checked from here. `docker/
 | `ROS_DOMAIN_ID` | must match the robot's | `echo $ROS_DOMAIN_ID` on the Stretch |
 | `RMW_IMPLEMENTATION` | must match the robot's | the Stretch runs CycloneDDS; mismatched vendors discover each other unreliably and then fail in ways that look like network trouble |
 | `CYCLONEDDS_IFACE` | **this** machine's wired NIC, not the robot's | `ip -brief addr` on the Thor — `enP2p1s0`. The shared DDS config pins to it; a name that does not exist, or a NIC that is merely down, stops Cyclone with `does not match an available interface` |
-| `CYCLONEDDS_CONFIG` | the wired-link DDS config | `docker/cyclonedds-eth.xml`, a copy of `stretch_main`'s — that repo owns the settings, and both ends must pin identically or they never discover each other, so keep the copies in sync. See *CycloneDDS on the link to the robot* in `docs/ROS2.md` |
+| `CYCLONEDDS_CONFIG` | the wired-link DDS config | stretch_main's `docker/cyclonedds-eth.xml`, the one file the Thor and the robot both mount — both ends must pin identically or they never discover each other. See *CycloneDDS on the link to the robot* in `docs/ROS2.md` |
 
 The robot-side items — topic names, the portrait camera's rotation, the camera height, the
 head-tilt joint — are all in the `ros2` config group and listed in `docs/ROS2.md`. `bridge.sh`
@@ -425,7 +431,7 @@ fallback if it ever breaks.
 Left to float on this platform, the models venv resolves to `transformers` 5.x, `timm` 1.x and
 OpenCV 5.0 — none of which the recorded ASCENT environment has ever run. They are pinned to
 its versions (`transformers==4.37.0`, `timm==0.4.12`, OpenCV 4.x) in
-`docker/thor-model-requirements.txt` and `/etc/pip/constraint.txt`, and the build's last
+`docker/thor/thor-model-requirements.txt` and `/etc/pip/constraint.txt`, and the build's last
 perception step asserts what it actually got, so a silent upgrade fails the build rather than a
 model server on the robot.
 
@@ -437,7 +443,7 @@ model server on the robot.
 | `ros2 topic list` in the bridge shows nothing from the robot | `ROS_DOMAIN_ID` and `RMW_IMPLEMENTATION` match the Stretch's, and `ROS_LOCALHOST_ONLY=0`. Then check both ends pin the same NIC — one side left on Cyclone's `autodetermine` can sit on Wi-Fi while the other is on Ethernet, and they never meet |
 | the bridge exits at once with `does not match an available interface` | `CYCLONEDDS_IFACE` names a NIC that is absent **or down** — on the Thor, that usually means the cable to the robot is not plugged in |
 | the bridge exits with `can't open configuration file` | `CYCLONEDDS_CONFIG` points nowhere, so docker made a directory at the mount point; or the XML is malformed — a comment containing a double hyphen will do it |
-| images stutter or vanish, with no error | `net.core.rmem_max` on the HOST (`network_mode: host` means the host's value applies) — `docker/.env.example` has the one-liner |
+| images stutter or vanish, with no error | `net.core.rmem_max` on the HOST (`network_mode: host` means the host's value applies) — `docker/thor/.env.example` has the one-liner |
 | `no camera frame within …s` | the topic names in the `ros2` group, and that TF actually carries `map` → the image header's frame |
 | `torch.cuda.is_available()` is False at run time | `BASE_IMAGE` does not match the device's JetPack |
 | the build stops on `no such manifest` before any step runs | `BASE_IMAGE` names an `l4t-*` tag that was never published — see *Why the base image is not an `l4t-*` one* |
@@ -450,15 +456,15 @@ model server on the robot.
 | `run_robot.py` refuses with `the robot's nodes are not on CycloneDDS: fastdds: …` | the robot's stack came up on ROS's default Fast-DDS (a reboot does this unless `RMW_IMPLEMENTATION=rmw_cyclonedds_cpp` is exported in every launching shell). Topics still flow, so it looks alive, but actions/services never cross vendors: every Nav2 goal times out and the base never moves. Relaunch the whole robot stack with the CycloneDDS env |
 | the initial spin works, the scene graph builds, goals appear in RViz, but the base never drives and `/plan` stays empty; the run ends with many `frontier_give_up` | the same vendor mismatch, seen from the run. Confirm with `ros2 topic info -v /tf`: a GID starting `01.0f` is Fast-DDS, `01.10` is CycloneDDS |
 | RViz opens with no displays; its log says `Could not load display config: Invalid argument` | rviz2 rejected `scripts/ros2/osg.rviz`. Bisect by loading prefixes of the display list (`rviz2 -d`); the file's header records the one naming clash already found |
-| the build stops on `models venv drifted: ...` | a dependency pulled one of the pinned versions up; pin it in `docker/thor-model-requirements.txt` rather than relaxing the check |
+| the build stops on `models venv drifted: ...` | a dependency pulled one of the pinned versions up; pin it in `docker/thor/thor-model-requirements.txt` rather than relaxing the check |
 | `pip install salesforce-lavis` fails with `ResolutionImpossible` naming `decord` | expected on aarch64 — the image installs `decord2`; see *BLIP-2 on aarch64* |
 
 ## Files
 
 | file | |
 |---|---|
-| `docker/Dockerfile.thor` | the pipeline and the models, on the arm64 NGC base |
-| `docker/Dockerfile.bridge` | `ros:humble-ros-base` plus the message packages |
-| `docker/compose.thor.yaml` | both containers, plus ollama, all on host networking |
-| `docker/thor-model-requirements.txt` | the servers' aarch64 dependencies, and why they are not the x86 pins |
-| `docker/entrypoint.thor.sh` | no conda wrapper: the pipeline env is the system python |
+| `docker/thor/Dockerfile.thor` | the pipeline and the models, on the arm64 NGC base |
+| `docker/thor/Dockerfile.bridge` | `ros:humble-ros-base` plus the message packages |
+| `docker/thor/compose.yaml` | both containers, plus ollama, all on host networking |
+| `docker/thor/thor-model-requirements.txt` | the servers' aarch64 dependencies, and why they are not the x86 pins |
+| `docker/thor/entrypoint.thor.sh` | no conda wrapper: the pipeline env is the system python |

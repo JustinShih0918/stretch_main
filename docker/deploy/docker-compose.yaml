@@ -11,6 +11,10 @@ name: stretch-main-deploy
 #   docker compose -f docker/deploy/docker-compose.yaml run --rm build
 #   docker compose -f docker/deploy/docker-compose.yaml run --rm nav
 #   docker compose -f docker/deploy/docker-compose.yaml run --rm bt
+#
+# The control panel's supervisor (control_panel/, README there), which starts
+# and stops the driver, lidar, camera, SLAM and Nav2 for the panel:
+#   docker compose -f docker/deploy/docker-compose.yaml up -d supervisor
 
 x-deploy-image: &deploy-image
   build:
@@ -24,12 +28,56 @@ x-deploy-image: &deploy-image
     - ../../:/ws
     # Robot hardware access (lidar, base, etc.)
     - /dev:/dev
+    # X11 socket + auth cookie, for rviz2 (the launch's rviz:=true) and other
+    # GUI tools. The default below is where GDM keeps the cookie on a normal
+    # desktop session — XAUTHORITY itself is usually unset there, and
+    # ~/.Xauthority does not exist. Override for another uid/display manager:
+    #   XAUTHORITY=$(ps -ef | grep -m1 "[X]org" | grep -o "/.*Xauthority")
+    # If the file is missing X refuses with "Authorization required, but no
+    # authorization protocol specified" (docker also leaves an empty dir at
+    # that path); `xhost +local:root` on the host is the blunter fix.
+    - /tmp/.X11-unix:/tmp/.X11-unix
+    - ${XAUTHORITY:-/run/user/1000/gdm/Xauthority}:/tmp/.docker.xauth:ro
+    # The wired-link DDS config, at the SAME absolute path in every image. The
+    # repo itself mounts at /ws here but /home/user/stretch_main in docker/vlm,
+    # so a CYCLONEDDS_URI pointing into the workspace is only valid in the one
+    # image it was written for — exporting it in your shell then breaks the
+    # other with "can't open configuration file". Use this path instead.
+    - ../cyclonedds-eth.xml:/etc/cyclonedds-eth.xml:ro
   privileged: true
   network_mode: host
   environment:
     - RCUTILS_COLORIZED_OUTPUT=1
-    - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+    # Must match whatever the robot's own hello-robot install uses, and
+    # docker/vlm on the Thor — an RMW or domain mismatch means the nodes
+    # simply never see each other's topics (`echo $RMW_IMPLEMENTATION`).
+    - RMW_IMPLEMENTATION=${RMW_IMPLEMENTATION:-rmw_cyclonedds_cpp}
     - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0}
+    - ROS_LOCALHOST_ONLY=${ROS_LOCALHOST_ONLY:-0}
+    # Pin DDS to the wired link to the Thor. BOTH ends must be pinned: the Thor
+    # (docker/vlm) now binds Ethernet only, so a side left on autodetermine can
+    # pick Wi-Fi and then the two never discover each other at all. Empty here
+    # = Cyclone's own default, so unrelated runs are unaffected; opt in with
+    # this robot's wired NIC name (`ip -brief addr` — NOT the Thor's):
+    #   CYCLONEDDS_IFACE=<nic> docker compose -f docker/deploy/... run --rm nav
+    # The same two variables must be exported for any part of the robot stack
+    # that runs OUTSIDE this compose (the hello-robot install, the RealSense
+    # driver) — see docker/cyclonedds-eth.xml.
+    #
+    # NOTE the path: /etc/cyclonedds-eth.xml is the bind mount above, NOT
+    # /home/user/stretch_main/docker/... — that is docker/vlm's mount point and
+    # does not exist in this image. Cyclone's failure there is
+    # "can't open configuration file", followed by rmw_create_node errors.
+    - CYCLONEDDS_URI=${CYCLONEDDS_URI:-/etc/cyclonedds-eth.xml}
+    # enP2p1s0 is the Thor's wired NIC (this compose also gets run there for
+    # rviz2). On the robot itself, override with its own NIC name.
+    - CYCLONEDDS_IFACE=${CYCLONEDDS_IFACE:-enP2p1s0}
+    # GUI (rviz:=true). Empty = no display, which is the normal headless case
+    # on the robot; set it to the host's live display, e.g. DISPLAY=:1, and
+    # run `xhost +local:root` once on the host if X refuses the connection.
+    - DISPLAY=${DISPLAY:-}
+    - XAUTHORITY=/tmp/.docker.xauth
+    - QT_X11_NO_MITSHM=1
 
 services:
   # One-shot build of the deploy package subset.
@@ -41,7 +89,8 @@ services:
       - -lc
       - >-
         source /opt/ros/humble/setup.bash &&
-        colcon build --packages-up-to bt_engine stretch_nav2 --symlink-install
+        colcon build --packages-up-to bt_engine stretch_nav2
+        --symlink-install
 
   # nav2 + slam_toolbox bringup for the real robot.
   nav:
@@ -66,6 +115,47 @@ services:
         source /opt/ros/humble/setup.bash &&
         source install/setup.bash &&
         ros2 run bt_engine bt_engine
+
+  # The control panel's robot half (control_panel/supervisor): starts and
+  # stops the units the panel switches -- driver, lidar, camera, SLAM, Nav2 --
+  # and saves maps. The panel itself runs on the Thor (docker/thor, `panel`).
+  #
+  # It needs hello-robot's install (stretch_core, the RealSense and lidar
+  # launches, stretch_body and the robot's calibration), which lives on the
+  # robot's own filesystem; the mounts below pass it in. NOT yet tried on the
+  # robot -- the native way (control_panel/README.md, systemd) runs the same
+  # script against the same install with nothing to mount.
+  supervisor:
+    <<: *deploy-image
+    container_name: stretch-panel-supervisor
+    restart: unless-stopped
+    volumes:
+      - ../../:/ws
+      - /dev:/dev
+      - ../cyclonedds-eth.xml:/etc/cyclonedds-eth.xml:ro
+      # hello-robot's colcon workspace, its fleet directory (calibrated URDF,
+      # stretch_body parameters) and its python packages
+      - ${HELLO_WS:-/home/hello-robot/ament_ws}:${HELLO_WS:-/home/hello-robot/ament_ws}:ro
+      - ${HELLO_FLEET_PATH:-/home/hello-robot/stretch_user}:${HELLO_FLEET_PATH:-/home/hello-robot/stretch_user}
+      - /etc/hello-robot:/etc/hello-robot:ro
+      - ${PANEL_MAPS_DIR:-/home/hello-robot/stretch_maps}:/maps
+    environment:
+      - RMW_IMPLEMENTATION=${RMW_IMPLEMENTATION:-rmw_cyclonedds_cpp}
+      - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0}
+      - ROS_LOCALHOST_ONLY=0
+      - CYCLONEDDS_URI=${CYCLONEDDS_URI:-/etc/cyclonedds-eth.xml}
+      - CYCLONEDDS_IFACE=${CYCLONEDDS_IFACE:?set CYCLONEDDS_IFACE to the robot's wired NIC}
+      - HELLO_FLEET_ID=${HELLO_FLEET_ID:?set HELLO_FLEET_ID (the robot's stretch-se3-XXXX)}
+      - HELLO_FLEET_PATH=${HELLO_FLEET_PATH:-/home/hello-robot/stretch_user}
+      - HELLO_WS=${HELLO_WS:-/home/hello-robot/ament_ws}
+      - PANEL_MAPS_DIR=/maps
+      - PANEL_AUTOSTART=${PANEL_AUTOSTART:-}
+    command:
+      - bash
+      - -lc
+      - >-
+        source /opt/ros/humble/setup.bash &&
+        exec python3 /ws/control_panel/supervisor/supervisor.py --ws /ws
 
   # Interactive shell with the workspace mounted.
   dev:

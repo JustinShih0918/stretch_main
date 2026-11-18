@@ -25,6 +25,14 @@ It does not track upstream automatically.
 - **Removed what stretch_main doesn't use** (all still upstream if needed):
   - `docker/`: OSG runs in stretch_main's sim container instead. `docker/ascent-requirements.txt`
     moved to `requirements/ascent-requirements.txt` (read by `install_osg_envs.sh`).
+    **The Thor deployment came back later** (2026-11-18), outside this directory: upstream's
+    `Dockerfile.thor`, `Dockerfile.bridge`, `compose.thor.yaml` (as `compose.yaml`),
+    `entrypoint.thor.sh` and `thor-model-requirements.txt` are in stretch_main's
+    `docker/thor/`, building from this directory (`thor-model-requirements.txt` and the
+    entrypoint arrive as the extra build context `thor`); `docker/stretch/nav2_params_slam.yaml`
+    is stretch_main's `docker/deploy/nav2_params_slam.yaml`; the DDS file is stretch_main's own
+    `docker/cyclonedds-eth.xml`, no longer a copy. `docs/THOR.md` and `docs/ROS2.md` point at
+    those paths.
   - `tests/unit/test_docker_build_context.py`: it only tested the removed Dockerfiles.
   - `scripts/legacy/`: one-off probes, which upstream's own rule says to delete.
   - `scripts/video/` and `docs/VIDEO.md`: the narrated paper video. This is not our demo

@@ -7,7 +7,12 @@ workspace. Run all commands **from the repo root**.
 |---|---|---|---|
 | [`ci/`](ci/) | Minimal build/test image (CI + local parity) | `bt_engine` | `docker compose -f docker/ci/docker-compose.yaml run --rm build` |
 | [`sim/`](sim/) | Isaac Sim 5.1 simulation (GPU/X11/privileged) | `bt_engine stretch3_navigation` | `docker compose -f docker/sim/compose.yaml run --rm stretch3-ws` |
-| [`deploy/`](deploy/) | On-robot nav2 + slam_toolbox | `bt_engine stretch_nav2` | `docker compose -f docker/deploy/docker-compose.yaml run --rm build` |
+| [`deploy/`](deploy/) | On-robot nav2 + slam_toolbox, and the control panel's `supervisor` | `bt_engine stretch_nav2` | `docker compose -f docker/deploy/docker-compose.yaml run --rm build` |
+| [`thor/`](thor/) | Jetson AGX Thor beside the robot: OSG (`thor`), its ROS bridge (`bridge`), ollama, the control panel (`panel`), rviz | — (no colcon; OSG is plain Python) | `docker compose -f docker/thor/compose.yaml --env-file docker/thor/.env up -d` |
+
+The robot and the Thor talk over the wired link with one DDS file both mount,
+[`cyclonedds-eth.xml`](cyclonedds-eth.xml) (`CYCLONEDDS_IFACE` = each machine's own wired
+NIC). The operator's panel is [`../control_panel/`](../control_panel/).
 
 The BehaviorTree engine (`bt_engine` / `bt_nav`, in [`../src/common/`](../src/common/))
 is shared across all three: it drives the `navigate_to_pose` action server that
