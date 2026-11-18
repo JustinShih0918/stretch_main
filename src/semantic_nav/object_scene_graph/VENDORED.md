@@ -314,6 +314,16 @@ needs the gitignored `data/priors/place365_room_map.json`.
     back-out and brightening. Started by stretch_main's control panel (`control_panel/osg_runner`).
     Goldens: one fingerprint added, none changed.
 
+- `scripts/serve_perception.sh`: stopping the servers now reaps them by what they are, not
+  only by killing the tmux session. tmux daemonizes, so the five `model_api.*_out` servers
+  are not in the process group of whoever ran the script: killing the session -- or
+  stretch_main's control panel stopping its `perception` unit -- left them running and
+  holding :13182-:13186, and the next start then died one line into Flask with "Address
+  already in use" while the panel still showed the unit up. `--stop` and the start path both
+  `pkill -f 'model_api\.[a-z_]*_out'` (SIGTERM, then SIGKILL after 10 s), and a start whose
+  ports are still answering afterwards -- something this script cannot kill -- exits 1 with
+  the ports named instead of launching servers that cannot bind.
+
 Add an entry above whenever you change something here, so a later re-sync from upstream
 knows what to keep.
 

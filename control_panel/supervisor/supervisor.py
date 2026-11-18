@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import collections
+import fcntl
 import json
 import os
 import re
@@ -47,6 +48,7 @@ NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 # would read as syntax. It is still quoted for both when substituted.
 TEXT_RE = re.compile(r"^[\w #.\-]{1,60}$")
 RUNNING_AFTER_S = 2.0          # alive this long after start counts as running
+CHECK_TIMEOUT_S = 20.0         # a unit's `check` (ros2 node list is slow) before giving up on it
 STOP_GRACE_S = (8.0, 4.0)      # SIGINT, then SIGTERM, then SIGKILL
 
 
@@ -59,6 +61,30 @@ def expand(text: str) -> str:
     return os.path.expanduser(os.path.expandvars(text))
 
 
+def single_instance(path: Path):
+    """An exclusive lock on `path`, or None if another instance holds it.
+
+    Two supervisors on the same robot both answer /panel/supervisor/request
+    and both publish the latched state, so the panel shows one of them at
+    random while a start button launches a driver in each -- two
+    stretch_drivers on the same USB, invisible in the UI. The operator who
+    runs the supervisor by hand after installing the systemd service
+    (DEPLOY.md) is one keystroke from exactly that, so take a lock and say so.
+    The returned file must stay referenced for as long as the lock is wanted.
+    """
+    lock = open(path, "a+")           # not "w": a refused instance must not
+    try:                              # truncate the pid of the one holding it
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        lock.close()
+        return None
+    lock.seek(0)
+    lock.truncate()
+    lock.write(f"{os.getpid()}\n")
+    lock.flush()
+    return lock
+
+
 @dataclass
 class Unit:
     name: str
@@ -67,6 +93,7 @@ class Unit:
     help: str = ""
     requires: List[str] = field(default_factory=list)
     conflicts: List[str] = field(default_factory=list)
+    check: str = ""
     args: List[str] = field(default_factory=list)
     arg_specs: Dict[str, dict] = field(default_factory=dict)
     # runtime
@@ -99,8 +126,8 @@ class Supervisor:
             specs = self._arg_specs(spec.get("args"))
             self.units[name] = Unit(name=name, cmd=str(spec["cmd"]), label=str(spec.get("label", name)),
                                     help=str(spec.get("help", "")), requires=list(spec.get("requires", [])),
-                                    conflicts=list(spec.get("conflicts", [])), args=list(specs),
-                                    arg_specs=specs)
+                                    conflicts=list(spec.get("conflicts", [])), check=str(spec.get("check", "")),
+                                    args=list(specs), arg_specs=specs)
         self.on_change = on_change or (lambda: None)
         self._lock = threading.RLock()
         self.maps_dir.mkdir(parents=True, exist_ok=True)
@@ -178,6 +205,33 @@ class Supervisor:
         return {"host": socket.gethostname(), "time": time.time(), "units": units,
                 "maps": self.maps(), "maps_dir": str(self.maps_dir)}
 
+    def already_running(self, unit: Unit, run=subprocess.run) -> (bool, str):
+        """A unit's `check`: is an equivalent of it ALREADY up, started by
+        something this supervisor cannot see?
+
+        The process bookkeeping only knows what this instance launched. A
+        supervisor that was SIGKILLed (or OOM-killed) leaves its units running
+        -- they are in their own process groups -- and the fresh one shows
+        them all stopped, so the next tap on a start button launches a second
+        driver on the same USB, or a second Nav2 on the same topics. The same
+        goes for a unit someone launched by hand, or from docker/deploy.
+
+        Exit 0 from the check means "already up", and the start is refused
+        with whatever the check printed. It FAILS OPEN: a check that errors or
+        hangs must not be able to make the panel unable to start anything.
+        """
+        if not unit.check:
+            return False, ""
+        script = f"{self.setup}\n{unit.check}\n"
+        try:
+            r = run(["bash", "-c", script], capture_output=True, text=True, timeout=CHECK_TIMEOUT_S)
+        except subprocess.TimeoutExpired:
+            return False, f"[supervisor] the {unit.name} check timed out; starting anyway"
+        if r.returncode != 0:
+            return False, ""
+        found = " ".join((r.stdout or r.stderr).split())[:200] or "something is already there"
+        return True, f"{unit.name} is already running outside the panel: {found}"
+
     # --------------------------------------------------------- commands
     def start(self, name: str, args: Optional[dict] = None) -> (bool, str):
         with self._lock:
@@ -209,16 +263,31 @@ class Supervisor:
                 cmd = unit.cmd.format(**fmt)
             except KeyError as e:
                 return False, f"{name}: missing argument {e}"
-            log_path = self.log_dir / f"{name}.log"
-            log = open(log_path, "wb")
+            # Reserve the unit before running the check, which takes seconds
+            # and must not hold the lock: `starting` with no process yet, so a
+            # second tap gets "already running" rather than a second launch.
+            unit.proc, unit.exit_code = None, None
+            unit.state, unit.since = "starting", time.time()
+            unit.started_with, unit.stop_requested = args, False
+            unit.tail.clear()
+            unit.tail.append(f"$ {cmd}")
+        self.on_change()
+
+        busy, why = self.already_running(unit)
+        with self._lock:
+            if why and not busy:
+                unit.tail.append(why)          # a check that timed out; start anyway
+            if busy or unit.stop_requested:
+                unit.state, unit.since = "stopped", time.time()
+                unit.tail.append(f"[supervisor] not started: {why or 'stopped while checking'}")
+                self.on_change()
+                return False, why or f"{name} was stopped before it started"
+            log = open(self.log_dir / f"{name}.log", "wb")
             script = f"{self.setup}\nexec {cmd}\n"
             unit.proc = subprocess.Popen(["bash", "-c", script], stdout=subprocess.PIPE,
                                          stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
                                          start_new_session=True)
-            unit.state, unit.since, unit.exit_code = "starting", time.time(), None
-            unit.started_with, unit.stop_requested = args, False
-            unit.tail.clear()
-            unit.tail.append(f"$ {cmd}")
+            unit.since = time.time()
             threading.Thread(target=self._pump, args=(unit, unit.proc, log), daemon=True).start()
         self.on_change()
         return True, f"starting {name}"
@@ -228,6 +297,9 @@ class Supervisor:
             unit = self.units.get(name)
             if unit is None:
                 return False, f"no unit {name!r}"
+            if unit.state == "starting" and unit.proc is None:
+                unit.stop_requested = True     # still in its check; start() will drop it
+                return True, f"{name} is still being checked; it will not be started"
             if unit.state not in ("starting", "running") or unit.proc is None:
                 if unit.state == "failed":
                     unit.state = "stopped"
@@ -275,7 +347,8 @@ class Supervisor:
                     u.tail.append(f"[supervisor] exited with {u.exit_code}; stopping what it left behind")
                     threading.Thread(target=self._kill, args=(u.proc,), daemon=True).start()
                     changed = True
-                elif u.state == "starting" and time.time() - u.since >= RUNNING_AFTER_S:
+                elif (u.state == "starting" and u.proc is not None
+                      and time.time() - u.since >= RUNNING_AFTER_S):
                     u.state = "running"
                     changed = True
         if changed:
@@ -386,14 +459,19 @@ def main() -> None:
     from std_msgs.msg import String
 
     config = yaml.safe_load(Path(opts.units).read_text())
+    dirty = threading.Event()
+    sup = Supervisor(config, ws=Path(opts.ws), on_change=dirty.set)
+    lock = single_instance(sup.log_dir / "supervisor.lock")
+    if lock is None:
+        raise SystemExit(f"another panel supervisor already holds {sup.log_dir / 'supervisor.lock'} "
+                         "(systemctl --user status stretch-panel-supervisor); "
+                         "two of them would start two of every unit")
     rclpy.init()
     node = Node("panel_supervisor")
     latched = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
                          durability=DurabilityPolicy.TRANSIENT_LOCAL)
     state_pub = node.create_publisher(String, "/panel/supervisor/state", latched)
     reply_pub = node.create_publisher(String, "/panel/supervisor/reply", 20)
-    dirty = threading.Event()
-    sup = Supervisor(config, ws=Path(opts.ws), on_change=dirty.set)
 
     def publish_state():
         state_pub.publish(String(data=json.dumps(sup.snapshot())))

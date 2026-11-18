@@ -13,6 +13,23 @@
 #
 # Every command runs as `bash -c "<setup>; exec <cmd>"` in its own process
 # group, so stopping a unit is exactly Ctrl-C in its terminal.
+#
+# A unit's `check` answers "is this already up without the panel knowing?" and
+# runs before the start: exit 0 refuses it. The supervisor only knows the
+# processes IT launched, so one that was SIGKILLed (or OOM-killed) leaves its
+# units running while the fresh one shows them all stopped -- and the next tap
+# on a start button would be a second stretch_driver on the same USB, or a
+# second Nav2 on the same topics.
+#
+# The question is asked of the ROS graph, with the node names the gateway
+# already watches for the "外部已在跑" pill (gateway/ros_io.py DETECT), for two
+# reasons: a node is what duplicating actually hurts, and it is seen wherever
+# it runs -- another terminal, docker/deploy, another machine -- while `pgrep
+# -f stretch_driver` cannot see those and DOES match any unrelated command
+# line that merely mentions the word (`tail -f stretch_driver.log` would be
+# enough to block a start). `ros2 node list` can hang, so it gets a timeout,
+# and a check that times out lets the start through (supervisor.py
+# `already_running` fails open).
 
 setup: |
   source /opt/ros/humble/setup.bash
@@ -33,27 +50,42 @@ units:
   driver:
     label: 底盤驅動 Driver
     help: stretch_driver in navigation mode (cmd_vel), odom TF; home / stow / modes are buttons
+    check: >-
+      timeout 10 ros2 node list 2>/dev/null | grep -qE '^(/[^/]+)*/(stretch_driver)$' &&
+      echo 'stretch_driver is already on the ROS graph'
     cmd: ros2 launch stretch_core stretch_driver.launch.py mode:=navigation broadcast_odom_tf:=True
 
   lidar:
     label: 光達 Lidar
     help: RPLidar, /scan and the mast-filtered /scan_filtered SLAM and Nav2 read
+    check: >-
+      timeout 10 ros2 node list 2>/dev/null | grep -qE '^(/[^/]+)*/(sllidar_node|rplidar_composition|rplidar_node)$' &&
+      echo 'the lidar node is already on the ROS graph'
     cmd: ros2 launch stretch_core rplidar.launch.py
 
   camera:
     label: 相機 RealSense
     help: D435i head camera, 1280x720 colour + aligned depth (+ compressed topics for the Thor)
+    check: >-
+      timeout 10 ros2 node list 2>/dev/null | grep -qE '^(/[^/]+)*/(camera|realsense2_camera_node)$' &&
+      echo 'the RealSense node is already on the ROS graph'
     cmd: ros2 launch stretch_core d435i_high_resolution.launch.py
 
   joystick:
     label: USB 搖桿 Joystick
     help: a USB/Bluetooth joystick on /dev/input/js0 -> /stretch/cmd_vel (hold LB). The Hello gamepad dongle needs no unit -- switch the driver to gamepad mode
+    check: >-
+      timeout 10 ros2 node list 2>/dev/null | grep -qE '^(/[^/]+)*/(teleop_twist_joy_node|teleop_node)$' &&
+      echo 'a teleop node is already on the ROS graph'
     requires: [driver]
     cmd: ros2 launch stretch_nav2 teleop_twist.launch.py teleop_type:=joystick
 
   mapping:
     label: 建圖 Mapping
     help: slam_toolbox, mapping mode. Drive around, then Save map
+    check: >-
+      timeout 10 ros2 node list 2>/dev/null | grep -qE '^(/[^/]+)*/(slam_toolbox)$' &&
+      echo 'slam_toolbox is already on the ROS graph'
     requires: [driver, lidar]
     conflicts: [localization]
     cmd: >-
@@ -64,6 +96,9 @@ units:
   localization:
     label: 定位 Localization
     help: slam_toolbox on a saved map; set the robot's pose on the map if it starts lost
+    check: >-
+      timeout 10 ros2 node list 2>/dev/null | grep -qE '^(/[^/]+)*/(slam_toolbox)$' &&
+      echo 'slam_toolbox is already on the ROS graph'
     requires: [driver, lidar]
     conflicts: [mapping]
     args: [map]
@@ -76,6 +111,9 @@ units:
   navigation:
     label: 導航 Nav2
     help: Nav2 planners, controller and bt_navigator (no localiser of its own -- mapping or localization provides map -> odom)
+    check: >-
+      timeout 10 ros2 node list 2>/dev/null | grep -qE '^(/[^/]+)*/(bt_navigator)$' &&
+      echo 'Nav2 is already on the ROS graph'
     requires: [driver, lidar, mapping|localization]
     cmd: >-
       ros2 launch stretch_nav2 navigation_launch.py

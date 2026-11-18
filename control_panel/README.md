@@ -115,6 +115,19 @@ services do not).
 - The supervisor refuses a unit whose prerequisites are down (`start driver first`) or
   that conflicts with one that is up (`stop mapping first`). Stopping a unit is Ctrl-C to
   its whole process group, then SIGTERM, then SIGKILL, until nothing of it is left.
+- **Nothing is started twice.** Its own bookkeeping covers what it launched, and three
+  things cover what it did not:
+  - a unit's `check` (units.yaml) asks the ROS graph whether that node is already there --
+    from a terminal, from docker/deploy, or left behind by a supervisor that was
+    SIGKILLed -- and refuses the start, naming what it found. It fails open: a check that
+    hangs does not make the panel unable to start anything.
+  - the page does not even offer the button for a unit whose node is on the graph without
+    it ("外部已在跑").
+  - one supervisor per robot and one runner per OSG container, by a lock file; the second
+    one exits instead of answering the same requests and starting a second of everything.
+  On the Thor, the perception servers are the exception: tmux daemonizes them out of the
+  unit's process group, so `serve_perception.sh` reaps them by name on both start and
+  `--stop`, and refuses to start on a port it cannot free.
 - There is no login: anyone who can reach the port can drive the robot. Keep it on the
   lab network.
 

@@ -120,7 +120,12 @@ function renderUnits() {
     r.pill.textContent = ext ? "外部已在跑" : (STATE_TXT[u.state] || u.state) +
       (u.args && u.args.map ? ` · ${u.args.map}` : "");
     const up = u.state === "running" || u.state === "starting";
-    r.start.disabled = up || u.state === "stopping";
+    // "外部已在跑": the node is on the ROS graph but not from this supervisor
+    // (someone's terminal, docker/deploy, a supervisor that was killed). The
+    // supervisor refuses such a start anyway (its unit `check`), so do not
+    // offer the button -- a second driver or a second Nav2 is what it would be.
+    r.start.disabled = up || ext || u.state === "stopping";
+    r.start.title = ext ? "已經有別人啟動的在跑，面板不會再開一個" : "";
     r.stop.disabled = !up;
     r.log.hidden = !(u.state === "failed" && u.log && u.log.length);
     if (!r.log.hidden) r.log.textContent = u.log.join("\n");

@@ -4,6 +4,8 @@
 """
 import asyncio
 import struct
+import subprocess
+import threading
 import sys
 import time
 import zlib
@@ -119,6 +121,14 @@ def _sup(tmp_path, units):
     return sv.Supervisor(cfg, ws=tmp_path, log_dir=tmp_path / "logs")
 
 
+def _running(sup, name, timeout=8.0):
+    """`starting` -> `running` is tick()'s doing, so a test that wants it ticks."""
+    def pred():
+        sup.tick()
+        return sup.units[name].state == "running"
+    return _wait(pred, timeout)
+
+
 def _wait(pred, timeout=5.0):
     end = time.time() + timeout
     while time.time() < end:
@@ -208,6 +218,9 @@ def test_the_shipped_units_file_parses_and_its_commands_format(tmp_path):
             for req in u.requires:
                 for alt in req.split("|"):
                     assert alt in s.units, f"{path.name}: {name} requires unknown {alt}"
+            if u.check:   # a check with a syntax error would fail open on every start
+                r = subprocess.run(["bash", "-n", "-c", u.check], capture_output=True, text=True)
+                assert r.returncode == 0, f"{path.name}: {name} check: {r.stderr}"
         assert set(s.stop_order) == set(s.units), path.name
 
 
@@ -247,3 +260,67 @@ def test_typed_arguments_are_checked_and_quoted_for_the_shell(tmp_path):
     assert out.read_text().split("|") == ["+experiment=a", "ros2.target='fire extinguisher #1'",
                                            "agent.max_steps=40", "ros2.map_tag=lab"]
     assert s.snapshot()["units"]["run"]["args"]["max_steps"] == "40"
+
+
+def test_only_one_supervisor_can_hold_the_lock(tmp_path):
+    """Two supervisors would answer the same requests and start two of every
+    unit, so the second one must not come up (supervisor.single_instance)."""
+    lock_path = tmp_path / "supervisor.lock"
+    first = sv.single_instance(lock_path)
+    assert first is not None
+    assert sv.single_instance(lock_path) is None
+    first.close()                      # what exiting does
+    second = sv.single_instance(lock_path)
+    assert second is not None          # the lock is free again
+    second.close()
+
+
+def test_a_unit_already_running_outside_the_panel_is_not_started_twice(tmp_path):
+    """The supervisor only knows what it launched. A `check` that exits 0 means
+    an equivalent is already up (a SIGKILLed supervisor's leftovers, a hand
+    launch, another container), and starting a second one would put two
+    drivers on the same USB."""
+    s = _sup(tmp_path, {
+        "driver": {"cmd": "sleep 30", "check": "echo '4242 stretch_driver'; true"},
+        "lidar": {"cmd": "sleep 30", "check": "false"},
+    })
+    ok, msg = s.start("driver")
+    assert not ok
+    assert "already running outside the panel" in msg and "4242 stretch_driver" in msg
+    assert s.units["driver"].state == "stopped" and s.units["driver"].proc is None
+    assert any("not started" in line for line in s.units["driver"].tail)
+    ok, msg = s.start("lidar")          # nothing there: the check gets out of the way
+    assert ok, msg
+    assert _running(s, "lidar")
+    s.stop_all(wait=True)
+
+
+def test_a_check_that_hangs_does_not_block_the_start(tmp_path):
+    """Fail open: a probe that times out must not leave the panel unable to
+    start anything."""
+    s = _sup(tmp_path, {"a": {"cmd": "sleep 30", "check": "sleep 60"}})
+    sv.CHECK_TIMEOUT_S, keep = 1.0, sv.CHECK_TIMEOUT_S
+    try:
+        ok, msg = s.start("a")
+        assert ok, msg
+        assert _running(s, "a")
+        assert any("timed out" in line for line in s.units["a"].tail)
+    finally:
+        sv.CHECK_TIMEOUT_S = keep
+    s.stop_all(wait=True)
+
+
+def test_a_second_tap_while_the_check_runs_does_not_start_a_second_one(tmp_path):
+    """The unit is reserved as `starting` before the check runs, which takes
+    seconds; the panel's own buttons are not the only caller."""
+    s = _sup(tmp_path, {"a": {"cmd": "sleep 30", "check": "sleep 2; false"}})
+    first = threading.Thread(target=lambda: s.start("a"))
+    first.start()
+    assert _wait(lambda: s.units["a"].state == "starting")
+    ok, msg = s.start("a")
+    assert ok and "already running" in msg       # not a second launch
+    assert s.units["a"].proc is None             # still in its check
+    first.join(20)
+    assert _running(s, "a")
+    assert s.units["a"].proc is not None
+    s.stop_all(wait=True)

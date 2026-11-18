@@ -220,6 +220,7 @@ docker exec osg-ollama ollama pull qwen2.5:7b
 |---|---|---|
 | ①「OSG 容器沒有回應」 | `osg-thor` 沒在跑，或是舊 image 沒有 runner | `up -d thor`；`docker logs osg-thor` 應有 `[osg_runner] http://127.0.0.1:18790` |
 | 感知模型「失敗」或預檢 13182/13185 ❌ | 權重沒下載、GPU 記憶體不足 | `docker exec osg-thor tmux attach -t osg_models` 看各視窗；先做「下載模型權重」 |
+| 感知模型顯示「執行中」但預檢 13182/13185 ❌，log 有 `Address already in use` | 之前那批模型伺服器沒被收掉，還占著 port（tmux 會脫離 unit 的 process group） | 現在 `serve_perception.sh` 啟動與 `--stop` 都會 `pkill -f model_api.*_out`；舊 image 手動收：`docker exec -u root osg-thor pkill -f 'model_api\.'`，再從面板重新啟動 |
 | 預檢 ollama ❌ | 沒有 `qwen2.5:7b` | `docker exec osg-ollama ollama pull qwen2.5:7b` |
 | 預檢 VLM 金鑰 ❌（滅火器模式） | `up` 時環境沒有 `NVIDIA_API_KEY` | `source ~/.nvidia_api.env` 後 `up -d thor`（重建容器） |
 | 預檢相機 ❌ | 相機沒開，或機器人沒有 image_transport 壓縮 plugin | 系統分頁啟動相機；機器人上 `sudo apt install ros-humble-image-transport-plugins` |

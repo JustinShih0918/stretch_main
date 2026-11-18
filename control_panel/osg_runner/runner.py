@@ -31,7 +31,7 @@ import yaml
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / "supervisor"))
-from supervisor import Supervisor  # noqa: E402
+from supervisor import Supervisor, single_instance  # noqa: E402
 
 
 def make_handler(sup: Supervisor):
@@ -86,6 +86,12 @@ def main() -> None:
     config = yaml.safe_load(Path(opts.units).read_text())
     log_dir = Path(os.environ.get("PANEL_LOG_DIR", str(Path(opts.ws) / "outputs" / "panel_logs")))
     sup = Supervisor(config, ws=Path(opts.ws), log_dir=log_dir)
+    # Two runners would each start their own perception stack and their own
+    # OSG run in the same container; the port below only stops a second one on
+    # the same port.
+    lock = single_instance(sup.log_dir / "runner.lock")
+    if lock is None:
+        raise SystemExit(f"another osg_runner already holds {sup.log_dir / 'runner.lock'}")
     server = ThreadingHTTPServer((opts.host, opts.port), make_handler(sup))
 
     stop = threading.Event()

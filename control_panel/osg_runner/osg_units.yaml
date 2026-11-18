@@ -4,6 +4,14 @@
 #
 # {ws} is the OSG directory. Arguments come from the panel and are checked
 # and quoted by the supervisor core (supervisor/supervisor.py, `_arg`).
+#
+# A unit's `check` runs before the start and exit 0 refuses it: it is for what
+# the runner cannot see, above all a run someone started by hand with
+# `docker exec` -- two agents driving the same robot. `[r]un_robot.py` so the
+# pattern does not match the check's own command line. `perception` has none
+# on purpose: its strays ARE reapable, and serve_perception.sh now kills them
+# by name on both start and --stop (tmux daemonizes, so they outlive the
+# unit's process group) and refuses to start on a port it cannot free.
 
 setup: |
   cd {ws}
@@ -26,6 +34,7 @@ units:
   map_run:
     label: 建圖趟 Map pass
     help: explore, build the scene graph, save it as the map tag
+    check: pgrep -af '[r]un_robot.py'
     requires: [perception]
     conflicts: [search_run]
     args:
@@ -40,6 +49,7 @@ units:
   search_run:
     label: 搜尋趟 Search pass
     help: start from the saved scene graph and find the target (and inspect it, with the extinguisher preset)
+    check: pgrep -af '[r]un_robot.py'
     requires: [perception]
     conflicts: [map_run]
     args:
