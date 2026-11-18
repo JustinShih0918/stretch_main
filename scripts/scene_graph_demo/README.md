@@ -5,8 +5,9 @@ hospital: how the pieces connect, the one-time setup, and bringing the stack up 
 **To record demo videos, see [RECORDING.md](RECORDING.md).**
 
 The scene-graph pipeline is [Object_scene_graph](https://github.com/JustinShih0918/Object_scene_graph)
-(OSG), the ASCENT-style object-search agent that builds an object scene graph while it
-explores. It is **vendored** at
+(OSG), an object-search agent that builds a dynamic object scene graph while it explores.
+The vendored copy is **single-floor** (one occupancy map, `room → container → object`; the
+upstream multi-floor and ASCENT-transcription code was removed). It is **vendored** at
 [src/semantic_nav/object_scene_graph/](../../src/semantic_nav/object_scene_graph/) so we can
 change it here without touching the original repo (see its `VENDORED.md`). This directory
 holds the glue that runs it against stretch_main's Isaac hospital and Nav2.

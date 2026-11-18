@@ -1,0 +1,54 @@
+#usda 1.0
+(
+    doc = """stretch3_og_hospital.usda plus one fire extinguisher on a floor stand,
+for the fire-extinguisher inspection demo (scripts/extinguisher_demo/README.md).
+Everything else -- the robot, its sensors and action graphs, the hospital --
+comes from the sublayer unchanged. The extinguisher's condition is a variant
+(fire_extinguisher_inspect.usda); open_extinguisher.py selects it at startup and
+switches it between takes."""
+    customLayerData = {
+        dictionary cameraSettings = {
+            string boundCamera = "/World/stretch3/base_link/follow_camera"
+        }
+    }
+    defaultPrim = "World"
+    endTimeCode = 1000000
+    metersPerUnit = 1
+    startTimeCode = 0
+    subLayers = [
+        @./stretch3_og_hospital.usda@
+    ]
+    timeCodesPerSecond = 60
+    upAxis = "Z"
+)
+
+over "World"
+{
+    # Against the corridor wall where the lobby narrows into the west corridor
+    # (the wall's face is at y = 5.35). Turned 100 degrees so that a robot
+    # coming from the lobby sees its gauge and its hose side, with its levers
+    # toward the wall.
+    def Xform "FireExtinguisher" (
+        prepend references = @./fire_extinguisher_inspect.usda@
+        variants = {
+            string condition = "bad"
+        }
+    )
+    {
+        double3 xformOp:translate = (-7.5, 5.12, 0)
+        double3 xformOp:rotateXYZ = (0, 0, 100)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ"]
+    }
+
+    # This end of the lobby has no ceiling light of its own; without one the
+    # extinguisher's rust and the powder are too dark for the robot's camera
+    # (and the VLM) to see.
+    def SphereLight "FireExtinguisherLight"
+    {
+        color3f inputs:color = (1, 0.92, 0.8)
+        float inputs:intensity = 160000
+        float inputs:radius = 0.15
+        double3 xformOp:translate = (-7.2, 3.9, 2.6)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+}

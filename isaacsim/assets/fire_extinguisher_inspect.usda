@@ -1,0 +1,265 @@
+#usda 1.0
+(
+    doc = """A fire extinguisher on its floor stand, with a `condition` variant set,
+for the fire-extinguisher inspection demo (scripts/extinguisher_demo/). Built
+from Poly Haven's CC0 `korean_fire_extinguisher_01`
+(https://polyhaven.com/a/korean_fire_extinguisher_01): fetch_fire_extinguisher.sh
+downloads it into ./fire_extinguisher/ and make_fire_extinguisher.py splits it
+into parts.usdc (stand; extinguisher/cylinder, head, levers, hose, tag) and
+writes a corroded copy of its paint. It stands on z=0 with its gauge facing -y,
+its hose down the -x side and its levers reaching out over +x.
+
+    good            as Poly Haven made it: whole, a little scuffed.
+    bad             corroded, its hose torn off and lying on the floor, and
+                    dry-chemical powder spilled beside it. The demo's recorded
+                    inspection takes.
+
+One defect each, for the damage gallery (scripts/extinguisher_demo/inspect_gallery.py):
+
+    corroded        rust over most of the paint, nothing missing.
+    hose_detached   the hose and nozzle torn off, lying on the floor beside it.
+    discharged      powder spilled on the floor beside it, as after use.
+    fallen          out of its stand, on the floor behind it and tipped onto the wall.
+    blocked         cardboard boxes stacked in front of it.
+
+The hospital stage stands it against a corridor wall, which is 0.23 m off +x in
+this file's frame, and turns it so that the robot's camera, coming from the
+lobby, sees its front and its hose side: from the inspection stop the camera is
+along (-0.6, -0.8) from it, 1.5 m off. The fallen extinguisher, the hose, the
+powder and the boxes are laid out for that view: the floor is in the camera's
+frame only from 1.3 m out, so what lies on the floor lies beside or behind the
+stand, not in front of it.
+
+Tried and dropped (2026-11-10): an extinguisher lying flat, which YOLOE named
+at 0.03, so a robot could never have found it; and the hose missing outright,
+the levers missing, and a soot-blackened body, all of which the VLM called
+"good" from 1.5 m (an absent part on a 0.2 m body is a few pixels)."""
+    defaultPrim = "FireExtinguisher"
+    metersPerUnit = 1
+    upAxis = "Z"
+)
+
+def Xform "FireExtinguisher" (
+    kind = "component"
+    prepend variantSets = "condition"
+    variants = {
+        string condition = "good"
+    }
+)
+{
+    def Xform "model" (
+        prepend references = @./fire_extinguisher/parts.usdc@
+    )
+    {
+        over "stand" (
+            prepend apiSchemas = ["PhysicsCollisionAPI", "PhysicsMeshCollisionAPI"]
+        )
+        {
+            uniform token physics:approximation = "convexHull"
+        }
+        over "extinguisher"
+        {
+            over "cylinder" (
+                prepend apiSchemas = ["PhysicsCollisionAPI", "PhysicsMeshCollisionAPI"]
+            )
+            {
+                uniform token physics:approximation = "convexHull"
+            }
+        }
+    }
+
+    variantSet "condition" = {
+        "good" {
+        }
+        "bad" {
+            over "model"
+            {
+            over "_materials"
+            {
+                # Rust over most of the paint (make_fire_extinguisher.py).
+                over "korean_fire_extinguisher_01_body"
+                {
+                    over "Image_Texture_003"
+                    {
+                        asset inputs:file = @./fire_extinguisher/textures/korean_fire_extinguisher_01_body_diff_corroded_2k.png@
+                    }
+                    over "Image_Texture_001"
+                    {
+                        asset inputs:file = @./fire_extinguisher/textures/korean_fire_extinguisher_01_body_rough_corroded_2k.png@
+                    }
+                }
+            }
+                over "extinguisher"
+                {
+                    # Torn off the valve and dropped on the floor beside the
+                    # stand, on its hose side, pointing away from the camera:
+                    # laid flat, 0.15 m clear of the stand.
+                    over "hose"
+                    {
+                        double3 xformOp:translate = (0.098, 0.5258, 0.048)
+                        double xformOp:rotateZ = -36.87
+                        double xformOp:rotateX = 90
+                        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateZ", "xformOp:rotateX"]
+                    }
+                }
+            }
+
+            def Xform "powder" (
+                prepend references = </_Powder>
+            )
+            {
+            }
+        }
+        "corroded" {
+            over "model"
+            {
+            over "_materials"
+            {
+                # Rust over most of the paint (make_fire_extinguisher.py).
+                over "korean_fire_extinguisher_01_body"
+                {
+                    over "Image_Texture_003"
+                    {
+                        asset inputs:file = @./fire_extinguisher/textures/korean_fire_extinguisher_01_body_diff_corroded_2k.png@
+                    }
+                    over "Image_Texture_001"
+                    {
+                        asset inputs:file = @./fire_extinguisher/textures/korean_fire_extinguisher_01_body_rough_corroded_2k.png@
+                    }
+                }
+            }
+            }
+        }
+        "hose_detached" {
+            over "model"
+            {
+                over "extinguisher"
+                {
+                    # Torn off the valve and dropped on the floor beside the
+                    # stand, on its hose side, pointing away from the camera:
+                    # laid flat, 0.15 m clear of the stand.
+                    over "hose"
+                    {
+                        double3 xformOp:translate = (0.098, 0.5258, 0.048)
+                        double xformOp:rotateZ = -36.87
+                        double xformOp:rotateX = 90
+                        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateZ", "xformOp:rotateX"]
+                    }
+                }
+            }
+        }
+        "discharged" {
+            def Xform "powder" (
+                prepend references = </_Powder>
+            )
+            {
+            }
+        }
+        "fallen" {
+            over "model"
+            {
+                over "extinguisher"
+                {
+                    # Out of its stand: standing on the floor behind it (+y),
+                    # tipped 25 degrees onto the wall that the hospital stage
+                    # puts 0.23 m off +x (see the doc above). Pivoted about the
+                    # centre of its base, which now rests on the floor. In
+                    # front of the stand it was too close to a camera 1.5 m
+                    # off to be in frame whole.
+                    double3 xformOp:translate = (-0.036, 0.48, 0.0301)
+                    double xformOp:rotateY = 25
+                    double3 xformOp:translate:pivot = (0, 0.0295, -0.061)
+                    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateY", "xformOp:translate:pivot"]
+                }
+            }
+        }
+        "blocked" {
+            # Isaac's warehouse cardboard boxes between the camera and the
+            # extinguisher: two stacked in front of it, a tall one at its side.
+            def Xform "box_front" (
+                prepend references = @https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.0/Isaac/Environments/Simple_Warehouse/Props/SM_CardBoxC_01.usd@
+            )
+            {
+                double3 xformOp:translate = (-0.24, -0.42, 0)
+                double xformOp:rotateZ = -37
+                uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateZ"]
+            }
+            def Xform "box_stacked" (
+                prepend references = @https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.0/Isaac/Environments/Simple_Warehouse/Props/SM_CardBoxD_04.usd@
+            )
+            {
+                double3 xformOp:translate = (-0.22, -0.44, 0.25)
+                double xformOp:rotateZ = -25
+                uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateZ"]
+            }
+            def Xform "box_side" (
+                prepend references = @https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.0/Isaac/Environments/Simple_Warehouse/Props/SM_CardBoxB_01.usd@
+            )
+            {
+                double3 xformOp:translate = (-0.62, 0.0, 0)
+                double xformOp:rotateZ = -30
+                uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateZ"]
+            }
+        }
+    }
+}
+
+# Dry-chemical powder spilled on the floor beside the stand, out from its hose
+# side and back along it: a quad with a grainy cut-out texture
+# (make_fire_extinguisher.py's build_powder, whose POWDER_EXTENT it matches).
+# It stops at +x 0.2, short of the wall.
+# Referenced by the variants that discharged (a class, so it renders only where
+# one does).
+class Xform "_Powder"
+{
+    def Mesh "powder"
+    {
+        int[] faceVertexCounts = [4]
+        int[] faceVertexIndices = [0, 1, 2, 3]
+        point3f[] points = [(-1.1, -0.7, 0), (0.2, -0.7, 0), (0.2, 0.8, 0), (-1.1, 0.8, 0)]
+        texCoord2f[] primvars:st = [(0, 0), (1, 0), (1, 1), (0, 1)] (
+            interpolation = "vertex"
+        )
+        normal3f[] normals = [(0, 0, 1)] (
+            interpolation = "constant"
+        )
+        uniform token subdivisionScheme = "none"
+        rel material:binding = </_Powder/powder_material>
+        double3 xformOp:translate = (0, 0, 0.003)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+
+    def Material "powder_material"
+    {
+        token outputs:surface.connect = </_Powder/powder_material/surface.outputs:surface>
+
+        def Shader "surface"
+        {
+            uniform token info:id = "UsdPreviewSurface"
+            color3f inputs:diffuseColor.connect = </_Powder/powder_material/texture.outputs:rgb>
+            float inputs:opacity.connect = </_Powder/powder_material/texture.outputs:a>
+            float inputs:opacityThreshold = 0.5
+            float inputs:roughness = 0.95
+            float inputs:metallic = 0
+            float inputs:specular = 0.2
+            token outputs:surface
+        }
+
+        def Shader "texture"
+        {
+            uniform token info:id = "UsdUVTexture"
+            asset inputs:file = @./fire_extinguisher/textures/powder_1k.png@
+            token inputs:sourceColorSpace = "sRGB"
+            float2 inputs:st.connect = </_Powder/powder_material/uv.outputs:result>
+            float3 outputs:rgb
+            float outputs:a
+        }
+
+        def Shader "uv"
+        {
+            uniform token info:id = "UsdPrimvarReader_float2"
+            string inputs:varname = "st"
+            float2 outputs:result
+        }
+    }
+}

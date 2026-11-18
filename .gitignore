@@ -6,3 +6,6 @@ install**/
 __pycache__/
 *.pyc
 videos/
+# Poly Haven fire extinguisher (~110 MB with the generated parts and textures),
+# fetched and built by isaacsim/assets/fetch_fire_extinguisher.sh
+isaacsim/assets/fire_extinguisher/
