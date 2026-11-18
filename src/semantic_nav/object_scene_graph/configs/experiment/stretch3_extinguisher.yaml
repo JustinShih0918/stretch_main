@@ -1,0 +1,53 @@
+# @package _global_
+# The fire-extinguisher demo on the real Stretch 3: stretch3_map's robot
+# settings plus the parts of isaac_extinguisher_inspect that are about the
+# extinguishers rather than the simulator. Both passes, chosen by ros2.map_mode
+# (the control panel sets it; by hand add ros2.map_mode=search for pass 2):
+#
+#   python scripts/run_robot.py +experiment=stretch3_extinguisher ros2.map_tag=lab
+#   python scripts/run_robot.py +experiment=stretch3_extinguisher ros2.map_tag=lab \
+#       ros2.map_mode=search "ros2.target='fire extinguisher #1'"
+#
+# NVIDIA_API_KEY must be in the environment for the inspection (docker/thor:
+# `source ~/.nvidia_api.env` before `up`).
+#
+# Left out on purpose, because they were tuned in Isaac and nothing says they
+# hold on the robot: agent.terminal_engage_m / terminal_stop_m (the stop
+# distance), ros2.nav_wedged_s (the wedge back-out, for a Nav2 costmap that
+# missed Isaac furniture) and inspection.brighten_below (Isaac's unlit
+# corridors). Add them on the command line if the robot shows the same thing.
+defaults:
+  - stretch3_map
+  - override /inspection: nim
+  - _self_
+
+ros2:
+  target: fire extinguisher
+
+scene_graph:
+  # Several extinguishers told apart as "#1", "#2"; a moved one keeps its index
+  # (osg/objects/instances.py). Set on the map pass too, so the map has them.
+  instance_labels: [fire extinguisher]
+  # Extinguishers stand on the floor or hang low; the FIRE EXTINGUISHER wall
+  # signs above them are detected as extinguishers and must not be claimed.
+  instance_max_height_m: 1.0
+  # A first sighting from beyond the depth range places the object on
+  # whatever is in front of it (isaac_extinguisher_inspect.yaml).
+  min_valid_depth_frac: 0.5
+
+eval:
+  # A STOP where the detector names no extinguisher is taken back and the
+  # search goes on, up to three times (scripts/run_robot.py `_stop_check`).
+  attempts: 4
+
+inspection:
+  crop_pad: 0.3
+  crop_min_aspect: 0.75
+  crop_upscale_px: 768
+  checklist:
+    - "body: rust, corrosion, dents, or faded and peeling paint on the cylinder or its stand"
+    - "hose and nozzle: missing, detached, cracked or blocked"
+    - "operating parts: a missing or broken handle or squeeze lever, a missing safety pin or seal, a gauge needle outside the green band"
+    - "placement: not upright in its stand or bracket, lying on the floor, or missing from its place"
+    - "discharge: powder or residue around it, a sign it has been used or is leaking"
+    - "access: blocked or hidden by objects"

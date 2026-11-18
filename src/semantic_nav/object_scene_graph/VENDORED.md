@@ -306,6 +306,13 @@ needs the gitignored `data/priors/place365_room_map.json`.
     mission parameter, recorded per episode). Goldens regenerated: three
     `scene_graph.instance_*` keys and `agent.target_instance`; with them removed every
     preset's fingerprint is unchanged (49 of 49).
+  - `configs/experiment/stretch3_extinguisher.yaml` (new): the fire-extinguisher demo on the
+    real Stretch, both passes by `ros2.map_mode` -- `stretch3_map` plus `inspection: nim`,
+    `scene_graph.instance_labels: [fire extinguisher]`, `instance_max_height_m`,
+    `min_valid_depth_frac`, `eval.attempts: 4` and the inspection crop/checklist from
+    `isaac_extinguisher_inspect`, without that preset's Isaac-tuned stop distance, wedge
+    back-out and brightening. Started by stretch_main's control panel (`control_panel/osg_runner`).
+    Goldens: one fingerprint added, none changed.
 
 Add an entry above whenever you change something here, so a later re-sync from upstream
 knows what to keep.
