@@ -13,7 +13,7 @@ directly.
 Talks over three ROS topics, JSON in std_msgs/String so no interface package
 has to be built on either machine:
 
-    /panel/supervisor/request  {"id", "op": start|stop|restart|stop_all|save_map, "unit", "args"}
+    /panel/supervisor/request  {"id", "op": start|stop|restart|stop_all|save_map|free_robot, "unit", "args"}
     /panel/supervisor/reply    {"id", "ok", "message"}
     /panel/supervisor/state    {"host", "units": {name: {...}}, "maps": [...]}   (latched, 1 Hz)
 
@@ -49,6 +49,9 @@ NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 TEXT_RE = re.compile(r"^[\w #.\-]{1,60}$")
 RUNNING_AFTER_S = 2.0          # alive this long after start counts as running
 CHECK_TIMEOUT_S = 20.0         # a unit's `check` (ros2 node list is slow) before giving up on it
+# The rtabmap unit's working database in maps_dir (units.yaml), which
+# save_map copies out under the map's name.
+RTABMAP_DB = "rtabmap_work.db"
 STOP_GRACE_S = (8.0, 4.0)      # SIGINT, then SIGTERM, then SIGKILL
 
 
@@ -401,27 +404,50 @@ class Supervisor:
 
     # ----------------------------------------------------------- maps
     def save_map(self, name: str, run=subprocess.run) -> (bool, str):
-        """slam_toolbox's pose graph (what localization loads) plus a .pgm/.yaml
-        image of it (for looking at, or for AMCL), both into maps_dir."""
+        """The running SLAM's own map -- slam_toolbox's pose graph (what
+        localization loads) or RTAB-Map's database -- plus a .pgm/.yaml image of
+        it (for looking at, or for AMCL), all into maps_dir."""
         if not NAME_RE.match(name or ""):
             return False, "map name: letters, digits, - and _ only"
-        if not self.is_up("mapping"):
-            return False, "start mapping first: only a mapping session can be saved"
         base = self.maps_dir / name
-        steps = [
-            ("pose graph", f"ros2 service call /slam_toolbox/serialize_map "
-                           f"slam_toolbox/srv/SerializePoseGraph \"{{filename: '{base}'}}\""),
-            ("image", f"ros2 run nav2_map_server map_saver_cli -f {base} "
-                      f"--ros-args -p map_subscribe_transient_local:=true"),
-        ]
+        image = ("image", f"ros2 run nav2_map_server map_saver_cli -f {base} "
+                          f"--ros-args -p map_subscribe_transient_local:=true")
+        if self.is_up("mapping"):
+            steps = [("pose graph", f"ros2 service call /slam_toolbox/serialize_map "
+                                    f"slam_toolbox/srv/SerializePoseGraph \"{{filename: '{base}'}}\""), image]
+            made = base.with_suffix(".posegraph")
+        elif self.is_up("rtabmap"):
+            # backup: RTAB-Map writes its memory to the database, so the copy is whole.
+            steps = [("database", f"ros2 service call /rtabmap/backup std_srvs/srv/Empty && "
+                                  f"cp {self.maps_dir / RTABMAP_DB} {base}.db"), image]
+            made = base.with_suffix(".db")
+        else:
+            return False, "start mapping (slam_toolbox or RTAB-Map) first: only a mapping session can be saved"
         for what, cmd in steps:
             r = run(["bash", "-c", f"{self.setup}\n{cmd}\n"], capture_output=True, text=True, timeout=60)
             if r.returncode != 0:
                 return False, f"saving the {what} failed: {(r.stdout + r.stderr).strip()[-300:]}"
-        if not base.with_suffix(".posegraph").exists():
-            return False, f"slam_toolbox did not write {base}.posegraph"
+        if not made.exists():
+            return False, f"the map was not written: no {made}"
         self.on_change()
         return True, f"saved map {name} to {self.maps_dir}"
+
+    # ---------------------------------------------------------- robot
+    def free_robot(self, run=subprocess.run) -> (bool, str):
+        """hello-robot's stretch_free_robot_process.py: kill whatever holds the
+        Stretch (the login-time gamepad teleop, a driver left in a terminal),
+        the "Another process is already using Stretch" a driver start dies of.
+        Our own driver unit goes first: the script would kill its stretch_driver
+        and leave the launch -- and the unit's "running" -- behind."""
+        if self.is_up("driver"):
+            self.stop("driver")
+            self.wait_stopped("driver", sum(STOP_GRACE_S) + 2)
+        r = run(["bash", "-c", f"{self.setup}\nstretch_free_robot_process.py\n"],
+                capture_output=True, text=True, timeout=30)
+        out = (r.stdout + r.stderr).strip()[-300:]
+        if r.returncode != 0:
+            return False, f"stretch_free_robot_process.py failed: {out}"
+        return True, f"robot freed, start the driver again{': ' + out if out else ''}"
 
     def handle(self, req: dict) -> (bool, str):
         op = req.get("op")
@@ -441,6 +467,8 @@ class Supervisor:
             return True, "stopping everything"
         if op == "save_map":
             return self.save_map(str(req.get("name", "")))
+        if op == "free_robot":
+            return self.free_robot()
         return False, f"unknown op {op!r}"
 
 

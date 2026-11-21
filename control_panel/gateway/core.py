@@ -116,6 +116,27 @@ class TeleopGuard:
         return None
 
 
+# -------------------------------------------------------------------- head
+# The Stretch 3 head's joint ranges (rad), a little inside the driver's own
+# so a step at the end stops there instead of being rejected.
+HEAD_PAN = (-3.9, 1.5)      # + turns the camera to the robot's left
+HEAD_TILT = (-1.5, 0.5)     # + looks up
+HEAD_PRESETS = {"forward": (0.0, 0.0), "floor": (0.0, -0.8)}
+
+
+def head_target(current: Tuple[Optional[float], Optional[float]], d_pan: float = 0.0, d_tilt: float = 0.0,
+                preset: Optional[str] = None) -> Tuple[float, float]:
+    """Where to send the head: a preset, or the current pose plus a step,
+    clamped to the joint ranges. An unknown current pose counts as 0."""
+    if preset is not None:
+        if preset not in HEAD_PRESETS:
+            raise ValueError(f"unknown head preset {preset!r}")
+        pan, tilt = HEAD_PRESETS[preset]
+    else:
+        pan, tilt = (current[0] or 0.0) + d_pan, (current[1] or 0.0) + d_tilt
+    return (min(max(pan, HEAD_PAN[0]), HEAD_PAN[1]), min(max(tilt, HEAD_TILT[0]), HEAD_TILT[1]))
+
+
 def clean_name(name: str) -> str:
     """A map name safe as a file name on the robot: letters, digits, - and _."""
     out = "".join(c if (c.isalnum() or c in "-_") else "_" for c in str(name).strip())

@@ -60,6 +60,9 @@ $$("#tabs button").forEach((b) => b.addEventListener("click", () => {
 // ---------------------------------------------------------------- top bar
 $("#estop").addEventListener("click", () => { stopDrive(); call("estop"); });
 $("#runstop-off").addEventListener("click", (e) => busy(e.target, () => call("runstop", { on: false })));
+$("#free-robot").addEventListener("click", (e) => {
+  if (confirm("關閉占用機器人的其他程式（含底盤驅動）？之後需重新啟動底盤驅動。")) busy(e.target, () => call("free_robot"));
+});
 $$("[data-driver]").forEach((b) => b.addEventListener("click", () => {
   const a = b.dataset.driver;
   if (a === "home" && !confirm("歸零會移動手臂、升降與頭部，確定周圍淨空？")) return;
@@ -113,7 +116,7 @@ function renderUnits() {
   for (const [name, u] of Object.entries(sup.units)) {
     let r = unitRows.get(name);
     if (!r) { r = unitRow(name, u); unitRows.set(name, r); box.appendChild(r.row); }
-    const slamUp = ["mapping", "localization"].some((n) => ["running", "starting"].includes((sup.units[n] || {}).state));
+    const slamUp = ["mapping", "localization", "rtabmap"].some((n) => ["running", "starting"].includes((sup.units[n] || {}).state));
     const ext = u.state === "stopped" && S.detected && S.detected[DETECT_KEY[name] || name] &&
                 !(DETECT_KEY[name] === "slam" && slamUp);
     r.pill.className = "pill " + (ext ? "external" : u.state);
@@ -171,14 +174,25 @@ async function runFlow(btn, steps) {
     $("#flow-status").textContent = "完成 ✔";
   });
 }
+// slam_toolbox, RTAB-Map and localization all own map -> odom: one at a time.
+function slamBusy(except) {
+  const NAMES = { mapping: "建圖 slam_toolbox", rtabmap: "建圖 RTAB-Map", localization: "定位" };
+  const on = Object.keys(NAMES).find((n) => n !== except && ["running", "starting"].includes(unitState(n)));
+  if (on) toast(`先關閉「${NAMES[on]}」`, true);
+  return !!on;
+}
 $("#flow-map").addEventListener("click", (e) => {
-  if (unitState("localization") === "running") { toast("先關閉「定位」再建圖", true); return; }
+  if (slamBusy("mapping")) return;
   runFlow(e.target, [["driver"], ["lidar"], ["mapping"], ["navigation"]]);
+});
+$("#flow-map-rtab").addEventListener("click", (e) => {
+  if (slamBusy("rtabmap")) return;
+  runFlow(e.target, [["driver"], ["lidar"], ["camera"], ["rtabmap"], ["navigation"]]);
 });
 $("#flow-nav").addEventListener("click", (e) => {
   const map = $("#flow-map-select").value;
   if (!map) { toast("先選一張地圖", true); return; }
-  if (unitState("mapping") === "running") { toast("先關閉「建圖」再定位", true); return; }
+  if (slamBusy("localization")) return;
   runFlow(e.target, [["driver"], ["lidar"], ["localization", { map }], ["navigation"]]);
 });
 $("#stop-all").addEventListener("click", (e) => {
@@ -349,7 +363,7 @@ function renderMap() {
   if (n.status) info += ` · 導航：${NAV[n.status] || n.status}` + (n.active && n.distance != null ? ` 剩 ${n.distance} m` : "");
   $("#map-info").textContent = info;
   $("#nav-cancel").disabled = !n.active;
-  $("#save-map").disabled = unitState("mapping") !== "running";
+  $("#save-map").disabled = !["mapping", "rtabmap"].some((n) => unitState(n) === "running");
   mapDirty = true;
 }
 
@@ -397,6 +411,12 @@ document.addEventListener("keyup", (e) => { if (keys.delete(e.key)) keyStick(); 
 // turn makes it upright (OSG's ros2.rotate_deg -90 is the same turn, measured
 // on the robot). The button cycles 90 / -90 / 0 in case a head differs.
 let camRot = 90;
+// Head (RealSense) pan / tilt, about 11° a tap; ⊙ straight ahead, 地 the floor.
+const HEAD_STEP = 0.2;
+const HEAD_MOVES = { up: { tilt: HEAD_STEP }, down: { tilt: -HEAD_STEP }, left: { pan: HEAD_STEP },
+                     right: { pan: -HEAD_STEP }, forward: { preset: "forward" }, floor: { preset: "floor" } };
+$$("[data-head]").forEach((b) => b.addEventListener("click", () =>
+  busy(b, () => call("head", HEAD_MOVES[b.dataset.head], true))));
 $("#cam-rot").addEventListener("click", () => { camRot = camRot === 90 ? -90 : camRot === -90 ? 0 : 90; drawCam(); });
 window.addEventListener("resize", () => { if (activeTab === "drive") drawCam(); });
 const camCanvas = $("#cam"), camCtx = camCanvas.getContext("2d");

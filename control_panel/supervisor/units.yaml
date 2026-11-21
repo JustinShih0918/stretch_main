@@ -44,7 +44,7 @@ slam_params: "{ws}/src/deploy/stretch_nav2/config/mapper_params_online_async.yam
 
 # Stopped in this order on "stop all" and when the supervisor exits: the
 # things that move the base first, the driver last.
-stop_order: [navigation, mapping, localization, joystick, camera, lidar, driver]
+stop_order: [navigation, mapping, rtabmap, localization, joystick, camera, lidar, driver]
 
 units:
   driver:
@@ -81,17 +81,38 @@ units:
     cmd: ros2 launch stretch_nav2 teleop_twist.launch.py teleop_type:=joystick
 
   mapping:
-    label: 建圖 Mapping
-    help: slam_toolbox, mapping mode. Drive around, then Save map
+    label: 建圖 slam_toolbox
+    help: slam_toolbox, mapping mode (lidar only). Drive around, then Save map; the map can be loaded by Localization
     check: >-
       timeout 10 ros2 node list 2>/dev/null | grep -qE '^(/[^/]+)*/(slam_toolbox)$' &&
       echo 'slam_toolbox is already on the ROS graph'
     requires: [driver, lidar]
-    conflicts: [localization]
+    conflicts: [localization, rtabmap]
     cmd: >-
       ros2 run slam_toolbox async_slam_toolbox_node --ros-args
       -r __node:=slam_toolbox --params-file {slam_params}
       -p mode:=mapping -p use_sim_time:=false
+
+  # The other SLAM: RTAB-Map, lidar + the head RealSense. Same map -> odom and
+  # /map as slam_toolbox, so only one of the three runs at a time. A fresh
+  # map every start (-d); Save map copies the working database
+  # {maps_dir}/rtabmap_work.db (the name supervisor.py RTABMAP_DB) to <name>.db.
+  rtabmap:
+    label: 建圖 RTAB-Map
+    help: RTAB-Map, lidar + RealSense RGB-D mapping. Drive around, then Save map (<name>.db + image)
+    check: >-
+      timeout 10 ros2 node list 2>/dev/null | grep -qE '^(/[^/]+)*/(rtabmap)$' &&
+      echo 'rtabmap is already on the ROS graph'
+    requires: [driver, lidar, camera]
+    conflicts: [mapping, localization]
+    cmd: >-
+      ros2 run rtabmap_slam rtabmap -d --ros-args
+      -r __ns:=/rtabmap --params-file {ws}/docker/deploy/rtabmap_params.yaml
+      -p database_path:={maps_dir}/rtabmap_work.db
+      -r scan:=/scan_filtered -r map:=/map -r grid_map:=/map
+      -r rgb/image:=/camera/color/image_raw
+      -r rgb/camera_info:=/camera/color/camera_info
+      -r depth/image:=/camera/aligned_depth_to_color/image_raw
 
   localization:
     label: 定位 Localization
@@ -100,7 +121,7 @@ units:
       timeout 10 ros2 node list 2>/dev/null | grep -qE '^(/[^/]+)*/(slam_toolbox)$' &&
       echo 'slam_toolbox is already on the ROS graph'
     requires: [driver, lidar]
-    conflicts: [mapping]
+    conflicts: [mapping, rtabmap]
     args: [map]
     cmd: >-
       ros2 run slam_toolbox localization_slam_toolbox_node --ros-args
@@ -110,11 +131,11 @@ units:
 
   navigation:
     label: 導航 Nav2
-    help: Nav2 planners, controller and bt_navigator (no localiser of its own -- mapping or localization provides map -> odom)
+    help: Nav2 planners, controller and bt_navigator (no localiser of its own -- mapping, rtabmap or localization provides map -> odom)
     check: >-
       timeout 10 ros2 node list 2>/dev/null | grep -qE '^(/[^/]+)*/(bt_navigator)$' &&
       echo 'Nav2 is already on the ROS graph'
-    requires: [driver, lidar, mapping|localization]
+    requires: [driver, lidar, mapping|rtabmap|localization]
     cmd: >-
       ros2 launch stretch_nav2 navigation_launch.py
       params_file:={ws}/docker/deploy/nav2_params_slam.yaml

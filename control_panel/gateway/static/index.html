@@ -31,6 +31,7 @@
         <button data-driver="stow" class="btn">收納 Stow</button>
         <button data-driver="stop" class="btn">停止動作 Stop</button>
         <button id="runstop-off" class="btn warn">解除急停 Release</button>
+        <button id="free-robot" class="btn warn">釋放機器人 Free robot</button>
       </div>
       <div class="label">驅動模式 Driver mode</div>
       <div class="seg" id="mode-seg">
@@ -39,12 +40,14 @@
         <button data-mode="position">位置 Position</button>
       </div>
       <p class="hint">面板駕駛與 Nav2 需要「導航」模式；Hello 手把需要「手把」模式。</p>
+      <p class="hint">底盤驅動起不來（"Another process is already using Stretch"）：按「釋放機器人」，再啟動底盤驅動。</p>
     </div>
 
     <div class="card">
       <h2>一鍵流程 Flows</h2>
       <div class="row wrap">
-        <button id="flow-map" class="btn primary">開始建圖</button>
+        <button id="flow-map" class="btn primary">建圖 slam_toolbox</button>
+        <button id="flow-map-rtab" class="btn primary">建圖 RTAB-Map</button>
         <button id="flow-nav" class="btn primary">載入地圖並導航</button>
         <select id="flow-map-select"></select>
         <button id="stop-all" class="btn danger">全部關閉</button>
@@ -89,6 +92,14 @@
       <canvas id="cam"></canvas>
       <div id="cam-empty" class="empty">相機沒有畫面（啟動「相機 RealSense」）</div>
       <button id="cam-rot" class="btn small">旋轉</button>
+      <div id="head-pad" title="相機角度 Head">
+        <span></span><button class="btn small" data-head="up" aria-label="相機向上">▲</button><span></span>
+        <button class="btn small" data-head="left" aria-label="相機向左">◀</button>
+        <button class="btn small" data-head="forward" aria-label="相機朝前">⊙</button>
+        <button class="btn small" data-head="right" aria-label="相機向右">▶</button>
+        <span></span><button class="btn small" data-head="down" aria-label="相機向下">▼</button>
+        <button class="btn small" data-head="floor" aria-label="相機看地面">地</button>
+      </div>
     </div>
     <div id="drive-warn" class="warnbar"></div>
     <div id="pad-wrap">

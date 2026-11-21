@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "supervisor"))
 
-from gateway.core import TeleopGuard, clean_name, encode_png, occupancy_to_rgba, quat_to_yaw, yaw_to_quat  # noqa: E402
+from gateway.core import TeleopGuard, clean_name, head_target, encode_png, occupancy_to_rgba, quat_to_yaw, yaw_to_quat  # noqa: E402
 from gateway.webserver import encode_frame, read_frame, ws_accept_key  # noqa: E402
 import supervisor as sv  # noqa: E402
 
@@ -207,6 +207,35 @@ def test_save_map_needs_mapping_and_a_clean_name(tmp_path):
     s.stop_all(wait=True)
 
 
+def test_save_map_from_rtabmap_backs_up_and_copies_the_database(tmp_path):
+    s = _sup(tmp_path, {"rtabmap": {"cmd": "sleep 30"}})
+    s.start("rtabmap")
+    calls = []
+
+    def fake_run(argv, **kw):
+        calls.append(argv[-1])
+        (s.maps_dir / "lab.db").write_text("x")
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+    ok, msg = s.save_map("lab", run=fake_run)
+    assert ok, msg
+    assert "/rtabmap/backup" in calls[0] and sv.RTABMAP_DB in calls[0] and "map_saver_cli" in calls[1]
+    s.stop_all(wait=True)
+
+
+def test_free_robot_stops_our_driver_then_runs_the_script(tmp_path):
+    s = _sup(tmp_path, {"driver": {"cmd": "sleep 30"}})
+    s.start("driver")
+    calls = []
+
+    def fake_run(argv, **kw):
+        calls.append((argv[-1], s.units["driver"].state))
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+    ok, msg = s.free_robot(run=fake_run)
+    assert ok, msg
+    assert "stretch_free_robot_process.py" in calls[0][0] and calls[0][1] == "stopped"
+    assert s.handle({"op": "nope"})[0] is False
+
+
 def test_the_shipped_units_file_parses_and_its_commands_format(tmp_path):
     import yaml
     for path in (ROOT / "supervisor" / "units.yaml", ROOT / "tests" / "fake_units.yaml",
@@ -324,3 +353,12 @@ def test_a_second_tap_while_the_check_runs_does_not_start_a_second_one(tmp_path)
     assert _running(s, "a")
     assert s.units["a"].proc is not None
     s.stop_all(wait=True)
+
+
+def test_head_target_steps_clamps_and_presets():
+    assert head_target((0.1, -0.2), d_pan=0.2) == pytest.approx((0.3, -0.2))
+    assert head_target((None, None), d_tilt=-0.2) == pytest.approx((0.0, -0.2))
+    assert head_target((1.45, 0.45), d_pan=0.2, d_tilt=0.2) == (1.5, 0.5)
+    assert head_target((-3.0, 0.0), preset="floor") == (0.0, -0.8)
+    with pytest.raises(ValueError):
+        head_target((0, 0), preset="sky")

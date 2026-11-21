@@ -31,9 +31,10 @@ navigation mode. So the panel starts the driver once and treats everything else 
 | `lidar` | `stretch_core rplidar.launch.py` (`/scan`, `/scan_filtered`) | |
 | `camera` | `stretch_core d435i_high_resolution.launch.py` | |
 | `joystick` | `stretch_nav2 teleop_twist.launch.py` (a USB joystick; the Hello gamepad needs no unit, only gamepad mode) | driver |
-| `mapping` | `slam_toolbox` mapping mode, `/scan_filtered` | driver, lidar; not with localization |
-| `localization` | `slam_toolbox` localization mode on a saved pose graph | driver, lidar, a map; not with mapping |
-| `navigation` | `stretch_nav2 navigation_launch.py` (Nav2 without a localiser) | driver, lidar, mapping **or** localization |
+| `mapping` | `slam_toolbox` mapping mode, `/scan_filtered` | driver, lidar; not with rtabmap or localization |
+| `rtabmap` | RTAB-Map mapping, `/scan_filtered` + the RealSense RGB-D (`docker/deploy/rtabmap_params.yaml`; `ros-humble-rtabmap-ros` on the robot) | driver, lidar, camera; not with mapping or localization |
+| `localization` | `slam_toolbox` localization mode on a saved pose graph | driver, lidar, a map; not with mapping or rtabmap |
+| `navigation` | `stretch_nav2 navigation_launch.py` (Nav2 without a localiser) | driver, lidar, mapping **or** rtabmap **or** localization |
 
 `slam_toolbox` provides `map -> odom` in both modes, so one localiser serves mapping and
 navigating, and Nav2 runs on top of either. (OSG `docs/THOR.md` has why it is slam_toolbox
@@ -88,14 +89,16 @@ services do not).
 ## Using it
 
 - **系統 (System)**: home / stow / stop the arm, release the runstop, the driver mode, one
-  switch per unit with its state and, when one dies, its last log lines. **開始建圖** brings
-  up driver → lidar → mapping → Nav2 in order; **載入地圖並導航** does driver → lidar →
+  switch per unit with its state and, when one dies, its last log lines. **建圖 slam_toolbox** brings
+  up driver → lidar → mapping → Nav2 in order, **建圖 RTAB-Map** driver → lidar → camera →
+  rtabmap → Nav2; **載入地圖並導航** does driver → lidar →
   localization on the chosen map → Nav2.
 - **地圖 (Map)**: the map, the robot, the laser scan over it (red; when it lines up with the
   walls, the robot is localised), and Nav2's plan. *導航目標*: press where to go, drag
   for the heading, release. *設定位置*: the same gesture sets `/initialpose`, which is how a
   robot that starts lost on a saved map is relocalised. **儲存地圖** saves the mapping
-  session as a pose graph (what localization loads) plus a `.pgm`/`.yaml` image.
+  session as a pose graph (slam_toolbox; what localization loads) or a `.db` (RTAB-Map), plus
+  a `.pgm`/`.yaml` image.
 - **駕駛 (Drive)**: the head camera and a joystick. Drive needs the driver in 導航
   (navigation) mode; the page says so when it is not. Keys W A S D on a laptop.
 - **急停 STOP** (always on screen): teleop off, the Nav2 goal cancelled, a zero twist, and

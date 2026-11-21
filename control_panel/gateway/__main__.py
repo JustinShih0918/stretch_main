@@ -27,7 +27,7 @@ from .webserver import WebServer, WsClient
 
 STATIC = Path(__file__).resolve().parent / "static"
 STATE_HZ = 5.0
-CALL_TIMEOUT_S = {"save_map": 120.0, "unit": 30.0, "osg_check": 20.0, "osg": 40.0}
+CALL_TIMEOUT_S = {"save_map": 120.0, "free_robot": 60.0, "unit": 30.0, "osg_check": 20.0, "osg": 40.0}
 # OSG's camera topics on the robot (configs/ros2/stretch3.yaml): the check
 # looks for publishers of exactly these.
 OSG_RGB = os.environ.get("PANEL_OSG_RGB", "/camera/color/image_raw/compressed")
@@ -85,6 +85,12 @@ def build(ros: "ros_io.RosIO", runner: "osg_io.OsgRunner") -> WebServer:
             if not name:
                 return False, "give the map a name"
             return await wait(ros.supervisor_async({"op": "save_map", "name": name}), "save_map")
+        if op == "head":
+            preset = m.get("preset")
+            return await wait(ros.head_async(float(m.get("pan", 0.0)), float(m.get("tilt", 0.0)),
+                                             str(preset) if preset else None), op)
+        if op == "free_robot":
+            return await wait(ros.supervisor_async({"op": "free_robot"}), op)
         if op == "driver":
             return await wait(ros.driver_async(str(m.get("action", ""))), op)
         if op == "runstop":

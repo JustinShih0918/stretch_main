@@ -98,6 +98,9 @@ input { flex: 1; min-width: 0; }
   overflow: hidden; border: 1px solid var(--line); display: flex; align-items: center; justify-content: center; }
 #cam { position: absolute; inset: 0; width: 100%; height: 100%; }
 #cam-rot { position: absolute; right: 8px; top: 8px; }
+#head-pad { position: absolute; left: 8px; bottom: 8px; display: grid; grid-template-columns: repeat(3, 40px);
+  gap: 4px; opacity: 0.85; }
+#head-pad .btn.small { padding: 0; min-height: 36px; }
 .warnbar { display: none; background: #57421b; color: #ffe7bd; border-radius: 10px; padding: 8px 10px; font-size: 13px; }
 .warnbar.show { display: block; }
 #pad-wrap { display: flex; justify-content: center; }

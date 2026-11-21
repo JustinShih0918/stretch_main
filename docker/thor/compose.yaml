@@ -84,6 +84,9 @@ services:
       # inside the weights-cache volume -- with HOME=/tmp they would otherwise
       # go to the container's own /tmp and be fetched again on every recreate.
       - HF_HOME=/workspace/data/weights/hf
+      # LAVIS's BLIP-2 checkpoints (eva_vit_g.pth + blip2_pretrained.pth,
+      # 2.7 GB) come through torch.hub, not HF: same reason, same volume.
+      - TORCH_HOME=/workspace/data/weights/torch
       - UMASK=0002
       - NVIDIA_API_KEY=${NVIDIA_API_KEY:-}
     volumes:

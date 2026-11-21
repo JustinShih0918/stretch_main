@@ -22,6 +22,8 @@ from typing import Dict, List, Optional
 import numpy as np
 import rclpy
 from action_msgs.msg import GoalStatus
+from builtin_interfaces.msg import Duration
+from control_msgs.action import FollowJointTrajectory
 from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped, Twist
 from nav2_msgs.action import NavigateToPose
 from nav_msgs.msg import OccupancyGrid, Odometry, Path
@@ -32,12 +34,13 @@ from rclpy.node import Node
 from rclpy.qos import (DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy,
                        qos_profile_sensor_data)
 from rclpy.time import Time
-from sensor_msgs.msg import BatteryState, CompressedImage, Image, LaserScan
+from sensor_msgs.msg import BatteryState, CompressedImage, Image, JointState, LaserScan
 from std_msgs.msg import Bool, String
 from std_srvs.srv import SetBool, Trigger
+from trajectory_msgs.msg import JointTrajectoryPoint
 import tf2_ros
 
-from .core import TeleopGuard, encode_png, occupancy_to_rgba, quat_to_yaw, yaw_to_quat
+from .core import TeleopGuard, encode_png, head_target, occupancy_to_rgba, quat_to_yaw, yaw_to_quat
 
 LATCHED = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
                      durability=DurabilityPolicy.TRANSIENT_LOCAL, history=HistoryPolicy.KEEP_LAST)
@@ -61,6 +64,7 @@ DETECT = {
     "camera": ["camera", "realsense2_camera_node"],
     "joystick": ["teleop_twist_joy_node", "teleop_node"],
     "slam": ["slam_toolbox"],
+    "rtabmap": ["rtabmap"],
     "navigation": ["bt_navigator"],
     "osg_bridge": ["osg_bridge"],
 }
@@ -101,6 +105,8 @@ class RosIO(Node):
         self.create_subscription(Bool, "/is_runstopped", lambda m: self._set("runstopped", m.data), 10)
         self.create_subscription(BatteryState, "/battery", lambda m: self._set("battery_v", round(m.voltage, 2)), 10)
         self.create_subscription(Odometry, "/odom", self._on_odom, 10)
+        self.head = [None, None]   # pan, tilt (rad) off /joint_states
+        self.create_subscription(JointState, "/stretch/joint_states", self._on_joints, 10)
         self.create_subscription(LaserScan, cfg.get("scan_topic", "/scan_filtered"), self._on_scan,
                                  qos_profile_sensor_data)
         self.create_subscription(Path, "/plan", self._on_plan, 10)
@@ -125,6 +131,10 @@ class RosIO(Node):
         self.runstop_client = self.create_client(SetBool, "/runstop", callback_group=group)
         self.nav = ActionClient(self, NavigateToPose, cfg.get("nav_action", "navigate_to_pose"),
                                 callback_group=group)
+        # The head (and the RealSense on it) moves through the driver's
+        # trajectory action, which it takes in navigation mode too.
+        self.traj = ActionClient(self, FollowJointTrajectory, "/stretch_controller/follow_joint_trajectory",
+                                 callback_group=group)
         self.nav_state = {"active": False, "status": None, "distance": None, "goal": None, "message": ""}
         self._nav_handle = None
         self._pending: Dict[str, concurrent.futures.Future] = {}
@@ -147,6 +157,11 @@ class RosIO(Node):
 
     def _on_odom(self, msg: Odometry):
         self._set("vel", [round(msg.twist.twist.linear.x, 3), round(msg.twist.twist.angular.z, 3)])
+
+    def _on_joints(self, msg: JointState):
+        for i, name in enumerate(msg.name):
+            if name in ("joint_head_pan", "joint_head_tilt") and i < len(msg.position):
+                self.head[0 if name == "joint_head_pan" else 1] = float(msg.position[i])
 
     def _on_map(self, msg: OccupancyGrid):
         info = msg.info
@@ -261,7 +276,7 @@ class RosIO(Node):
             "按「解除急停」" if robot.get("runstopped") else "")
         add("homed", "已歸零", robot.get("homed") is True, "OSG 會轉頭部相機；建議先歸零", hard=False)
         slam = [i.node_name for i in self.get_publishers_info_by_topic(self.cfg.get("map_topic", "/map"))]
-        add("slam", "/map 來自 slam_toolbox", any("slam_toolbox" in n for n in slam),
+        add("slam", "/map 來自 SLAM", any(n in ("slam_toolbox", "rtabmap") for n in slam),
             f"publishers: {slam}" if slam else "沒有人發 /map：啟動建圖或定位")
         for key, topic in (("rgb", rgb_topic), ("depth", depth_topic)):
             n = self.count_publishers(topic)
@@ -372,7 +387,7 @@ class RosIO(Node):
             map_info = dict(self.map_info) if self.map_info else None
         return {
             "type": "state", "t": now,
-            "robot": robot, "pose": self._pose(), "age": fresh,
+            "robot": robot, "head": list(self.head), "pose": self._pose(), "age": fresh,
             "nav": dict(self.nav_state), "plan": plan if self.nav_state["active"] else [],
             "supervisor": sup, "detected": detected, "map": map_info,
             "scan": self._scan_points() if with_scan else None,
@@ -397,6 +412,33 @@ class RosIO(Node):
         call = client.call_async(Trigger.Request())
         call.add_done_callback(lambda f: self._done(
             out, (bool(f.result().success), f.result().message) if f.result() else (False, "no answer")))
+        return out
+
+    def head_async(self, d_pan: float = 0.0, d_tilt: float = 0.0,
+                   preset: Optional[str] = None) -> concurrent.futures.Future:
+        out = concurrent.futures.Future()
+        try:
+            pan, tilt = head_target(tuple(self.head), d_pan, d_tilt, preset)
+        except ValueError as e:
+            self._done(out, (False, str(e)))
+            return out
+        if not self.traj.server_is_ready():
+            self._done(out, (False, "the driver's trajectory action is not available: is the driver running?"))
+            return out
+        goal = FollowJointTrajectory.Goal()
+        goal.trajectory.joint_names = ["joint_head_pan", "joint_head_tilt"]
+        goal.trajectory.points = [JointTrajectoryPoint(positions=[pan, tilt], time_from_start=Duration(sec=1))]
+        said = f"head pan {math.degrees(pan):.0f}°, tilt {math.degrees(tilt):.0f}°"
+
+        def accepted(f):
+            handle = f.result()
+            if handle is None or not handle.accepted:
+                self._done(out, (False, "the driver rejected the head move (mode?)"))
+                return
+            handle.get_result_async().add_done_callback(lambda r: self._done(
+                out, (r.result().result.error_code == 0,
+                      said if r.result().result.error_code == 0 else r.result().result.error_string or "head move failed")))
+        self.traj.send_goal_async(goal).add_done_callback(accepted)
         return out
 
     def runstop_async(self, on: bool) -> concurrent.futures.Future:

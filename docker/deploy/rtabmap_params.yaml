@@ -1,0 +1,36 @@
+# RTAB-Map parameters for mapping on the real Stretch 3 (the control panel's
+# `rtabmap` unit, control_panel/supervisor/units.yaml), the alternative to
+# slam_toolbox's `mapping`.
+#
+# Lidar + RGB-D: the 2D lidar (/scan_filtered, the mast filtered out) gives the
+# ICP registration and the occupancy grid that Nav2 and the panel read as
+# /map; the head RealSense adds the visual loop closures. Odometry is the
+# driver's odom -> base_link TF (stretch_driver broadcast_odom_tf:=True);
+# RTAB-Map publishes map -> odom, as slam_toolbox would.
+#
+# Adapted from the Isaac Sim one (src/sim/stretch3_navigation/config/rtabmap.yaml):
+# real time, the robot's own topics (remapped in units.yaml).
+# Needs `sudo apt install ros-humble-rtabmap-ros` on the robot.
+rtabmap:
+  ros__parameters:
+    frame_id: base_link
+    odom_frame_id: odom
+    map_frame_id: map
+    publish_tf: true
+    use_sim_time: false
+
+    subscribe_scan: true
+    subscribe_depth: true
+    subscribe_rgb: true
+    approx_sync: true
+    sync_queue_size: 10
+
+    # 2D robot on a flat floor; register scans with ICP.
+    Reg/Strategy: '1'
+    Reg/Force3DoF: 'true'
+    RGBD/NeighborLinkRefining: 'true'
+    Optimizer/GravitySigma: '0'
+    # Occupancy grid from the lidar, like slam_toolbox's.
+    Grid/Sensor: '0'
+    Grid/RangeMax: '8.0'
+    Mem/IncrementalMemory: 'true'

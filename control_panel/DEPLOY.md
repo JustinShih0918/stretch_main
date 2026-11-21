@@ -146,7 +146,7 @@ docker exec stretch-panel bash -c "source /opt/ros/humble/setup.bash && ros2 top
 | driver：`ERROR: Must be run on a robot.` | 沒有 `HELLO_FLEET_ID` | supervisor 要從互動式終端機啟動；systemd 要寫 `Environment=HELLO_FLEET_ID=...` |
 | driver 啟動即失敗、log 提到 USB／裝置被佔用 | 另一個程式在用機器人 | 關掉其他 driver／launch；`stretch_free_robot_process.py` |
 | driver／光達／相機：`package 'stretch_core' not found` | 沒 source 到 hello-robot workspace | `export HELLO_WS=<路徑>`（supervisor 會 source `$HELLO_WS/install/setup.bash`） |
-| 「請先啟動 driver」「stop mapping first」 | 依賴／互斥檢查 | 照提示的順序開關；建圖與定位不能同時開 |
+| 「請先啟動 driver」「stop mapping first」 | 依賴／互斥檢查 | 照提示的順序開關；建圖 slam_toolbox、建圖 RTAB-Map、定位三者只能開一個 |
 | 建圖：地圖一直沒出現 | 光達沒開，或 `/scan_filtered` 沒資料 | 光達模組有在跑？`ros2 topic hz /scan_filtered` |
 | 定位：`no saved map 'xxx'` | 該地圖沒有 `.posegraph` | 必須在「建圖」執行中按「儲存地圖」；檔案在 `~/stretch_maps/` |
 | 導航模組失敗，log 提到 `params_file` 或參數 | 機器人上官方 `stretch_nav2` 的 `navigation_launch.py` 與 repo 版本不同 | 把 log 貼出來；必要時改 `supervisor/units.yaml` 的 navigation 指令 |
