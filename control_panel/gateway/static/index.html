@@ -61,8 +61,9 @@
     </div>
   </section>
 
-  <!-- ============================== 地圖 -->
+  <!-- ============================== 地圖 · 駕駛 -->
   <section id="tab-map" class="tab">
+   <div id="map-col">
     <div id="map-wrap">
       <canvas id="map"></canvas>
       <div id="map-tools">
@@ -84,10 +85,9 @@
       </div>
       <p class="hint">導航目標／設定位置：在地圖上按下選點，拖曳決定方向，放開送出。</p>
     </div>
-  </section>
+   </div>
 
-  <!-- ============================== 駕駛 -->
-  <section id="tab-drive" class="tab">
+   <div id="drive-col">
     <div id="cam-wrap">
       <canvas id="cam"></canvas>
       <div id="cam-empty" class="empty">相機沒有畫面（啟動「相機 RealSense」）</div>
@@ -110,6 +110,7 @@
       <input type="range" id="speed" min="10" max="100" value="50">
     </div>
     <p class="hint center">按住搖桿移動，放開即停（鍵盤 W A S D）</p>
+   </div>
   </section>
 
   <!-- ============================== OSG -->
@@ -178,8 +179,7 @@
 
 <nav id="tabs">
   <button data-tab="system" class="on">系統</button>
-  <button data-tab="map">地圖</button>
-  <button data-tab="drive">駕駛</button>
+  <button data-tab="map">地圖·駕駛</button>
   <button data-tab="osg">OSG</button>
 </nav>
 <div id="toast"></div>

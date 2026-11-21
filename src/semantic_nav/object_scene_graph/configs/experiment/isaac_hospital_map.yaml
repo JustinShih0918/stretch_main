@@ -13,6 +13,16 @@ defaults:
 
 agent:
   camera_height: 1.3          # world -> camera_link z, measured in the sim
+  # stretch3_map stops 1 m short for the real robot; the sim keeps the
+  # defaults it was tuned and recorded with.
+  terminal_stop_m: 0.4
+  terminal_engage_m: 1.0
+  success_distance: 0.1
+
+scene_graph:
+  # Likewise the sim keeps its keyframe spacing (stretch3_map halves it).
+  keyframe_trans_m: 0.25
+  keyframe_rot_deg: 30.0
 
 eval:
   # The sim D455 after ros2.rotate_deg=-90: 1280x720 published becomes

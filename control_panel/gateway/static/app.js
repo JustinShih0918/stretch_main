@@ -53,8 +53,8 @@ $$("#tabs button").forEach((b) => b.addEventListener("click", () => {
   activeTab = b.dataset.tab;
   $$("#tabs button").forEach((x) => x.classList.toggle("on", x === b));
   $$(".tab").forEach((t) => t.classList.toggle("active", t.id === "tab-" + activeTab));
-  if (activeTab === "map") { resizeMap(); mapDirty = true; }
-  if (activeTab !== "drive") stopDrive();
+  if (activeTab === "map") { resizeMap(); mapDirty = true; drawCam(); }
+  else stopDrive();
 }));
 
 // ---------------------------------------------------------------- top bar
@@ -402,7 +402,7 @@ function keyStick() {
   if (!x && !y) { stopDrive(); return; } stick = [x, y]; startDrive(); sendStick();
 }
 document.addEventListener("keydown", (e) => {
-  if (activeTab !== "drive" || !"wasd".includes(e.key) || e.repeat || e.target.tagName === "INPUT") return;
+  if (activeTab !== "map" || !"wasd".includes(e.key) || e.repeat || e.target.tagName === "INPUT") return;
   keys.add(e.key); keyStick();
 });
 document.addEventListener("keyup", (e) => { if (keys.delete(e.key)) keyStick(); });
@@ -418,7 +418,7 @@ const HEAD_MOVES = { up: { tilt: HEAD_STEP }, down: { tilt: -HEAD_STEP }, left: 
 $$("[data-head]").forEach((b) => b.addEventListener("click", () =>
   busy(b, () => call("head", HEAD_MOVES[b.dataset.head], true))));
 $("#cam-rot").addEventListener("click", () => { camRot = camRot === 90 ? -90 : camRot === -90 ? 0 : 90; drawCam(); });
-window.addEventListener("resize", () => { if (activeTab === "drive") drawCam(); });
+window.addEventListener("resize", () => { if (activeTab === "map") drawCam(); });
 const camCanvas = $("#cam"), camCtx = camCanvas.getContext("2d");
 let camFrame = null, camBusy = false;
 function drawCam() {
@@ -436,7 +436,7 @@ function drawCam() {
   camCtx.restore();
 }
 setInterval(() => {
-  if (activeTab !== "drive" || camBusy) return;
+  if (activeTab !== "map" || camBusy) return;
   camBusy = true;
   const img = new Image();
   img.onload = () => { camFrame = img; drawCam(); $("#cam-empty").hidden = true; camBusy = false; };
@@ -523,13 +523,24 @@ $("#osg-stop").addEventListener("click", (e) => busy(e.target, async () => {
 }));
 $("#osg-check").addEventListener("click", (e) => busy(e.target, () => call("osg_check", { preset: osgPreset }, true)));
 
+const CHECKS_SHOWN = 4;
 function renderChecks(checks) {
   const bad = checks.filter((c) => c.ok === false && c.hard).length;
-  $("#osg-check-sum").textContent = bad ? `${bad} 項未就緒` : "全部就緒 ✔";
-  $("#osg-checks").innerHTML = checks.map((c) => {
+  const more = checks.length > CHECKS_SHOWN ? `（共 ${checks.length} 項，可滑動）` : "";
+  $("#osg-check-sum").textContent = (bad ? `${bad} 項未就緒` : "全部就緒 ✔") + more;
+  // Problems first (❌, ⚠️, ➖, then ✅), so the four in view are the ones that matter.
+  const rank = (c) => (c.ok === false ? (c.hard ? 0 : 1) : c.ok === null ? 2 : 3);
+  const box = $("#osg-checks");
+  box.innerHTML = [...checks].sort((a, b) => rank(a) - rank(b)).map((c) => {
     const icon = c.ok === true ? "✅" : c.ok === null ? "➖" : c.hard ? "❌" : "⚠️";
     return `<div class="check"><span>${icon}</span><span>${esc(c.label)}</span>${c.detail ? `<span class="detail">${esc(c.detail)}</span>` : ""}</div>`;
   }).join("");
+  // A scrolling box CHECKS_SHOWN rows tall; rows differ in height (a detail
+  // line or not), so measure them, and guess when the tab is hidden (all 0).
+  const rows = box.children;
+  const h = rows.length > CHECKS_SHOWN ? rows[CHECKS_SHOWN].offsetTop - rows[0].offsetTop : 0;
+  box.style.maxHeight = rows.length > CHECKS_SHOWN ? (h > 0 ? h : CHECKS_SHOWN * 56) + "px" : "";
+  box.scrollTop = 0;
   lastCheck = { ok: !bad, at: Date.now() };
 }
 let lastCheck = null;

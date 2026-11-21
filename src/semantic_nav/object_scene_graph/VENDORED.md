@@ -323,6 +323,15 @@ needs the gitignored `data/priors/place365_room_map.json`.
   `pkill -f 'model_api\.[a-z_]*_out'` (SIGTERM, then SIGKILL after 10 s), and a start whose
   ports are still answering afterwards -- something this script cannot kill -- exits 1 with
   the ports named instead of launching servers that cannot bind.
+- **The real robot stops 1 m from the target** (2026-11-21). `stretch3_map` (so also
+  `stretch3_search` / `stretch3_extinguisher`) sets `agent.terminal_stop_m: 1.0`,
+  `terminal_engage_m: 1.5` and `success_distance: 1.0`; it inherited the sim-tuned 0.4 / 1.0 /
+  0.1 from `agent/s71.yaml`. `isaac_hospital_map`, which builds on `stretch3_map`, pins the old
+  three so the Isaac presets compose exactly as before. Fingerprints of the three `stretch3_*`
+  presets regenerated.
+- **Keyframes twice as often on the real robot** (2026-11-21): `stretch3_map` sets
+  `scene_graph.keyframe_trans_m: 0.15` / `keyframe_rot_deg: 15.0` (default 0.25 / 30);
+  `isaac_hospital_map` pins the defaults. Fingerprints regenerated.
 
 Add an entry above whenever you change something here, so a later re-sync from upstream
 knows what to keep.

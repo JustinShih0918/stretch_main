@@ -12,6 +12,9 @@ set -e
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 COMPOSE=(docker compose -f "$ROOT/docker/thor/compose.yaml" --env-file "$ROOT/docker/thor/.env")
 export UID GID="$(id -g)"
+# NVIDIA_API_KEY for the VLM inspection, kept outside the repo (docker/thor/.env).
+KEY_FILE="${NVIDIA_KEY_FILE:-$HOME/.nvidia_api.env}"
+[ -f "$KEY_FILE" ] && source "$KEY_FILE"
 
 case "${1:-up}" in
   up)

@@ -43,6 +43,13 @@ agent:
   # Nav2 owns the last metre: it has the footprint and a goal tolerance, and
   # the blind creep exists only because PointNav's stop radius does not.
   pointnav_approach_creep_m: 0.0
+  # Stop 1 m from the target on the robot (was 0.4 / 1.0, from agent/s71.yaml, sim-tuned):
+  # the final approach starts inside terminal_engage_m and stops at
+  # terminal_stop_m (nav_agent.py `_nearest_point_stop`); engage must be the
+  # larger. success_distance only scores the run, matched so reports agree.
+  terminal_stop_m: 1.0
+  terminal_engage_m: 1.5
+  success_distance: 1.0
   navmesh_snap_on_agent_island: false
   # The escape window watches the agent's OWN action history for a stall it
   # should break out of. With Nav2 driving, that history is a placeholder
@@ -90,6 +97,11 @@ exploration:
 detector:
   conf: 0.2
 scene_graph:
+  # A keyframe (detection + scene-graph update) every 0.15 m or 15 deg of camera
+  # motion, twice as often as the sim-tuned 0.25 m / 30 deg default
+  # (perception/keyframe.py), so the robot misses less of what it drives past.
+  keyframe_trans_m: 0.15
+  keyframe_rot_deg: 15.0
   min_det_score: 0.0
   min_det_bbox_px: 0.0
   target_bypasses_gates: true
