@@ -10,8 +10,12 @@
 #
 # Adapted from the Isaac Sim one (src/sim/stretch3_navigation/config/rtabmap.yaml):
 # real time, the robot's own topics (remapped in units.yaml).
-# Needs `sudo apt install ros-humble-rtabmap-ros` on the robot.
-rtabmap:
+# Needs rtabmap_ros on the robot (hello-robot's stretch_rtabmap brings it).
+#
+# `/**`, not `rtabmap`: the unit runs the node in the /rtabmap namespace, and a
+# bare `rtabmap:` key only matches a node at /rtabmap -- the file would be
+# silently ignored and RTAB-Map would wait on an odom topic nobody publishes.
+/**:
   ros__parameters:
     frame_id: base_link
     odom_frame_id: odom
